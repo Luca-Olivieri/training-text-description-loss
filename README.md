@@ -1,1 +1,3 @@
-# training-text-description-loss
+# Training Vision Tasks Using Diagnostic Text Description Loss
+
+...
