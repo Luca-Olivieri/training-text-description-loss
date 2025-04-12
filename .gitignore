@@ -1,9 +1,11 @@
+# My additions
 .DS_Store
 *.bkp
 __pycache__
 .pytest_cache
 .vscode
 .ipynb_checkpoints
+.devcontainer
 
 # AIRLab server docker stuff
 .runconfigs
