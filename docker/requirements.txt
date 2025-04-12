@@ -1,6 +1,7 @@
 # Core dependencies
 webcolors
 python-dotenv
+pytest
 
 # ML
 numpy
