@@ -1,0 +1,19 @@
+# Core dependencies
+webcolors
+python-dotenv
+
+# ML
+numpy
+Pillow
+matplotlib
+opencv-python
+google-genai
+pandas
+
+# IPy notebooks
+ipykernel
+notebook
+
+# PyTorch dependencies
+torch
+torchvision
