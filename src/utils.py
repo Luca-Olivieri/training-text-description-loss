@@ -36,6 +36,12 @@ def extract_json(text):
     match = re.search(r'\{.*\}', text, re.DOTALL)
     return match.group(0) if match else None
 
+def extract_uppercase_words(text):
+    """
+    Returns a list of all unique uppercase words from the given text.
+    """
+    return sorted(set(re.findall(r'\b[A-Z]+\b', text)))
+
 def parse_eval_str_to_dict(eval_str):
     eval_str = extract_json(eval_str)
     try:
@@ -46,8 +52,11 @@ def parse_eval_str_to_dict(eval_str):
         return eval_str
 
 def display_prompt(full_prompt):
-    for prompt in full_prompt:
-        if isinstance(prompt, Image.Image):
-            display(prompt)
-        else:
-            display(Markdown(prompt))
+    if isinstance(full_prompt, str):
+        display(Markdown(full_prompt))
+    else:
+        for prompt in full_prompt:
+            if isinstance(prompt, Image.Image):
+                display(prompt)
+            else:
+                display(Markdown(prompt))

@@ -2,6 +2,7 @@
 webcolors
 python-dotenv
 pytest
+pformat
 
 # ML
 numpy

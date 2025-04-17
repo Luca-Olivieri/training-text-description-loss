@@ -46,8 +46,10 @@ def get_inv_color_map_dict():
     """
     Get the color map as dictionary {(r, g, b): cls_idx} for the 21 VOC classes.
     """
-    color_map = get_color_map_dict()
-    return {tuple(rgb): i for i, rgb in color_map.items()}
+    color_map_dict = get_color_map_dict()
+    inv_color_map_dict = {tuple(rgb): i for i, rgb in color_map_dict.items()}
+    inv_color_map_dict[(255, 255, 255)] = 1 # to account for class-splitted prompts
+    return inv_color_map_dict
 
 def get_color_map_as_img():
     """
@@ -167,3 +169,8 @@ def pil_to_class_array(mask):
     return mask_array
 
 
+def main() -> None:
+    print(get_inv_color_map_dict())
+
+if __name__ == "__main__":
+    main()

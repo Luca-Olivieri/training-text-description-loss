@@ -1,13 +1,15 @@
 import json
 
+from sympy import flatten
+
 from path import *
-from utils import DEVICE
+from utils import *
 
 import torchvision.transforms.functional as F
 from torchvision.io import decode_image
 from torch.nn.functional import interpolate
 
-CLASSES = ["background", "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car", "cat", "chair", "cow", "diningtable", "dog", "horse", "motorbike", "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor"]
+CLASSES = ["BACKGROUND", "AEROPLANE", "BYCICLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR"]
 
 # define the class mappings
 CLASS_MAP = {i: i for i in range(len(CLASSES))} # default mapping
@@ -108,58 +110,88 @@ def read_one_from_jsonl_by(path, key, value):
             if obj.get(key, None) == value:
                 return obj
 
-def _format_one(obj):
+def _format_one_from_jsonl(obj):
     if is_state(obj):
         return obj
     else:
         return {obj["img_idx"]: obj["content"]}
 
-def _format_many(obj_list):
+def _format_many_from_jsonl(obj_list):
     return {line["img_idx"]: line["content"] for line in obj_list}
 
 def get_one_item(path, idx, return_state):
     state = read_state(path)
     item = read_one_from_jsonl_by(path, "img_idx", idx)
-    item = _format_one(item)
+    item = _format_one_from_jsonl(item)
     return state | item if return_state else item
 
 def get_many_item(path, return_state):
     state = read_state(path)
     items = read_many_from_jsonl(path)
-    items = _format_many(items)
+    items = _format_many_from_jsonl(items)
     return state | items if return_state else items
 
-def get_one_answer_gt(by_model, image_resizing_mode, output_mode, idx, return_state=False):
-    answer_gt = get_one_item(get_answer_gts_path(by_model, image_resizing_mode, output_mode), idx, return_state)
+def get_one_answer_gt(by_model, image_resizing_mode, output_mode, split_by, idx, return_state=False):
+    answer_gt = get_one_item(get_answer_gts_path(by_model, image_resizing_mode, output_mode, split_by), idx, return_state)
     return answer_gt
 
-def get_one_answer_pr(by_model, image_resizing_mode, output_mode, exp, variation, idx, return_state=False):
-    answer_pr = get_one_item(get_answer_prs_path(by_model, image_resizing_mode, output_mode, f"{exp}/{variation}"), idx, return_state)
+def get_one_sup_set_answer_gt(by_model, image_resizing_mode, output_mode, split_by, idx, return_state=False):
+    answer_gt = get_one_item(get_sup_set_answer_gts_path(by_model, image_resizing_mode, output_mode, split_by), idx, return_state)
+    return answer_gt
+
+def get_one_answer_pr(by_model, image_resizing_mode, output_mode, split_by, exp, variation, idx, return_state=False):
+    answer_pr = get_one_item(get_answer_prs_path(by_model, image_resizing_mode, output_mode, split_by, f"{exp}/{variation}"), idx, return_state)
     return answer_pr
 
-def get_many_answer_gt(by_model, image_resizing_mode, output_mode, return_state=False):
-    answer_gts = get_many_item(get_answer_gts_path(by_model, image_resizing_mode, output_mode), return_state)
+def get_many_answer_gt(by_model, image_resizing_mode, output_mode, split_by, return_state=False):
+    answer_gts = get_many_item(get_answer_gts_path(by_model, image_resizing_mode, output_mode, split_by), return_state)
     return answer_gts
 
-def get_many_answer_pr(by_model, image_resizing_mode, output_mode, exp, variation, return_state=False):
-    answer_prs = get_many_item(get_answer_prs_path(by_model, image_resizing_mode, output_mode, f"{exp}/{variation}"), return_state)
+def get_many_answer_pr(by_model, image_resizing_mode, output_mode, split_by, exp, variation, return_state=False):
+    answer_prs = get_many_item(get_answer_prs_path(by_model, image_resizing_mode, output_mode, split_by, f"{exp}/{variation}"), return_state)
     return answer_prs
 
-def get_one_eval_gt(by_model, image_resizing_mode, output_mode, idx, return_state=False):
-    eval_gt = get_one_item(get_eval_gts_path(by_model, image_resizing_mode, output_mode), idx, return_state)
+def get_one_eval_gt(by_model, image_resizing_mode, output_mode, split_by, idx, return_state=False):
+    eval_gt = get_one_item(get_eval_gts_path(by_model, image_resizing_mode, output_mode, split_by), idx, return_state)
     return eval_gt
 
-def get_one_eval_pr(by_model, image_resizing_mode, output_mode, exp, variation, idx, return_state=False):
-    eval_pr = get_one_item(get_eval_prs_path(by_model, image_resizing_mode, output_mode, f"{exp}/{variation}"), idx, return_state)
+def get_one_eval_pr(by_model, image_resizing_mode, output_mode, split_by, exp, variation, idx, return_state=False):
+    eval_pr = get_one_item(get_eval_prs_path(by_model, image_resizing_mode, output_mode, split_by, f"{exp}/{variation}"), idx, return_state)
     return eval_pr
 
-def get_many_eval_gt(by_model, image_resizing_mode, output_mode, return_state=False):
-    eval_gts = get_many_item(get_eval_gts_path(by_model, image_resizing_mode, output_mode), return_state)
+def get_many_eval_gt(by_model, image_resizing_mode, output_mode, split_by, return_state=False):
+    eval_gts = get_many_item(get_eval_gts_path(by_model, image_resizing_mode, output_mode, split_by), return_state)
     return eval_gts
 
-def get_many_eval_pr(by_model, image_resizing_mode, output_mode, exp, variation, return_state=False):
-    eval_prs = get_many_item(get_eval_prs_path(by_model, image_resizing_mode, output_mode, f"{exp}/{variation}"), return_state)
+def get_many_eval_pr(by_model, image_resizing_mode, output_mode, split_by, exp, variation, return_state=False):
+    eval_prs = get_many_item(get_eval_prs_path(by_model, image_resizing_mode, output_mode, split_by, f"{exp}/{variation}"), return_state)
     return eval_prs
+    
+def format_many_to_jsonl(objs):
+    objs_list = [{"state": objs["state"]}]
+    objs_list.extend([{"img_idx": img_idx, "content": content} for img_idx, content in list(objs.items())[1:]])
+    return objs_list
+
+def expand_words_to_variants(word):
+    """
+    Expands a word in a list of similar word to involve for the pertinence check
+    """
+    return [word, word.lower()]
+
+def validate_pertinence(sentences, significant_classes):
+    """
+    Asserts if predicted answers only contain upper case words (as all and only class names should be) related to their positive class.
+    The positive class name needs to be there and all other cannot.
+    """
+    for s, pos_class in zip(sentences, significant_classes):
+        reason_upper_words = extract_uppercase_words(s)
+        pos_class_name = CLASSES[pos_class]
+        forbidden_class_names = flatten_list([expand_words_to_variants(cn) for cn in CLASSES if cn != pos_class_name])
+        assert all(word != fw for word in reason_upper_words for fw in forbidden_class_names), f"Forbidden words found in answer of pos. class '{pos_class_name}'"
+        assert pos_class_name in reason_upper_words, f"Allowed word '{pos_class_name}' not found in answer '{pos_class_name}'"
+
+def main() -> None:
+    pass
 
 if __name__ == "__main__":
-    print(get_one_eval_pr("LRASPP_MobileNet_V3", "points", "letterboxed", "llm_judge_assessment", "1_original", 0, return_state=False))
+    main()

@@ -16,33 +16,37 @@ SPLITS_PATH = VOC_PATH / "ImageSets/Segmentation"
 SCS_PATH = VOC_PATH / "JPEGImages"
 GTS_PATH = VOC_PATH / "SegmentationClass"
 
-def get_selected_annots_path(by_model, image_resizing_mode, output_mode):
-    return MY_ANNOTS_PATH / "by_model" / by_model / image_resizing_mode / output_mode
+def get_selected_annots_path(by_model, image_resizing_mode, output_mode, split):
+    return MY_ANNOTS_PATH / "by_model" / by_model / image_resizing_mode / output_mode / split
 
 ### Variable Paths ###
 
-def get_prompts_path(output_mode, image_resizing_mode):
-    prompts_path = MY_ANNOTS_PATH / "prompts" / image_resizing_mode / output_mode
+def get_prompts_path(output_mode, image_resizing_mode, split):
+    prompts_path = MY_ANNOTS_PATH / "prompts" / image_resizing_mode / output_mode / split
     return prompts_path
 
 def get_mask_prs_path(by_model, image_resizing_mode):
     prs_path = MY_ANNOTS_PATH / "by_model" / by_model / image_resizing_mode / "_mask_prs_"
     return prs_path
 
-def get_answer_gts_path(by_model, image_resizing_mode, output_mode):
-    answers_gts_path = get_selected_annots_path(by_model, image_resizing_mode, output_mode) / "answer_gts.jsonl"
+def get_answer_gts_path(by_model, image_resizing_mode, output_mode, split):
+    answers_gts_path = get_selected_annots_path(by_model, image_resizing_mode, output_mode, split) / "answer_gts.jsonl"
     return answers_gts_path
 
-def get_answer_prs_path(by_model, image_resizing_mode, output_mode, variation):
-    answers_prs_path = get_selected_annots_path(by_model, image_resizing_mode, output_mode) / "answer_prs" / f"{variation}.jsonl"
+def get_sup_set_answer_gts_path(by_model, image_resizing_mode, output_mode, split):
+    answers_gts_path = get_selected_annots_path(by_model, image_resizing_mode, output_mode, split) / "sup_set_answer_gts.jsonl"
+    return answers_gts_path
+
+def get_answer_prs_path(by_model, image_resizing_mode, output_mode, split, variation):
+    answers_prs_path = get_selected_annots_path(by_model, image_resizing_mode, output_mode, split) / "answer_prs" / f"{variation}.jsonl"
     return answers_prs_path
 
-def get_eval_gts_path(by_model, image_resizing_mode, output_mode):
-    eval_gts_path = get_selected_annots_path(by_model, image_resizing_mode, output_mode) / "eval_gts.jsonl"
+def get_eval_gts_path(by_model, image_resizing_mode, output_mode, split):
+    eval_gts_path = get_selected_annots_path(by_model, image_resizing_mode, output_mode, split) / "eval_gts.jsonl"
     return eval_gts_path
 
-def get_eval_prs_path(by_model, image_resizing_mode, output_mode, variation):
-    eval_prs_path = get_selected_annots_path(by_model, image_resizing_mode, output_mode) / "eval_prs" / f"{variation}.jsonl"
+def get_eval_prs_path(by_model, image_resizing_mode, output_mode, split, variation):
+    eval_prs_path = get_selected_annots_path(by_model, image_resizing_mode, output_mode, split) / "eval_prs" / f"{variation}.jsonl"
     return eval_prs_path
 
 if __name__ == "__main__":
