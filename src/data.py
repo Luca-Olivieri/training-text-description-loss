@@ -1,13 +1,14 @@
 import json
+from typing import Tuple
 
 from sympy import flatten
 
 from path import *
 from utils import *
 
-import torchvision.transforms.functional as F
 from torchvision.io import decode_image
-from torch.nn.functional import interpolate
+import torch.nn.functional as F
+import torchvision.transforms.functional as TF
 
 CLASSES = ["BACKGROUND", "AEROPLANE", "BYCICLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR"]
 
@@ -29,43 +30,99 @@ def get_image_UIDs(path, split="trainval"):
 
 image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval")
 
-def letterbox_tensor(x):
+def get_image(path):
     """
-    Letterboxes a tensor 'x' of shape (C, H, W) encoding an image.
+    Reads a single image from disk and encodes it in a tensor of 
+    - shape (N, H, W). N could be 3 with RGB or 1 with grayscale images.
+    - dtype 'uint8'.
+    Then moves the tensor on the device globally used.
     """
-    _, h, w = x.shape  # shape (C, H, W)
-    max_wh = max(h, w)
-    hp = (max_wh - w) // 2
-    vp = (max_wh - h) // 2
-    padding = (hp, vp, hp, vp)  # (left, right, top, bottom)
-    return F.pad(x, padding, 0)
-
-def _get_image(path, image_resizing_mode):
     img = decode_image(path)
-    if image_resizing_mode == "letterboxed":
-        img = letterbox_tensor(img)
     img = img.to(DEVICE)
     return img
 
-def get_sc(path, image_size, image_resizing_mode):
-    sc = _get_image(path, image_resizing_mode)
-    sc = interpolate(sc.unsqueeze(0)/255., size=image_size, mode="bilinear").squeeze(0)
+def one_hot_encode_masks(masks: torch.Tensor) -> torch.Tensor:
+    one_hot_masks = masks == torch.arange(NUM_CLASSES).to(DEVICE)[:, None, None, None]
+    one_hot_masks = one_hot_masks.swapaxes(0, 1)
+    return one_hot_masks
+
+def resize_image_(img: torch.Tensor, image_size: int | Tuple[int, int], mode: str) -> torch.Tensor:
+    img = (img/255.).unsqueeze(0)
+    img = F.interpolate(img, size=image_size, mode=mode)
+    img = (img.squeeze(0)*255).clamp(0, 255).byte()
+    return img
+
+def resize_image(img: torch.Tensor, image_size: int | Tuple[int, int], mode: str) -> torch.Tensor:
+    img = (img / 255.).unsqueeze(0)  # shape (1, C, H, W)
+    
+    if isinstance(image_size, int): # 'image_size' is of type int
+        _, _, h, w = img.shape
+        if h < w:
+            new_h = image_size
+            new_w = int(w * image_size / h)
+        else:
+            new_w = image_size
+            new_h = int(h * image_size / w)
+        size = (new_h, new_w)
+    else:
+        size = image_size  # 'image_size' is of type Tuple[int, int]
+        
+    img = F.interpolate(img, size=size, mode=mode, align_corners=False if mode in ['linear', 'bilinear', 'bicubic', 'trilinear'] else None)
+    img = (img.squeeze(0) * 255).clamp(0, 255).byte()
+    return img
+
+def resize_mask(mask: torch.Tensor, image_size: None | Tuple[int, int] | int, mode: str, center_crop: bool) -> torch.Tensor:
+    """
+    Resized mask in two ways, as defined by 'mode' parameter:
+    - "bilinear": one-hots the mask image and performs bilinear interpolation of the probabilities to provide a smoother resizing.
+    - "nearest": applies nearest interpolation to the original mask.
+    """
+    if mode not in ["bilinear", "nearest"]:
+        raise AttributeError("Resizing mode must be 'bilinear' or 'nearest'.")
+    if mode == "bilinear":
+        one_hot_mask = one_hot_encode_masks(mask.unsqueeze(0)).squeeze(0)
+        one_hot_mask = one_hot_mask.float()
+        resized_mask = resize_image(one_hot_mask, image_size, "bilinear").argmax(dim=0, keepdim=True).byte()
+    elif mode == "nearest":
+        resized_mask = resize_image(mask, image_size, "nearest")
+    return resized_mask
+
+def get_sc(path: Path, image_size: None | int | Tuple[int, int] = None, center_crop: bool = True):
+    sc = get_image(path)
+    if image_size is not None:
+        sc = resize_image(sc, image_size, mode="bilinear")
+    if center_crop:
+        sc = TF.center_crop(sc, output_size=min(sc.shape[1:]))
     return sc
 
-def _get_mask(path, image_size, class_map, image_resizing_mode):
-    mask = _get_image(path, image_resizing_mode)
-    class_map_ = class_map.copy()
-    class_map_[255] = 0 # additionally, map UNLABELLED to BACKGROUND
+def apply_class_map(mask: torch.Tensor, class_map: dict) -> torch.Tensor:
     mask_ = mask.cpu()
-    mask_.apply_(lambda x: class_map_.get(x, 0)) # class mapping
-    mask = interpolate(mask_.to(DEVICE).unsqueeze(0), size=image_size, mode="nearest").squeeze(0)
+    mask_.apply_(lambda x: class_map.get(x, 0)) # class mapping
+    mask = mask_.to(DEVICE)
     return mask
 
-def get_gt(path, image_size, class_map, image_resizing_mode):
-    return _get_mask(path, image_size, class_map, image_resizing_mode)
+def _get_mask(path, class_map, image_size, resize_mode, center_crop: bool):
+    mask = get_image(path)
+    class_map_ = class_map.copy()
+    class_map_[255] = 0 # additionally, map UNLABELLED to BACKGROUND
+    mask = apply_class_map(mask, class_map_)
+    if image_size is not None:
+        mask = resize_mask(mask, image_size, resize_mode, center_crop=True)
+    if center_crop:
+        mask = TF.center_crop(mask, output_size=min(mask.shape[1:]))
+    return mask
 
-def get_pr(path, image_size, class_map, image_resizing_mode):
-    return _get_mask(path, image_size, class_map, image_resizing_mode)
+def get_gt(path: Path, class_map: dict, image_size: None | Tuple[int, int] | int = None, resize_mode: str = "nearest", center_crop: bool = True):
+    return _get_mask(path, class_map, image_size, resize_mode, center_crop)
+
+def get_pr(path, class_map, image_size=None, resize_mode="nearest", center_crop: bool = True):
+    return _get_mask(path, class_map, image_size, resize_mode, center_crop)
+
+def get_significant_classes(path, image_size, class_map):
+    mask = _get_mask(path, image_size, class_map)
+    significant_classes = mask.unique().tolist() # classes that actually appear in 'gt'
+    significant_classes.remove(0) # TODO: should I remove the background class?
+    return significant_classes
 
 def read_txt(txt_path):
     with open(txt_path, "r") as f:
@@ -131,40 +188,40 @@ def get_many_item(path, return_state):
     items = _format_many_from_jsonl(items)
     return state | items if return_state else items
 
-def get_one_answer_gt(by_model, image_resizing_mode, output_mode, split_by, idx, return_state=False):
-    answer_gt = get_one_item(get_answer_gts_path(by_model, image_resizing_mode, output_mode, split_by), idx, return_state)
+def get_one_answer_gt(by_model, split_by, idx, return_state=False):
+    answer_gt = get_one_item(get_answer_gts_path(by_model, split_by), idx, return_state)
     return answer_gt
 
-def get_one_sup_set_answer_gt(by_model, image_resizing_mode, output_mode, split_by, idx, return_state=False):
-    answer_gt = get_one_item(get_sup_set_answer_gts_path(by_model, image_resizing_mode, output_mode, split_by), idx, return_state)
+def get_one_sup_set_answer_gt(by_model, split_by, idx, return_state=False):
+    answer_gt = get_one_item(get_sup_set_answer_gts_path(by_model, split_by), idx, return_state)
     return answer_gt
 
-def get_one_answer_pr(by_model, image_resizing_mode, output_mode, split_by, exp, variation, idx, return_state=False):
-    answer_pr = get_one_item(get_answer_prs_path(by_model, image_resizing_mode, output_mode, split_by, f"{exp}/{variation}"), idx, return_state)
+def get_one_answer_pr(by_model, split_by, exp, variation, idx, return_state=False):
+    answer_pr = get_one_item(get_answer_prs_path(by_model, split_by, f"{exp}/{variation}"), idx, return_state)
     return answer_pr
 
-def get_many_answer_gt(by_model, image_resizing_mode, output_mode, split_by, return_state=False):
-    answer_gts = get_many_item(get_answer_gts_path(by_model, image_resizing_mode, output_mode, split_by), return_state)
+def get_many_answer_gt(by_model, split_by, return_state=False):
+    answer_gts = get_many_item(get_answer_gts_path(by_model, split_by), return_state)
     return answer_gts
 
-def get_many_answer_pr(by_model, image_resizing_mode, output_mode, split_by, exp, variation, return_state=False):
-    answer_prs = get_many_item(get_answer_prs_path(by_model, image_resizing_mode, output_mode, split_by, f"{exp}/{variation}"), return_state)
+def get_many_answer_pr(by_model, split_by, exp, variation, return_state=False):
+    answer_prs = get_many_item(get_answer_prs_path(by_model, split_by, f"{exp}/{variation}"), return_state)
     return answer_prs
 
-def get_one_eval_gt(by_model, image_resizing_mode, output_mode, split_by, idx, return_state=False):
-    eval_gt = get_one_item(get_eval_gts_path(by_model, image_resizing_mode, output_mode, split_by), idx, return_state)
+def get_one_eval_gt(by_model, split_by, idx, return_state=False):
+    eval_gt = get_one_item(get_eval_gts_path(by_model, split_by), idx, return_state)
     return eval_gt
 
-def get_one_eval_pr(by_model, image_resizing_mode, output_mode, split_by, exp, variation, idx, return_state=False):
-    eval_pr = get_one_item(get_eval_prs_path(by_model, image_resizing_mode, output_mode, split_by, f"{exp}/{variation}"), idx, return_state)
+def get_one_eval_pr(by_model, split_by, exp, variation, idx, return_state=False):
+    eval_pr = get_one_item(get_eval_prs_path(by_model, split_by, f"{exp}/{variation}"), idx, return_state)
     return eval_pr
 
-def get_many_eval_gt(by_model, image_resizing_mode, output_mode, split_by, return_state=False):
-    eval_gts = get_many_item(get_eval_gts_path(by_model, image_resizing_mode, output_mode, split_by), return_state)
+def get_many_eval_gt(by_model, split_by, return_state=False):
+    eval_gts = get_many_item(get_eval_gts_path(by_model, split_by), return_state)
     return eval_gts
 
-def get_many_eval_pr(by_model, image_resizing_mode, output_mode, split_by, exp, variation, return_state=False):
-    eval_prs = get_many_item(get_eval_prs_path(by_model, image_resizing_mode, output_mode, split_by, f"{exp}/{variation}"), return_state)
+def get_many_eval_pr(by_model, split_by, exp, variation, return_state=False):
+    eval_prs = get_many_item(get_eval_prs_path(by_model, split_by, f"{exp}/{variation}"), return_state)
     return eval_prs
     
 def format_many_to_jsonl(objs):

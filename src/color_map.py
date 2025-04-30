@@ -10,6 +10,23 @@ import torch
 from torchvision.utils import draw_segmentation_masks
 from torchvision.transforms.functional import to_pil_image
 
+# TODO: find out if this is the same
+def create_pascal_label_colormap():
+  """Creates a label colormap used in PASCAL VOC segmentation benchmark.
+
+  Returns:
+    A Colormap for visualizing segmentation results.
+  """
+  colormap = np.zeros((256, 3), dtype=int)
+  ind = np.arange(256, dtype=int)
+
+  for shift in reversed(range(8)):
+    for channel in range(3):
+      colormap[:, channel] |= ((ind >> channel) & 1) << shift
+    ind >>= 3
+
+  return colormap
+
 def _full_color_map(N=256, normalized=False):
     """
     Generate a full color map with N colors (integer or normalised to float).

@@ -14,7 +14,7 @@ def download_VOC2012():
     
 ### Devices ###
 
-DEVICE = torch.device('cpu')
+DEVICE = torch.device('cuda')
 
 ### Utility Methods ###
 
@@ -60,3 +60,9 @@ def display_prompt(full_prompt):
                 display(prompt)
             else:
                 display(Markdown(prompt))
+
+def main() -> None:
+    pass
+
+if __name__ == "__main__":
+    print(sorted(set(re.findall(r'\b[A-Z]+\b', "Ar"))))

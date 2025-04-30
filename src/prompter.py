@@ -14,6 +14,10 @@ from torchvision.transforms.functional import to_pil_image
 ### Methods ###
 
 def _concat_images_fn(images, titles, scene_mode, align):
+    """
+    Concatenates the images according to the values of the parameters 'scene_mode' and 'align' in various combinations.
+    Some of them mark the images with titles given as parameters.
+    """
     # Constants
     border_size = 10  # Space between images
     padding_size = 20  # Padding around each image
@@ -89,7 +93,7 @@ def _concat_images_fn(images, titles, scene_mode, align):
 
 def _format_images(sc, gt, pr, idx, layout, scene_mode, align, alpha):
     """
-    Returns sc, gt, pr formatted for the prompt.
+    Returns 'sc', 'gt', 'pr' formatted for the prompt.
     Always return a list [sc, gt, pr].
     """
     if scene_mode == "overlay":
@@ -113,14 +117,16 @@ def _format_images(sc, gt, pr, idx, layout, scene_mode, align, alpha):
 
 class PromptModule():
     """
-    TODO provide documentation
+    This is the base class for the prompt textual modules that, together, form the full prompts.
+    It has to be implemented by the various modules according to their purpose and position in the full prompt.
+    The attributes of the sub-classes can propagated to the class 'PromptBuilder', which uses them through out the building of the prompt.
     """
     prompts_path = None # variable shared among all sub-classes, it has to be initialized externally when building the prompt.
     def __init__(self, variation):
         """
-        The PromperBuilder class inherits all and only the private attributes that are enclosed by '_' (e.g., self._value_ = ...)
+        N.B. The PromperBuilder class inherits all and only the private attributes that are enclosed by '_' (e.g., self._value_ = ...)
         """
-        self.full_path = Path(self.prompts_path / f"{variation}.txt")
+        self.full_path = Path(self.prompts_path / f"{variation}.txt") # full path complete of the prompt variation.
     def import_variation(self, variation_path):
         """
         This method returns the .txt file found at the path 'prompts_path/content_path'.
@@ -331,7 +337,9 @@ class EvalModule(PromptModule):
 
 class PromptBuilder():
 
-    def __init__(self, by_model, alpha, image_resizing_mode, output_mode, split_by, image_size, array_size, class_map, color_map):
+    # TODO: can we parallelise or speed up the methods that build the prompts?
+
+    def __init__(self, by_model, alpha, split_by, image_size, array_size, class_map, color_map):
         # Attributes to inherit from modules
         self.layout = None
         self.scene_mode = None
@@ -340,22 +348,24 @@ class PromptBuilder():
         # Proper attributes
         self.by_model = by_model
         self.alpha = alpha
-        self.image_resizing_mode = image_resizing_mode
-        self.output_mode = output_mode
         self.image_size = image_size
         self.array_size = array_size
         self.class_map = class_map
         self.color_map = color_map
         self.split_by = split_by
 
-        # sets the root path for the prompts
-        PromptModule.prompts_path = get_prompts_path(self.output_mode, self.image_resizing_mode, self.split_by)
+        # sets the shared static root path for the prompts
+        PromptModule.prompts_path = get_prompts_path(self.split_by)
 
     def read_sc_gt_pr(self, idx, image_size_):
-        prs_path = get_mask_prs_path(self.by_model, self.image_resizing_mode)
-        sc = to_pil_image(get_sc(SCS_PATH / (image_UIDs[idx] + ".jpg"), image_size_, self.image_resizing_mode))
-        gt = apply_colormap(get_gt(GTS_PATH / (image_UIDs[idx] + ".png"), image_size_, self.class_map, self.image_resizing_mode), self.color_map)
-        pr = apply_colormap(get_pr(prs_path / (image_UIDs[idx] + ".png"), image_size_, self.class_map, self.image_resizing_mode), self.color_map)
+        """
+        Reads the scene, ground truth and prediction masks from disk and formats them in RGB format ready to be visualised.
+        The color map is applied to the masks.
+        """
+        prs_path = get_mask_prs_path(self.by_model)
+        sc = to_pil_image(get_sc(SCS_PATH / (image_UIDs[idx] + ".jpg"), image_size_))
+        gt = apply_colormap(get_gt(GTS_PATH / (image_UIDs[idx] + ".png"), self.class_map, image_size_), self.color_map)
+        pr = apply_colormap(get_pr(prs_path / (image_UIDs[idx] + ".png"), self.class_map, image_size_), self.color_map)
         assert sc.size == gt.size == pr.size
         return sc, gt, pr
 
@@ -379,7 +389,8 @@ class PromptBuilder():
     
     def build_img_prompt(self, img_idx, with_answer_gt=False):
         """
-        Receives an image idx and optionally its target, and builds the formatted image prompt.
+        Receives an image idx and optionally its target, and builds the individual formatted image prompt.
+        The query and few-shot modules make use of this method to serve the images.
         """
         img_prompts = []
         img_prompts.append(f"Input:")
@@ -420,15 +431,15 @@ class PromptBuilder():
         img_prompts.append(f"Output:")
         if with_answer_gt is True:
             if self.split_by == "non-splitted":
-                answer_gt = get_one_answer_gt(self.by_model, self.image_resizing_mode, self.output_mode, self.split_by, img_idx)[img_idx]
+                answer_gt = get_one_answer_gt(self.by_model, self.split_by, img_idx)[img_idx]
             elif self.split_by == "class-splitted":
-                answer_gt = get_one_sup_set_answer_gt(self.by_model, self.image_resizing_mode, self.output_mode, self.split_by, img_idx)[img_idx]
+                answer_gt = get_one_sup_set_answer_gt(self.by_model, self.split_by, img_idx)[img_idx]
             img_prompts.append(answer_gt) # add target answer if specified
         return flatten_list(img_prompts)
 
     def inherit_settings_from_modules(self):
         """
-        Inherit variables enclosed by '_' from the modules in 'self.modules_dict'
+        Inherit variables enclosed by '_' from the modules in 'self.modules_dict'.
         """
         for m in self.modules_dict.values():
             for attr, value in vars(m).items():
@@ -436,7 +447,9 @@ class PromptBuilder():
                     setattr(self, attr.strip('_'), value)
     
     def load_modules(self, context_module, color_map_module, input_format_module, task_module, output_format_module, support_set_module, query_module, eval_module):
-
+        """
+        Load the prompt modules (in a strict order) and inherits their shared variables.
+        """
         assert issubclass(type(context_module), ContextModule)
         assert issubclass(type(color_map_module), ColorMapModule)
         assert issubclass(type(input_format_module), InputFormatModule)
@@ -464,6 +477,9 @@ class PromptBuilder():
         self.inherit_settings_from_modules()
 
     def build_inference_prompt(self, query_idx):
+        """
+        Builds the inference prompt (in which the VLM performs the differencing in textual form).
+        """
         sup_set_items = [self.build_img_prompt(idx, with_answer_gt=True) for idx in self.sup_set_idxs]
         query_item = self.build_img_prompt(query_idx)
         prompt = [
@@ -480,19 +496,27 @@ class PromptBuilder():
         """
         Creates a clone of this 'PromptBuilder' class, but changes the color map so that:
         - The positive class is white (255, 255, 255).
-        - All the other classes are balck (0, 0, 0)
+        - All the other classes are black (0, 0, 0).
         """
         class_specific_promptBuilder = deepcopy(self)
         class_specific_promptBuilder.color_map = {c: [255, 255, 255] if c == pos_class else [0, 0, 0] for c in range(len(CLASSES))}
         return class_specific_promptBuilder
     
     def build_class_splitted_support_set_items(self):
+        """
+        Generates the few-shot example items in the class-splitted scenario.
+        """
         sup_set_items = []
         for idx in self.sup_set_idxs:
             sup_set_items.append(self.build_class_specific_support_set_item(idx))
         return sup_set_items
     
     def build_class_specific_support_set_item(self, img_idx):
+        """
+        Generates a single few-shot example in a class-specific scenario.
+        In this one, since the items have to class-specific, each image is associated with a single class index, marking the class the few-shot is going to display.
+        However, the actual evaluation text is hard-coded (can be adapted in future to select change dynamically the positive class).
+        """
         img_idx_to_class_ = {
             2: 20,
             16: 1,
@@ -502,15 +526,12 @@ class PromptBuilder():
         return class_specific_promptBuilder.build_img_prompt(img_idx, with_answer_gt=True)
     
     def build_class_specific_inference_prompt(self, query_idx, pos_class):
+        """
+        Builds the inference prompt (in which the VLM performs the differencing in textual form) in a class-specific scenario..
+        """
         significant_class_name = CLASSES[pos_class]
-
         sup_set_items = self.build_class_splitted_support_set_items()
-
         class_specific_promptBuilder = self.create_class_specific_promptBuilder(pos_class)
-
-        # TODO: This stateful processing of the color_maps fucks up the parallelism, fix it
-        # I should create a deepcopy of the original promptBuilder, adapt it with the binary color maps, use it for the image extraction then gather the results.
-        
         query_item = class_specific_promptBuilder.build_img_prompt(query_idx)
         class_specific_prompt = [
             self.modules_dict["context"](),
@@ -525,25 +546,22 @@ class PromptBuilder():
         return class_specific_prompt
 
     def build_eval_prompt(self, query_idx, answer_pr):
-        answer_gt = get_one_answer_gt(self.by_model, self.image_resizing_mode, self.output_mode, self.split_by, query_idx)[query_idx]
+        """
+        Builds the evaluation prompt (in which the LLM-as-a-Judge evaluates the differencing in textual form).
+        """
+        answer_gt = get_one_answer_gt(self.by_model, self.split_by, query_idx)[query_idx]
         prompt = self.modules_dict["eval"](answer_gt, answer_pr)
         return prompt
     
-    # TODO: class splitted methods should be parallelised (at least the VLM ones).
-    
     def build_class_splitted_inference_prompts(self, query_idx, return_significant_classes):
         """
-        Return a list of full inference prompts for a given 'query_idx' split by class masks. 
+        Builds a list of full inference prompts for a given 'query_idx' split by class masks. 
         Each inference prompt masks only consider one class at a time.
         """
         # TODO: if the masks only have BACKGROUND class, there might be an error when trying to build the prompt.
-        prs_path = get_mask_prs_path(self.by_model, self.image_resizing_mode)
-        gt = get_gt(GTS_PATH / (image_UIDs[query_idx] + ".png"), self.image_size, self.class_map, self.image_resizing_mode)
-        pr = get_pr(prs_path / (image_UIDs[query_idx] + ".png"), self.image_size, self.class_map, self.image_resizing_mode)
-        significant_classes_gt = gt.unique().tolist() # classes that actually appear in 'gt'
-        significant_classes_pr = pr.unique().tolist() # classes that actually appear in 'pr'
+        significant_classes_gt = get_significant_classes(GTS_PATH / (image_UIDs[query_idx] + ".png"), self.image_size, self.class_map)
+        significant_classes_pr = get_significant_classes(get_mask_prs_path(self.by_model) / (image_UIDs[query_idx] + ".png"), self.image_size, self.class_map)
         significant_classes = sorted(list(set(significant_classes_gt + significant_classes_pr))) # all appearing classes
-        significant_classes.remove(0) # TODO: should I remove the background class?
         class_splitted_prompts = []
         for class_ in significant_classes:
             class_specific_prompt = self.build_class_specific_inference_prompt(query_idx, class_)
@@ -554,6 +572,10 @@ class PromptBuilder():
             return class_splitted_prompts
 
     def build_class_splitted_eval_prompt(self, query_idx, pos_class_2_answer_pr):
+        """
+        Builds a list of full evaluation prompts for a given 'query_idx' split by class masks. 
+        Each evaluation prompt masks only consider one class at a time.
+        """
         pos_class_2_eval_prompt = {}
         significant_classes = pos_class_2_answer_pr.keys()
         class_splitted_answer_pr = pos_class_2_answer_pr.values()
@@ -563,13 +585,11 @@ class PromptBuilder():
 
 if __name__ == "__main__":
 
-    PromptModule.prompts_path = get_prompts_path("points", "letterboxed", "non-splitted")
+    PromptModule.prompts_path = get_prompts_path("non-splitted")
 
     promptBuilder = PromptBuilder(
         by_model            = "LRASPP_MobileNet_V3",
         alpha               = 0.8,
-        image_resizing_mode = "letterboxed",
-        output_mode         = "freeform",
         split_by            = "class-splitted",
         image_size          = (520, 520),
         array_size          = (32, 32),
