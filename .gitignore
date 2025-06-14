@@ -11,11 +11,16 @@ __pycache__
 .runconfigs
 docker_run.txt
 
-#pytorch model weigths
+# API keys
+gen-lang-client-0021813944-33af2e4f8465.json
+
+# PyTorch model weigths
 *.pth
 
+# TensorBoard
 tb_files/
 logs/
+
 
 # VS Code
 .devcontainer/*
