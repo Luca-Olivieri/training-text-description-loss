@@ -1,23 +1,31 @@
 import json
-from typing import Tuple
+from typing import Sequence, Tuple, List
+import random
+from glob import glob
 
-from sympy import flatten
+import numpy as np
+import xarray as xr
+import pandas as pd
 
 from path import *
 from utils import *
+from config import *
 
 from torchvision.io import decode_image
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
+from PIL.Image import Image as PILImage
+import base64
+import io
 
-CLASSES = ["BACKGROUND", "AEROPLANE", "BYCICLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR"]
+CLASSES = ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR"]
 
 # define the class mappings
 CLASS_MAP = {i: i for i in range(len(CLASSES))} # default mapping
 
 NUM_CLASSES = len(list(CLASS_MAP.values())) # actual number of classes
 
-def get_image_UIDs(path, split="trainval"):
+def get_image_UIDs(path, split="trainval") -> List[int]:
     """
     Returns a list of image UIDs read in the "splits.txt" file for a specified split.
     """
@@ -26,9 +34,12 @@ def get_image_UIDs(path, split="trainval"):
         for line in f:
             image_id = line.strip()  # Remove any leading/trailing whitespace
             image_UIDs.append(image_id)
+    to_shuffle = image_UIDs[23:]
+    random.shuffle(to_shuffle)
+    image_UIDs[23:] = to_shuffle
     return image_UIDs
 
-image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval")
+image_UIDs = np.array(get_image_UIDs(SPLITS_PATH, split="trainval"))
 
 def get_image(path):
     """
@@ -40,6 +51,12 @@ def get_image(path):
     img = decode_image(path)
     img = img.to(DEVICE)
     return img
+
+def image_to_base64(img: PILImage) -> str:
+    buffered = io.BytesIO()
+    img.save(buffered, format=img.format or "PNG")
+    img_bytes = buffered.getvalue()
+    return base64.b64encode(img_bytes).decode("utf-8")
 
 def one_hot_encode_masks(masks: torch.Tensor) -> torch.Tensor:
     one_hot_masks = masks == torch.arange(NUM_CLASSES).to(DEVICE)[:, None, None, None]
@@ -119,9 +136,9 @@ def get_pr(path, class_map, image_size=None, resize_mode="nearest", center_crop:
     return _get_mask(path, class_map, image_size, resize_mode, center_crop)
 
 def get_significant_classes(path, image_size, class_map):
-    mask = _get_mask(path, image_size, class_map)
+    mask = _get_mask(path, class_map, image_size, resize_mode="nearest", center_crop=True)
     significant_classes = mask.unique().tolist() # classes that actually appear in 'gt'
-    significant_classes.remove(0) # TODO: should I remove the background class?
+    significant_classes.remove(0)
     return significant_classes
 
 def read_txt(txt_path):
@@ -182,47 +199,56 @@ def get_one_item(path, idx, return_state):
     item = _format_one_from_jsonl(item)
     return state | item if return_state else item
 
-def get_many_item(path, return_state):
+def get_many_item(
+        path: Path,
+        return_state: bool = False,
+        format_to_dict: bool = False
+):
     state = read_state(path)
     items = read_many_from_jsonl(path)
-    items = _format_many_from_jsonl(items)
-    return state | items if return_state else items
+    items = _format_many_from_jsonl(items) if format_to_dict else items
+    if return_state:
+        return items, state
+    else:
+        return items
 
-def get_one_answer_gt(by_model, split_by, idx, return_state=False):
-    answer_gt = get_one_item(get_answer_gts_path(by_model, split_by), idx, return_state)
+def get_one_answer_gt(by_model, idx, return_state=False):
+    answer_gt = get_one_item(get_answer_gts_path(by_model), idx, return_state)
     return answer_gt
 
-def get_one_sup_set_answer_gt(by_model, split_by, idx, return_state=False):
-    answer_gt = get_one_item(get_sup_set_answer_gts_path(by_model, split_by), idx, return_state)
+def get_one_sup_set_answer_gt(by_model, idx, return_state=False):
+    answer_gt = get_one_item(get_sup_set_answer_gts_path(by_model), idx, return_state)
     return answer_gt
 
-def get_one_answer_pr(by_model, split_by, exp, variation, idx, return_state=False):
-    answer_pr = get_one_item(get_answer_prs_path(by_model, split_by, f"{exp}/{variation}"), idx, return_state)
+def get_one_answer_pr(by_model, split_by, relative_path, idx, return_state=False):
+    answer_pr = get_one_item(get_answer_prs_path(by_model, split_by, relative_path), idx, return_state)
     return answer_pr
 
-def get_many_answer_gt(by_model, split_by, return_state=False):
-    answer_gts = get_many_item(get_answer_gts_path(by_model, split_by), return_state)
+def get_many_answer_gt(by_model, return_state=False):
+    answer_gts = get_many_item(get_answer_gts_path(by_model), return_state)
     return answer_gts
 
-def get_many_answer_pr(by_model, split_by, exp, variation, return_state=False):
-    answer_prs = get_many_item(get_answer_prs_path(by_model, split_by, f"{exp}/{variation}"), return_state)
+def get_many_answer_pr(path: Path, return_state: bool =False):
+    answer_prs = get_many_item(path, return_state)
     return answer_prs
 
 def get_one_eval_gt(by_model, split_by, idx, return_state=False):
     eval_gt = get_one_item(get_eval_gts_path(by_model, split_by), idx, return_state)
     return eval_gt
 
-def get_one_eval_pr(by_model, split_by, exp, variation, idx, return_state=False):
-    eval_pr = get_one_item(get_eval_prs_path(by_model, split_by, f"{exp}/{variation}"), idx, return_state)
+def get_one_eval_pr(by_model, split_by, relative_path, idx, return_state=False):
+    eval_pr = get_one_item(get_eval_prs_path(by_model, split_by, relative_path), idx, return_state)
     return eval_pr
 
 def get_many_eval_gt(by_model, split_by, return_state=False):
-    eval_gts = get_many_item(get_eval_gts_path(by_model, split_by), return_state)
+    eval_gts = get_many_item(get_eval_gts_path(by_model, split_by), return_state, )
     return eval_gts
 
-def get_many_eval_pr(by_model, split_by, exp, variation, return_state=False):
-    eval_prs = get_many_item(get_eval_prs_path(by_model, split_by, f"{exp}/{variation}"), return_state)
-    return eval_prs
+def get_many_eval_pr(
+        path: Path,
+        return_state=False,
+        format_to_dict: bool = False):
+    return get_many_item(path, return_state, format_to_dict)
     
 def format_many_to_jsonl(objs):
     objs_list = [{"state": objs["state"]}]
@@ -243,12 +269,103 @@ def validate_pertinence(sentences, significant_classes):
     for s, pos_class in zip(sentences, significant_classes):
         reason_upper_words = extract_uppercase_words(s)
         pos_class_name = CLASSES[pos_class]
-        forbidden_class_names = flatten_list([expand_words_to_variants(cn) for cn in CLASSES if cn != pos_class_name])
+        allowed_class_names = ["BACKGROUND", pos_class_name]
+        forbidden_class_names = flatten_list([expand_words_to_variants(cn) for cn in CLASSES if cn not in allowed_class_names])
         assert all(word != fw for word in reason_upper_words for fw in forbidden_class_names), f"Forbidden words found in answer of pos. class '{pos_class_name}'"
-        assert pos_class_name in reason_upper_words, f"Allowed word '{pos_class_name}' not found in answer '{pos_class_name}'"
+        assert [s in reason_upper_words for s in allowed_class_names] , f"Allowed words '{allowed_class_names}' not found in answer '{pos_class_name}'"
+
+def describe_da(data_da: xr.DataArray, dims_to_agg: list[str]) -> pd.DataFrame:
+    data_da = data_da.astype("float")
+    stats = {
+        "mean": data_da.mean(dim=dims_to_agg),
+        "std": data_da.std(dim=dims_to_agg, ddof=1),
+        "min": data_da.min(dim=dims_to_agg),
+        "max": data_da.max(dim=dims_to_agg),
+    }
+    # Convert to DataArrays and stack
+    df = xr.concat(stats.values(), dim="stat").assign_coords(stat=list(stats)).to_pandas().transpose()
+    if len(df.shape) > 2: raise AttributeError 
+    return df
+
+def compute_results_da(
+        exp_path: Path
+) -> xr.DataArray:
+    data_da = None
+
+    var_paths = glob(f"{exp_path}/*.jsonl")
+    var_names = [os.path.splitext(os.path.basename(path))[0] for path in var_paths]
+
+    for var_n, var_p in zip(var_names, var_paths):
+        
+        eval_prs = get_many_eval_pr(var_p, return_state=False, format_to_dict=True)
+        prs_per_img_idx_df = pd.DataFrame.from_dict(eval_prs, orient='index')
+        prs_per_img_idx_df = prs_per_img_idx_df.sort_index().sort_index(axis=1)
+
+        prs_per_img_idx_pred_df = (prs_per_img_idx_df["pred"] == "correct").astype(float)
+        prs_per_img_idx_score_df = prs_per_img_idx_df["score"]
+        prs_per_img_idx_reason_df = prs_per_img_idx_df["reason"]
+
+        prs_per_img_idx_da = xr.DataArray(
+            [prs_per_img_idx_pred_df, prs_per_img_idx_reason_df, prs_per_img_idx_score_df],
+            coords=[["pred", "reason", "score"], prs_per_img_idx_df.index],
+            dims=["metric", "img_idx"]
+        ).transpose("img_idx", "metric")
+        
+        if data_da is None:
+            coords = [var_names, prs_per_img_idx_df.index, ["pred", "reason", "score"]] # indexes names
+            sorted_coords = [sorted(dim_values) for dim_values in coords]
+            dims = ["var", "img_idx", "metric"] # dimensions names
+            shape = [len(l) for l in sorted_coords]
+            data_da = xr.DataArray(np.empty(shape, dtype=object), coords=sorted_coords, dims=dims)
+
+        data_da.loc[var_n] = prs_per_img_idx_da
+
+    return data_da
+
+def compute_results_da_class_splitted(
+        exp_path: Path
+) -> xr.DataArray:
+    data_da = None
+
+    var_paths = glob(f"{exp_path}/*.jsonl")
+    var_names = [os.path.splitext(os.path.basename(path))[0] for path in var_paths]
+
+    for var_n, var_p in zip(var_names, var_paths):
+        
+        eval_prs = get_many_eval_pr(var_p, return_state=False, format_to_dict=True)
+        prs_per_img_idx_df = pd.DataFrame.from_dict(eval_prs, orient='index')
+        
+        for column in [str(n) for n in range(0, NUM_CLASSES)]:
+            if column not in prs_per_img_idx_df.columns:
+                prs_per_img_idx_df[column] = pd.NA
+        prs_per_img_idx_df.columns = [int(s) for s in prs_per_img_idx_df.columns]
+        prs_per_img_idx_df = prs_per_img_idx_df.sort_index().sort_index(axis=1)
+
+        prs_per_img_idx_pred_df = prs_per_img_idx_df.map(lambda x: x["pred"] == "correct" if type(x) == dict else None).astype(float)
+        prs_per_img_idx_score_df = prs_per_img_idx_df.map(lambda x: x["score"] if type(x) == dict else None)
+        prs_per_img_idx_reason_df = prs_per_img_idx_df.map(lambda x: x["reason"] if type(x) == dict else None)
+
+        prs_per_img_idx_da = xr.DataArray(
+            [prs_per_img_idx_pred_df, prs_per_img_idx_reason_df, prs_per_img_idx_score_df],
+            coords=[["pred", "reason", "score"], prs_per_img_idx_df.index, prs_per_img_idx_df.columns],
+            dims=["metric", "img_idx", "pos_class"]
+        ).transpose("img_idx", "pos_class", "metric")
+        
+        if data_da is None:
+            coords = [var_names, prs_per_img_idx_df.index, prs_per_img_idx_df.columns, ["pred", "score", "reason"]] # indexes names
+            sorted_coords = [sorted(dim_values) for dim_values in coords]
+            dims = ["var", "img_idx", "pos_class", "metric"] # dimensions names
+            shape = [len(l) for l in sorted_coords]
+            data_da = xr.DataArray(np.empty(shape, dtype=object), coords=sorted_coords, dims=dims)
+
+        data_da.loc[var_n] = prs_per_img_idx_da
+
+    return data_da
 
 def main() -> None:
-    pass
+    da = create_empty_dataarray({"n": [0, 2, 5], "type": ["a", "b"]})
+    da.loc[0, "a"] = 4
+    print(da)
 
 if __name__ == "__main__":
     main()

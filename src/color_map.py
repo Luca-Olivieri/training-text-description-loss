@@ -6,6 +6,8 @@ from data import CLASSES, NUM_CLASSES
 from utils import DEVICE
 import io
 
+from config import *
+
 import torch
 from torchvision.utils import draw_segmentation_masks
 from torchvision.transforms.functional import to_pil_image

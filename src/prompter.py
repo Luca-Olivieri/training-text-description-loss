@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import pformat as pf
 
+from config import *
 from color_map import *
 from utils import *
 from data import *
@@ -365,7 +366,7 @@ class PromptBuilder():
         prs_path = get_mask_prs_path(self.by_model)
         sc = to_pil_image(get_sc(SCS_PATH / (image_UIDs[idx] + ".jpg"), image_size_))
         gt = apply_colormap(get_gt(GTS_PATH / (image_UIDs[idx] + ".png"), self.class_map, image_size_), self.color_map)
-        pr = apply_colormap(get_pr(prs_path / (image_UIDs[idx] + ".png"), self.class_map, image_size_), self.color_map)
+        pr = apply_colormap(get_pr(prs_path / f"mask_pr_{idx}.png", self.class_map, image_size_), self.color_map)
         assert sc.size == gt.size == pr.size
         return sc, gt, pr
 
@@ -431,9 +432,9 @@ class PromptBuilder():
         img_prompts.append(f"Output:")
         if with_answer_gt is True:
             if self.split_by == "non-splitted":
-                answer_gt = get_one_answer_gt(self.by_model, self.split_by, img_idx)[img_idx]
+                answer_gt = get_one_answer_gt(self.by_model, img_idx)[img_idx]
             elif self.split_by == "class-splitted":
-                answer_gt = get_one_sup_set_answer_gt(self.by_model, self.split_by, img_idx)[img_idx]
+                answer_gt = get_one_sup_set_answer_gt(self.by_model, img_idx)[img_idx]
             img_prompts.append(answer_gt) # add target answer if specified
         return flatten_list(img_prompts)
 
@@ -545,33 +546,40 @@ class PromptBuilder():
         class_specific_prompt = [pf.pformat(s, pos_class=significant_class_name) if isinstance(s, str) else s for s in class_specific_prompt]
         return class_specific_prompt
 
-    def build_eval_prompt(self, query_idx, answer_pr):
+    def build_eval_prompt(self, query_idx: int, answer_pr: str) -> Prompt:
         """
         Builds the evaluation prompt (in which the LLM-as-a-Judge evaluates the differencing in textual form).
         """
-        answer_gt = get_one_answer_gt(self.by_model, self.split_by, query_idx)[query_idx]
-        prompt = self.modules_dict["eval"](answer_gt, answer_pr)
+        answer_gt = get_one_answer_gt(self.by_model, query_idx)[query_idx]
+        prompt = [self.modules_dict["eval"](answer_gt, answer_pr)]
         return prompt
     
-    def build_class_splitted_inference_prompts(self, query_idx, return_significant_classes):
+    def build_class_splitted_inference_prompts(
+            self,
+            query_idx: int
+    ) -> dict[int, list[str]]:
         """
         Builds a list of full inference prompts for a given 'query_idx' split by class masks. 
         Each inference prompt masks only consider one class at a time.
         """
         # TODO: if the masks only have BACKGROUND class, there might be an error when trying to build the prompt.
         significant_classes_gt = get_significant_classes(GTS_PATH / (image_UIDs[query_idx] + ".png"), self.image_size, self.class_map)
-        significant_classes_pr = get_significant_classes(get_mask_prs_path(self.by_model) / (image_UIDs[query_idx] + ".png"), self.image_size, self.class_map)
+        significant_classes_pr = get_significant_classes(get_mask_prs_path(self.by_model) / (f"mask_pr_{query_idx}.png"), self.image_size, self.class_map)
         significant_classes = sorted(list(set(significant_classes_gt + significant_classes_pr))) # all appearing classes
-        class_splitted_prompts = []
-        for class_ in significant_classes:
-            class_specific_prompt = self.build_class_specific_inference_prompt(query_idx, class_)
-            class_splitted_prompts.append(class_specific_prompt)
-        if return_significant_classes:
-            return class_splitted_prompts, significant_classes
-        else:
-            return class_splitted_prompts
+        class_splitted_prompts = {}
+        for pos_class in significant_classes:
+            class_specific_prompt = self.build_class_specific_inference_prompt(query_idx, pos_class)
+            class_splitted_prompts[pos_class] = class_specific_prompt
+        return class_splitted_prompts
+    
+    # TODO implement this method to be as fast as possible when the segNet is training.
+    def build_class_splitted_inference_prompts_fixed(
+            self,
+            query_idx: int
+    ) -> dict[int, list[str]]:
+        pass
 
-    def build_class_splitted_eval_prompt(self, query_idx, pos_class_2_answer_pr):
+    def build_class_splitted_eval_prompt(self, query_idx, pos_class_2_answer_pr) -> dict[int, str]:
         """
         Builds a list of full evaluation prompts for a given 'query_idx' split by class masks. 
         Each evaluation prompt masks only consider one class at a time.
@@ -580,8 +588,15 @@ class PromptBuilder():
         significant_classes = pos_class_2_answer_pr.keys()
         class_splitted_answer_pr = pos_class_2_answer_pr.values()
         for pos_class, answer_pr in zip(significant_classes, class_splitted_answer_pr):
-            pos_class_2_eval_prompt[pos_class] = pf.pformat(self.build_eval_prompt(query_idx, answer_pr), pos_class=CLASSES[pos_class])
+            pos_class = int(pos_class)
+            pos_class_2_eval_prompt[pos_class] = [pf.pformat(self.build_eval_prompt(query_idx, answer_pr)[0], pos_class=CLASSES[pos_class])]
         return pos_class_2_eval_prompt
+    
+def save_formatted_images(promptBuilder: PromptBuilder, img_idxs: Tuple[int]) -> None:
+    for img_idx in img_idxs:
+        sc, gt, pr = promptBuilder.read_sc_gt_pr(img_idx, promptBuilder.image_size)
+        formatted_image = _format_images(sc, gt, pr, img_idx, promptBuilder.layout, promptBuilder.scene_mode, promptBuilder.align, promptBuilder.alpha)[0]
+        formatted_image.save(LOCAL_ANNOT_IMGS_PATH / f"annot_image_{img_idx}.png") 
 
 if __name__ == "__main__":
 
@@ -591,7 +606,7 @@ if __name__ == "__main__":
         by_model            = "LRASPP_MobileNet_V3",
         alpha               = 0.8,
         split_by            = "class-splitted",
-        image_size          = (520, 520),
+        image_size          = 520,
         array_size          = (32, 32),
         class_map           = CLASS_MAP, # imported from 'class_map.py'
         color_map           = COLOR_MAP_DICT,
