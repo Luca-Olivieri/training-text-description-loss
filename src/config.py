@@ -12,8 +12,8 @@ random.seed(get_seed())
 
 # Path #
 
-ROOT_PATH = Path("/home/olivieri/exp").resolve() # outer-most project path
-CONFIG_PATH =  ROOT_PATH / "config"
+BASE_PATH = Path("/home/olivieri/exp").resolve() # outer-most project path
+CONFIG_PATH =  BASE_PATH / "config"
 
 # Environmental Variables #
 

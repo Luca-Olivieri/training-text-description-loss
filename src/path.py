@@ -5,22 +5,22 @@ from config import *
 
 ### Constant Paths ###
 
-SRC_PATH =  ROOT_PATH / "src"
-PRIVATE_DATASETS_PATH = ROOT_PATH / "data"
-MISC_PATH = ROOT_PATH / "misc"
+SRC_PATH =  BASE_PATH / "src"
+PRIVATE_DATASETS_PATH = BASE_PATH / "data"
+MISC_PATH = BASE_PATH / "misc"
 
 MODEL_WEIGHTS_ROOT = PRIVATE_DATASETS_PATH / "torch_weights"
 torch.hub.set_dir(MODEL_WEIGHTS_ROOT) # set local model weights directory
 # os.environ["HF_HOME"] = str(PRIVATE_DATASETS_PATH / "huggingface_hub") # HuggingFace Hub Directory
 
 VOC_PATH = PRIVATE_DATASETS_PATH / "VOCdevkit/VOC2012"
-MY_DATA_PATH = ROOT_PATH / "my_data"
+MY_DATA_PATH = BASE_PATH / "my_data"
 SPLITS_PATH = VOC_PATH / "ImageSets/Segmentation"
 
 SCS_PATH = VOC_PATH / "JPEGImages"
 GTS_PATH = VOC_PATH / "SegmentationClass"
 
-LOCAL_ANNOT_IMGS_PATH = ROOT_PATH / "annot_images"
+LOCAL_ANNOT_IMGS_PATH = BASE_PATH / "annot_images"
 
 def get_selected_model_path(by_model: str) -> Path:
     return MY_DATA_PATH / "by_model" / by_model
