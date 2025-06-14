@@ -1,0 +1,3 @@
+{"img_idx": 2, "content": "The boundaries of the ground truth TVMONITOR region are more imprecise and irregular."}
+{"img_idx": 16, "content": "The ground truth AEROPLANE region has been segmented quite well by the prediction, but the boundaries are imprecise and less defined."}
+{"img_idx": 18, "content": "The prediction mask of the ground truth HORSE region is decent, but rougher, more irregular, some area within the region has been over-segmented and some area has been under-segmented on the bottom-left."}

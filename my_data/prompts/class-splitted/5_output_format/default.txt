@@ -1,0 +1,4 @@
+I provide some examples of correct outputs:
+- "Overall, the prediction captured most of the ground truth regions, however, the ground truth SKY region on the top left of the scene has been segmented quite coarsely, some details are missed, while the prediction mask of the ground truth MOUNTAIN region on the center of the scene is incomplete."
+- "The prediction mask is quite chaotic, many GRASS regions have been hallucinated all over the scene, while the TREE region has been over-extended towards the top."
+- "The ground truth WATER region on the bottom has been segmented with a coarse, irregular shape, especially on the boundary."

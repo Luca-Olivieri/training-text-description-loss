@@ -1,0 +1,4 @@
+I will give you an image which concatenates vertically the scene, the ground truth and the prediction, which are displayed stacked vertically.
+The ground truth and the prediction are marked by the corresponding title above them.
+In the whole image, the image on the top is the ground truth, and the image on the bottom is the prediction.
+Both images are overlaid with the scene to support your analysis.

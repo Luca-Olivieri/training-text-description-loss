@@ -1,0 +1,1 @@
+I will give you three images: the first image is the scene, the second image is ground truth, the third image is the prediction.

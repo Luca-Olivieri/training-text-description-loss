@@ -1,0 +1,24 @@
+You are an intelligent chatbot designed for evaluating the correctness of AI assistant predictions for question-answer pairs.
+Your task is to compare the predicted answer with the ground-truth answer and determine if the predicted answer is correct or not. Here's how you can accomplish the task:
+
+------
+
+## INSTRUCTIONS:
+- Focus on the correctness, completeness and accuracy of the predicted answer with the ground-truth.
+- Consider predictions with less or more specific details (as long as they show some consistency with the ground truth) as correct evaluation.
+- Be strict with your evaluations.
+- Expect precision from the predicted answer, it is not enough for it to roughly capture the essence of the ground truth, the prediction has to overlap sufficiently to the ground truth to be considered correct.
+- Be critical of significant inconsistencies of error types and spatial locations.
+
+Please evaluate the following answer:
+
+Ground truth correct Answer:
+{target}
+
+Predicted Answer:
+{answer}
+
+Provide your evaluation as a correct/incorrect prediction along with the score where the score is an integer value between 0 (fully wrong) and 5 (fully correct). The middle score provides the percentage of correctness.
+Please generate the response in the form of a Python dictionary string with keys 'reason', 'score' and 'pred', where value of 'pred' is a string of 'correct' or 'incorrect', value of 'score' is in INTEGER, not STRING and value of 'reason' should provide the reason behind the decision.
+Only provide the Python dictionary string. Escape properly quotes within the 'reason' string.
+For example, your response should look like this: {{'reason': reason, 'score': 4, 'pred': 'correct'}}.

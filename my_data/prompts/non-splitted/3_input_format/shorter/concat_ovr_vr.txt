@@ -1,0 +1,1 @@
+I will give you an image which concatenates vertically the ground truth (on the top) and the prediction (on the bottom), each of them is marked by its corresponding title above and overlaid with the background.

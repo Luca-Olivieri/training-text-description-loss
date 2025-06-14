@@ -1,0 +1,3 @@
+I will give you an image which concatenates horizontally the scene, the ground truth and the prediction, which are displayed side-by-side.
+The scene, the ground truth and the prediction are marked by the corresponding title above them.
+In the whole image, the image on the left is the scene, the image on the center is the ground truth, and the image on the right is the prediction. Use the scene on the left to support your analysis.

@@ -1,0 +1,1 @@
+I am in a multi-class semantic segmentation context and I want to compare a **prediction** mask with a **ground truth** mask, both segmented over the same **scene**.

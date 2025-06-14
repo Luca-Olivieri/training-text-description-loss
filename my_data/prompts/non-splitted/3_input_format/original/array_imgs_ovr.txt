@@ -1,0 +1,2 @@
+I will give you the ground truth and the prediction masks both in form of images overlaid with the scene as well as NumPy arrays of shape (H, W), in which each coordinate corresponds to the class identifier of the class assigned to that pixel.
+The first overlaid image and NumPy array pair encodes the ground truth, the second one encodes the prediction.
