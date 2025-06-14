@@ -21,6 +21,8 @@ gen-lang-client-0021813944-33af2e4f8465.json
 tb_files/
 logs/
 
+# Data folder
+data
 
 # VS Code
 .devcontainer/*
