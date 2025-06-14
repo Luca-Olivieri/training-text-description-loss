@@ -99,7 +99,7 @@ fi
 
 # Prefix IMAGE_NAME with the username
 # CONTAINER_NAME=$(whoami)_{$IMAGE_NAME}_$(date +%Y%m%d)
-CONTAINER_NAME=$(whoami)_${IMAGE_NAME}_GPU${GPU_DEVICE}_$(date +%F_%H.%M)
+CONTAINER_NAME=$(whoami)_${IMAGE_NAME}_GPU${GPU_DEVICE//,/.}_$(date +%F_%H.%M)
 
 echo "WORKING_DIR     = ${WORKING_DIR}"
 echo "GPU_DEVICE      = ${GPU_DEVICE}"
@@ -110,7 +110,9 @@ echo "PORT            = ${PORT}"
 echo "Running docker in interactive mode"
 
 docker_args=(
-	-d --rm -it --gpus "device=${GPU_DEVICE}" \
+	-d --rm -it
+	# --gpus "device=${GPU_DEVICE}" \
+	--gpus "\"device=${GPU_DEVICE}\""
 	--cpuset-cpus ${CPU_SET} \
 	--mount type=bind,source=${CODE_FOLDER},target=${WORKING_DIR} \
 	--mount type=bind,source=${PRIVATE_DATASET_FOLDER},target=${WORKING_DIR}/data \
@@ -120,6 +122,7 @@ docker_args=(
 	-e HOST_UID=$(id -u) \
 	-e HOST_GID=$(id -g) \
 	--name ${CONTAINER_NAME}
+	--network olivieri_net
 )
 
 docker run ${docker_args[@]} $(whoami)/${IMAGE_NAME}:${TAG}

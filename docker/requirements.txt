@@ -11,9 +11,12 @@ matplotlib
 opencv-python
 google-genai
 pandas
+ollama
+seaborn
 
 # IPy notebooks
 ipykernel
+ipywidgets
 notebook
 
 # PyTorch dependencies
