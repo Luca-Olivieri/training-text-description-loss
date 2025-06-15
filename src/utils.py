@@ -10,7 +10,7 @@ import time
 import functools
 import tracemalloc
 import asyncio
-from typing import Callable, Sequence, TypeVar, Any, Tuple
+from typing import Callable, Sequence, TypeVar, Any
 import numpy as np
 import xarray as xr
 import pandas as pd
@@ -20,17 +20,17 @@ from typing import Any, TypeVar, Optional
 from PIL import Image
 from PIL.Image import Image as PILImage
 
-from path import PRIVATE_DATASETS_PATH
 from config import *
+from path import PRIVATE_DATASETS_PATH
 
 # Type annotations
-from abc import ABC, abstractmethod
+from abc import ABC
 Prompt = list[str | PILImage]
 Conversation = list[dict[str, str]]
 GenericClient = TypeVar
 GenericResponse = TypeVar
 
-def download_VOC2012():
+def download_VOC2012() -> None:
     VOCSegmentation(root=PRIVATE_DATASETS_PATH, image_set='trainval', download=True)
     
 ### Devices ###
@@ -128,7 +128,7 @@ def track_performance(n_trials: int = 10) -> Callable:
             start_time = time.perf_counter()
             return start_time
         
-        def shared_epilogue(t_0: float) -> Tuple[float]:
+        def shared_epilogue(t_0: float) -> tuple[float]:
             end_time = time.perf_counter()
             elapsed_time = end_time - t_0 # seconds
             current_memory, peak_memory = tracemalloc.get_traced_memory()
@@ -140,7 +140,7 @@ def track_performance(n_trials: int = 10) -> Callable:
             return elapsed_time, current_memory / (1024 * 1024), peak_memory / (1024 * 1024)
 
         @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs) -> Tuple[Any, pd.DataFrame]:
+        async def async_wrapper(*args, **kwargs) -> tuple[Any, pd.DataFrame]:
             perf_da = create_empty_dataarray({"trial": range(n_trials), "metric": ["exec_time", "curr_mem", "peak_mem"]})
             for trial in range(n_trials):
                 t_0 = shared_prologue()
@@ -152,7 +152,7 @@ def track_performance(n_trials: int = 10) -> Callable:
             return result, perf_da
 
         @functools.wraps(func)
-        def sync_wrapper(*args, **kwargs) -> Tuple[Any, pd.DataFrame]:
+        def sync_wrapper(*args, **kwargs) -> tuple[Any, pd.DataFrame]:
             perf_da = create_empty_dataarray({"trial": range(n_trials), "metric": ["exec_time", "curr_mem", "peak_mem"]})
             for trial in range(n_trials):
                 t_0 = shared_prologue()

@@ -592,7 +592,7 @@ class PromptBuilder():
             pos_class_2_eval_prompt[pos_class] = [pf.pformat(self.build_eval_prompt(query_idx, answer_pr)[0], pos_class=CLASSES[pos_class])]
         return pos_class_2_eval_prompt
     
-def save_formatted_images(promptBuilder: PromptBuilder, img_idxs: Tuple[int]) -> None:
+def save_formatted_images(promptBuilder: PromptBuilder, img_idxs: tuple[int]) -> None:
     for img_idx in img_idxs:
         sc, gt, pr = promptBuilder.read_sc_gt_pr(img_idx, promptBuilder.image_size)
         formatted_image = _format_images(sc, gt, pr, img_idx, promptBuilder.layout, promptBuilder.scene_mode, promptBuilder.align, promptBuilder.alpha)[0]

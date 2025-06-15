@@ -3,7 +3,6 @@ import webcolors
 from PIL import Image
 import matplotlib.pyplot as plt
 from data import CLASSES, NUM_CLASSES
-from typing import Tuple
 from utils import DEVICE
 import io
 
@@ -61,7 +60,7 @@ def _full_color_map(
     cmap = cmap/255 if normalized else cmap
     return cmap
 
-def get_color_map_dict() -> dict[int, Tuple[int, int, int]]:
+def get_color_map_dict() -> dict[int, tuple[int, int, int]]:
     """Gets the color map as dictionary {cls_idx: (r, g, b)} for the 21 VOC classes.
 
     Returns:
@@ -191,7 +190,10 @@ def get_color_map_as(format: str):
     fn = format2fn[format]
     return fn()
 
-def apply_colormap(mask: torch.Tensor, color_map: dict[int, tuple[int, int, int]]) -> Image.Image:
+def apply_colormap(
+        mask: torch.Tensor,
+        color_map: dict[int, tuple[int, int, int]]
+) -> Image.Image:
     """Receives a tensor of shape [C, H, W] and returns a PIL Image with the color map applied.
 
     Args:

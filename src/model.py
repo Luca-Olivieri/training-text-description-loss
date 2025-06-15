@@ -118,7 +118,7 @@ class MLLM(ABC):
             system_prompt: str = None,
             only_text: bool = False,
             parse_to_dict: bool = False,
-    ) -> Tuple[int, Any]:
+    ) -> tuple[int, Any]:
         
         conv = self.convert_prompt_to_conv(query_prompt, system_prompt)
         
@@ -141,7 +141,7 @@ class MLLM(ABC):
             system_prompt: Optional[str] = None,
             only_text: bool = False,
             parse_to_dict: bool = False,
-    ) -> list[Tuple[int, GenericResponse]]:
+    ) -> list[tuple[int, GenericResponse]]:
         
         convs = [self.convert_prompt_to_conv(
             inf_p,
@@ -169,7 +169,7 @@ class MLLM(ABC):
             parse_to_dict: bool = False,
             batch_size: Optional[int] = None,
             cooldown_period: float = 0.0
-    ) -> list[Tuple[int, GenericResponse]]:
+    ) -> list[tuple[int, GenericResponse]]:
         epoch_answer_list = []
         if batch_size is not None:
             zipped_query_batches = batch_list(zip(query_idxs, query_prompts), batch_size)
@@ -264,7 +264,7 @@ class MLLM(ABC):
             only_text: bool = False,
             parse_to_dict: bool = False,
             splits_in_parallel: bool = True
-    ) -> list[Tuple[int, GenericResponse]]:
+    ) -> list[tuple[int, GenericResponse]]:
         tasks = [self.predict_one_class_splitted(
             q_p_splitted,
             query_idx=img_idx,
