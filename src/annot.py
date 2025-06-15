@@ -1,13 +1,20 @@
+"""
+This module provides utilities for interacting with Google Drive and Google Docs to automate the process of creating annotation documents with images and prompts.
+It includes functions for uploading images, inserting content into Google Docs, and extracting table data from documents.
+"""
+
 from config import GDRIVE_ANNOT_IMGS_PATH
 from data import get_many_answer_gt, get_many_answer_pr, get_one_answer_pr
 from path import CONFIG_PATH, LOCAL_ANNOT_IMGS_PATH
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2 import service_account
-from typing import List, Tuple
+from typing import List, Tuple, Optional, TypeVar
 from pathlib import Path
 import re
 import time
+
+ImageMediaMetadata = TypeVar
 
 from prompter import PromptBuilder
 from config import *
@@ -28,11 +35,35 @@ creds = service_account.Credentials.from_service_account_file(
 docs_service = build('docs', 'v1', credentials=creds)
 drive_service = build('drive', 'v3', credentials=creds)
 
-def get_image_from_gdrive(file_id: str, fields: str = "id, name, imageMediaMetadata"):
+def get_image_from_gdrive(
+        file_id: str,
+        fields: str = "id, name, imageMediaMetadata"
+):
+    """
+    Fetches metadata for an image file from Google Drive.
+
+    Args:
+        file_id: The ID of the file in Google Drive.
+        fields: The fields to retrieve from the file metadata.
+
+    Returns:
+        The file metadata as returned by the Drive API.
+    """
     file = drive_service.files().get(fileId=file_id, fields=fields).execute()
     return file
 
-def list_file_ids_in_folder(folder_id: str) -> list[str]:
+def list_file_ids_in_folder(
+        folder_id: str
+) -> list[Tuple[str, str, ImageMediaMetadata]]:
+    """
+    Fetches file IDs, names, and metadata for all files in a Google Drive folder, sorted by file name.
+
+    Args:
+        folder_id: The ID of the folder in Google Drive.
+
+    Returns:
+        List of tuples (name, id, imageMediaMetadata) for each file.
+    """
     query = f"'{folder_id}' in parents and trashed = false"
     results = drive_service.files().list(
         q=query,
@@ -49,7 +80,22 @@ def list_file_ids_in_folder(folder_id: str) -> list[str]:
     sorted_files = sorted([(f['name'], f['id'], f['imageMediaMetadata']) for f in files], key=lambda x: extract_number(x[0]))
     return sorted_files
 
-def upload_local_image_to_gdrive(local_root_path: Path, gdrive_dir_id: str, name: str) -> str:
+def upload_local_image_to_gdrive(
+        local_root_path: Path,
+        gdrive_dir_id: str,
+        name: str
+) -> str:
+    """
+    Uploads a local image to a Google Drive folder and makes it publicly viewable.
+
+    Args:
+        local_root_path: The local directory containing the image.
+        gdrive_dir_id: The ID of the Google Drive folder.
+        name: The name to assign to the uploaded image (without extension).
+
+    Returns:
+        The file metadata of the uploaded image.
+    """
     file_metadata = {
         'name': name,
         'parents': [gdrive_dir_id],
@@ -66,7 +112,20 @@ def upload_local_image_to_gdrive(local_root_path: Path, gdrive_dir_id: str, name
 
     return file
 
-def upload_local_images_to_gdrive(img_idxs: list[int], gdrive_dir_id: str) -> list[str]:
+def upload_local_images_to_gdrive(
+        img_idxs: list[int],
+        gdrive_dir_id: str
+) -> list[str]:
+    """
+    Uploads multiple local images to a Google Drive folder.
+
+    Args:
+        img_idxs: List of image indices to upload.
+        gdrive_dir_id: The ID of the Google Drive folder.
+
+    Returns:
+        List of file IDs for the uploaded images.
+    """
     file_ids = []
     for img_idx in img_idxs:
         name = f"annot_image_{img_idx}"
@@ -74,10 +133,26 @@ def upload_local_images_to_gdrive(img_idxs: list[int], gdrive_dir_id: str) -> li
         file_ids.append(file['id'])
     return file_ids
 
-def delete_file_from_gdrive(file_id: str) -> None:
+def delete_file_from_gdrive(
+        file_id: str
+) -> None:
+    """
+    Deletes a file from Google Drive by its file ID.
+
+    Args:
+        file_id: The ID of the file to delete.
+    """
     drive_service.files().delete(fileId=file_id).execute()
 
-def append_page_break_to_gdoc(gdoc_id: str) -> None:
+def append_page_break_to_gdoc(
+        gdoc_id: str
+) -> None:
+    """
+    Appends a page break to the end of a Google Doc.
+
+    Args:
+        gdoc_id: The ID of the Google Doc.
+    """
     # Get the current document to get the end index
     doc = docs_service.documents().get(documentId=gdoc_id).execute()
 
@@ -94,7 +169,19 @@ def append_page_break_to_gdoc(gdoc_id: str) -> None:
     # Execute the request to insert the page break
     docs_service.documents().batchUpdate(documentId=gdoc_id, body={'requests': [page_break_request]}).execute()
 
-def append_text_to_gdoc(gdoc_id: str, text: str, paragraph_style: str) -> None:
+def append_text_to_gdoc(
+        gdoc_id: str,
+        text: str,
+        paragraph_style: str
+) -> None:
+    """
+    Appends styled text to a Google Doc.
+
+    Args:
+        gdoc_id: The ID of the Google Doc.
+        text: The text to insert.
+        paragraph_style: The named style type for the paragraph.
+    """
 
     par_styles = ["NORMAL_TEXT", "TITLE", "SUBTITLE", "HEADING_1", "HEADING_2", "HEADING_3", "HEADING_4", "HEADING_5", "HEADING_6"]
 
@@ -132,7 +219,17 @@ def append_text_to_gdoc(gdoc_id: str, text: str, paragraph_style: str) -> None:
 
     docs_service.documents().batchUpdate(documentId=gdoc_id, body={'requests': [insert_request, style_request]}).execute()
 
-def append_bulleted_list_to_gdoc(gdoc_id: str, text_list: list) -> None:
+def append_bulleted_list_to_gdoc(
+        gdoc_id: str,
+        text_list: list
+) -> None:
+    """
+    Appends a bulleted (numbered) list to a Google Doc.
+
+    Args:
+        gdoc_id: The ID of the Google Doc.
+        text_list: List of strings to include as bullet points.
+    """
     # Get the document to find the current end
     doc = docs_service.documents().get(documentId=gdoc_id).execute()
     end_index = doc['body']['content'][-1]['endIndex']
@@ -184,7 +281,19 @@ def append_bulleted_list_to_gdoc(gdoc_id: str, text_list: list) -> None:
     # Ensure the next text is inserted after the current text
     end_index += 1  # Insert a newline between text items
 
-def append_image_to_gdoc(gdoc_id: str, image_id: str, image_size: None | Tuple = None) -> None:
+def append_image_to_gdoc(
+        gdoc_id: str,
+        image_id: str,
+        image_size: Optional[Tuple] = None
+) -> None:
+    """
+    Appends an image from Google Drive to a Google Doc.
+
+    Args:
+        gdoc_id: The ID of the Google Doc.
+        image_id: The ID of the image in Google Drive.
+        image_size: Optional (height, width) in points. If None, uses default width.
+    """
     
     image_metadata = get_image_from_gdrive(image_id)["imageMediaMetadata"]
     aspect_ratio = image_metadata["height"] / image_metadata["width"]
@@ -216,7 +325,19 @@ def append_image_to_gdoc(gdoc_id: str, image_id: str, image_size: None | Tuple =
 
     append_text_to_gdoc(gdoc_id, "\n", "NORMAL_TEXT")
 
-def append_table_to_gdoc(gdoc_id: str, num_rows: int, num_columns: int) -> None:
+def append_table_to_gdoc(
+        gdoc_id: str,
+        num_rows: int,
+        num_columns: int
+) -> None:
+    """
+    Appends a table to a Google Doc.
+
+    Args:
+        gdoc_id: The ID of the Google Doc.
+        num_rows: Number of rows in the table.
+        num_columns: Number of columns in the table.
+    """
     # Get the current document to get the end index
     doc = docs_service.documents().get(documentId=gdoc_id).execute()
 
@@ -235,12 +356,36 @@ def append_table_to_gdoc(gdoc_id: str, num_rows: int, num_columns: int) -> None:
     # Execute the request to insert the table
     docs_service.documents().batchUpdate(documentId=gdoc_id, body={'requests': [table_request]}).execute()
 
-def write_intro_to_gdoc(gdoc_id: str, intro: str, name: str) -> None:
+def write_intro_to_gdoc(
+        gdoc_id: str,
+        intro: str,
+        name: str
+) -> None:
+    """
+    Writes the introduction section to a Google Doc, including a title and page break.
+
+    Args:
+        gdoc_id: The ID of the Google Doc.
+        intro: The introduction text.
+        name: The name to include in the title.
+    """
     append_text_to_gdoc(gdoc_id, f"Annotation Form ({name})\n", "TITLE")
     append_text_to_gdoc(gdoc_id, intro, "NORMAL_TEXT")
     append_page_break_to_gdoc(gdoc_id)
 
-def write_prompt_to_gdoc(gdoc_id: str, prompt: List, img_ids_sizes: List[Tuple]) -> None:
+def write_prompt_to_gdoc(
+        gdoc_id: str,
+        prompt: List,
+        img_ids_sizes: List[Tuple]
+) -> None:
+    """
+    Writes a prompt (text and images) to a Google Doc, followed by a page break.
+
+    Args:
+        gdoc_id: The ID of the Google Doc.
+        prompt: List of prompt elements (strings or image placeholders).
+        img_ids_sizes: List of (image_id, image_size) tuples for images in the prompt.
+    """
     img_counter: int = 0
     for piece in prompt:
         if isinstance(piece, str):
@@ -251,7 +396,21 @@ def write_prompt_to_gdoc(gdoc_id: str, prompt: List, img_ids_sizes: List[Tuple])
             img_counter += 1
     append_page_break_to_gdoc(gdoc_id)
 
-def write_query_prompt(gdoc_id: str, query_n: int, img_id: str, example_answers: List[str]) -> None:
+def write_query_prompt(
+        gdoc_id: str,
+        query_n: int,
+        img_id: str,
+        example_answers: List[str]
+) -> None:
+    """
+    Writes a single prompt in the Google document of a certain recipient.
+
+    Args:
+        gdoc_id: The ID of the Google Doc.
+        query_n: The query number for the internal enumeration.
+        img_id: The image ID in Google Drive.
+        example_answers: The example answers to provide for assistance.
+    """
     append_text_to_gdoc(gdoc_id, f"Query id. {query_n}\n", "TITLE")
     append_image_to_gdoc(gdoc_id, img_id)
     append_text_to_gdoc(gdoc_id, f"Your annotation:", "SUBTITLE")
@@ -260,7 +419,21 @@ def write_query_prompt(gdoc_id: str, query_n: int, img_id: str, example_answers:
     append_bulleted_list_to_gdoc(gdoc_id, [f"\"{a.strip()}\"" for a in example_answers])
     append_page_break_to_gdoc(gdoc_id)
 
-def write_annot_doc(gdoc_id: str, recipient: str, query_idxs: List[int], promptBuilder: PromptBuilder):
+def write_annot_doc(
+        gdoc_id: str,
+        recipient: str,
+        query_idxs: List[int],
+        promptBuilder: PromptBuilder
+) -> None:
+    """
+    Writes prompts in the Google document of a certain recipient.
+
+    Args:
+        gdoc_id: The ID of the Google Doc.
+        recipient: The person to which the document is given.
+        query_idxs: The indices of the images to include in the prompts.
+        promptBuilder: The PromptBuilder instance.
+    """
     write_intro_to_gdoc(gdoc_id, INTRO, recipient)
     inference_prompt = promptBuilder.build_inference_prompt(0)
     cmap_size_pt = (100*5, 157*5)
@@ -276,10 +449,11 @@ def write_annot_doc(gdoc_id: str, recipient: str, query_idxs: List[int], promptB
         ex_3 = get_one_answer_pr(promptBuilder.by_model, promptBuilder.split_by, f"examples_for_annots/ArrayMasks_Imgs_Ovr", query_idx)[query_idx]
         write_query_prompt(gdoc_id, query_idx, img_ids[query_idx], [ex_1, ex_2, ex_3])
 
-def extract_table_content_from_gdoc(gdoc_id: str) -> List[str]:
+def extract_table_content_from_gdoc(
+        gdoc_id: str
+) -> List[str]:
     """
-    Extracts the textual content from all tables in a Google Doc,
-    assuming each table contains a single cell.
+    Extracts the textual content from all tables in a Google Doc, assuming each table contains a single cell.
 
     Args:
         gdoc_id: The ID of the Google Doc.
