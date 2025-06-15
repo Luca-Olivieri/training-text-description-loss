@@ -41,7 +41,7 @@ class GenParams(DictObject):
             answer_format: Optional[str | Dict[str, str]] = None
     ) -> None:
         """
-        Initialize GenParams with optional generation parameters.
+        Initializea GenParams with optional generation parameters.
 
         Args:
             seed: Random seed for generation.
@@ -78,7 +78,7 @@ class Response(DictObject):
             num_tokens: Optional[int] = None
     ) -> None:
         """
-        Initialize a Response object.
+        Initializes a Response object.
 
         Args:
             text: The response text.
@@ -93,13 +93,13 @@ class MLLM(ABC):
     """
     def __init__(self) -> None:
         """
-        Initialize the MLLM base class and set up the client.
+        Initializes the MLLM base class and set up the client.
         """
         self.client = self.get_client()
     
     def get_client(self) -> GenericClient:
         """
-        Return the client for the model. Override in subclasses.
+        Returns the client for the model. Override in subclasses.
 
         Returns:
             The client object or None.
@@ -113,7 +113,7 @@ class MLLM(ABC):
         system_prompt: str,
     ) -> Conversation:
         """
-        Convert user and system prompts to a conversation format.
+        Converts user and system prompts to a conversation format.
 
         Args:
             user_prompt: List of user prompt strings or images.
@@ -132,7 +132,7 @@ class MLLM(ABC):
         stream: bool = False
     )-> Response | AsyncGenerator[Response, None]:
         """
-        Generate a response to a conversation.
+        Generates a response to a conversation.
 
         Args:
             conversation: The conversation object.
@@ -150,7 +150,7 @@ class MLLM(ABC):
             gen_params: GenParams,
     ) -> list[Response]:
         """
-        Generate responses for a batch of conversations.
+        Generates responses for a batch of conversations.
 
         Args:
             conversations: List of conversation prompts.
@@ -179,7 +179,7 @@ class MLLM(ABC):
             parse_to_dict: bool = False,
     ) -> tuple[int, Any]:
         """
-        Predict a response for a single prompt.
+        Predicts a response for a single prompt.
 
         Args:
             query_prompt: The prompt to predict for.
@@ -216,7 +216,7 @@ class MLLM(ABC):
             parse_to_dict: bool = False,
     ) -> list[tuple[int, GenericResponse]]:
         """
-        Predict responses for a batch of prompts.
+        Predicts responses for a batch of prompts.
 
         Args:
             query_prompts: List of prompts.
@@ -258,7 +258,7 @@ class MLLM(ABC):
             cooldown_period: float = 0.0
     ) -> list[tuple[int, GenericResponse]]:
         """
-        Predict responses for many prompts, optionally in batches.
+        Predicts responses for many prompts, optionally in batches.
 
         Args:
             query_prompts: List of prompts.
@@ -327,7 +327,7 @@ class MLLM(ABC):
             splits_in_parallel: bool = True,
     ) -> dict:
         """
-        Predict for a single prompt with class splits.
+        Predicts for a single prompt with class splits.
 
         Args:
             class_splitted_query_prompt: Dictionary of class to prompt list.
@@ -385,7 +385,7 @@ class MLLM(ABC):
             splits_in_parallel: bool = True
     ) -> list[tuple[int, GenericResponse]]:
         """
-        Predict for a batch of class-splitted prompts.
+        Predicts for a batch of class-splitted prompts.
 
         Args:
             class_splitted_query_prompts: List of class-splitted prompts.
@@ -425,7 +425,7 @@ class MLLM(ABC):
             cooldown_period: float = 0.0
     ) -> list[dict]:
         """
-        Predict for many class-splitted prompts, optionally in batches.
+        Predicts for many class-splitted prompts, optionally in batches.
 
         Args:
             class_splitted_query_prompts: List of class-splitted prompts.
@@ -498,7 +498,7 @@ class MLLM(ABC):
             parse_to_dict: Optional[bool] = False,
     ) -> dict:
         """
-        Evaluate a single class-splitted prompt.
+        Evaluates a single class-splitted prompt.
 
         Args:
             class_splitted_eval_prompt: Dictionary of class to prompt.
@@ -540,7 +540,7 @@ class MLLM(ABC):
             parse_to_dict: Optional[bool] = False,
     ) -> dict:
         """
-        Evaluate a batch of class-splitted prompts.
+        Evaluates a batch of class-splitted prompts.
 
         Args:
             class_splitted_eval_prompts: List of class-splitted evaluation prompts.
@@ -570,7 +570,7 @@ class MLLM(ABC):
             stream_gen: AsyncGenerator[Response, None]
     ) -> None:
         """
-        Print a streamed response to stdout.
+        Prints a streamed response to stdout.
 
         Args:
             stream_gen: Async generator of Response objects.
@@ -585,7 +585,7 @@ class MLLM(ABC):
             response: Any
     ) -> Response:
         """
-        Adapt a raw model response to a Response object.
+        Adapts a raw model response to a Response object.
 
         Args:
             response: The raw response from the model.
@@ -602,7 +602,7 @@ class MLLM(ABC):
             parse_to_dict: bool = False
     ) -> str | dict[str, Any]:
         """
-        Process a Response object, optionally extracting only text or parsing to dict.
+        Processes a Response object, optionally extracting only text or parsing to dict.
 
         Args:
             response: The Response object.
@@ -630,7 +630,7 @@ class OllamaMLLM(MLLM):
             client: Optional[ollama.AsyncClient] = None
     ) -> None:
         """
-        Initialize OllamaMLLM with model name and optional client.
+        Initializes OllamaMLLM with model name and optional client.
 
         Args:
             model_name: Name of the model.
@@ -645,7 +645,7 @@ class OllamaMLLM(MLLM):
             async_=False
     ) -> ollama.Client:
         """
-        Get an Ollama client instance.
+        Gets an Ollama client instance.
 
         Args:
             host: Host address for the Ollama server.
@@ -663,7 +663,7 @@ class OllamaMLLM(MLLM):
             system_prompt: str
     ) -> Conversation:
         """
-        Convert user and system prompts to Ollama conversation format.
+        Converts user and system prompts to Ollama conversation format.
 
         Args:
             user_prompt: User prompt (string or list).
@@ -701,7 +701,7 @@ class OllamaMLLM(MLLM):
             stream: bool = False,
     ) -> ollama.ChatResponse | Generator[ollama.ChatResponse, None, ollama.ChatResponse] | AsyncGenerator[ollama.ChatResponse, None]:
         """
-        Generate a response using Ollama.
+        Generates a response using Ollama.
 
         Args:
             conversation: Conversation object for Ollama.
@@ -738,7 +738,7 @@ class OllamaMLLM(MLLM):
             response: ollama.ChatResponse
     ) -> Response:
         """
-        Adapt an Ollama ChatResponse to a Response object.
+        Adapts an Ollama ChatResponse to a Response object.
 
         Args:
             response: Ollama ChatResponse object.
@@ -760,7 +760,7 @@ class GoogleAIStudioMLLM(MLLM):
             api_key: str = None
     ) -> None:
         """
-        Initialize GoogleAIStudioMLLM with model name, client, and API key.
+        Initializes GoogleAIStudioMLLM with model name, client, and API key.
 
         Args:
             model_name: Name of the model.
@@ -777,7 +777,7 @@ class GoogleAIStudioMLLM(MLLM):
             api_key: str
     ) -> genai.Client:
         """
-        Get a Google GenAI client instance.
+        Gets a Google GenAI client instance.
 
         Args:
             api_key: API key for authentication.
@@ -794,7 +794,7 @@ class GoogleAIStudioMLLM(MLLM):
             system_prompt: str
     ) -> Prompt:
         """
-        Convert user and system prompts to Google GenAI format.
+        Converts user and system prompts to Google GenAI format.
 
         Args:
             user_prompt: User prompt.
@@ -813,7 +813,7 @@ class GoogleAIStudioMLLM(MLLM):
             stream: bool = False
     ) -> genai_types.GenerateContentResponse | AsyncGenerator[genai_types.GenerateContentResponse, None]:    
         """
-        Generate a response using Google GenAI.
+        Generates a response using Google GenAI.
 
         Args:
             user_prompt: Prompt for Google GenAI.
@@ -845,7 +845,7 @@ class GoogleAIStudioMLLM(MLLM):
             response: genai_types.GenerateContentResponse
     ) -> Response:
         """
-        Adapt a Google GenAI response to a Response object.
+        Adapts a Google GenAI response to a Response object.
 
         Args:
             response: Google GenAI response object.
@@ -877,7 +877,7 @@ class HuggingFaceMLLM(MLLM):
         pass
 
 def main() -> None:
-    """
-    Example main function to instantiate and use an MLLM.
-    """
     pass
+    
+if __name__ == '__main__':
+    main()

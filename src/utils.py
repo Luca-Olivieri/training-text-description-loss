@@ -166,7 +166,7 @@ def track_performance(n_trials: int = 10) -> Callable:
         else:
             return sync_wrapper
         
-
+# TODO Fix this, it does not work, it does not actually retry!
 def retry(
         max_retries: int,
         cooldown_seconds: int | float,
