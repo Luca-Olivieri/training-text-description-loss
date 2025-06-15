@@ -26,7 +26,6 @@ from path import PRIVATE_DATASETS_PATH
 # Type annotations
 from abc import ABC
 Prompt = list[str | PILImage]
-Conversation = list[dict[str, str]]
 GenericClient = TypeVar
 GenericResponse = TypeVar
 
