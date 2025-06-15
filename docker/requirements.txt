@@ -10,6 +10,7 @@ Pillow
 matplotlib
 opencv-python
 google-genai
+google-api-python-client
 pandas
 ollama
 seaborn
