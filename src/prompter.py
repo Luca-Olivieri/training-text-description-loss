@@ -9,15 +9,30 @@ from utils import *
 from data import *
 from path import *
 from copy import deepcopy
+from typing import Self
 
 from torchvision.transforms.functional import to_pil_image
 
 ### Methods ###
 
-def _concat_images_fn(images, titles, scene_mode, align):
+def _concat_images_fn(
+        images: list[Image.Image],
+        titles: list[str],
+        scene_mode: str, 
+        align: str
+) -> Image.Image:
     """
-    Concatenates the images according to the values of the parameters 'scene_mode' and 'align' in various combinations.
+    Concatenates images according to the values of the parameters 'scene_mode' and 'align' in various combinations.
     Some of them mark the images with titles given as parameters.
+
+    Args:
+        images: List of PIL Image objects to concatenate.
+        titles: List of titles for each image.
+        scene_mode: Scene mode string, affects which images are included.
+        align: Alignment direction, either 'horizontal' or 'vertical'.
+
+    Returns:
+        Concatenated PIL Image object.
     """
     # Constants
     border_size = 10  # Space between images
@@ -92,10 +107,31 @@ def _concat_images_fn(images, titles, scene_mode, align):
 
     return concatenated_image
 
-def _format_images(sc, gt, pr, idx, layout, scene_mode, align, alpha):
+def _format_images(
+        sc: Image.Image,
+        gt: Image.Image,
+        pr: Image.Image,
+        idx: int,
+        layout: str,
+        scene_mode: str,
+        align: str,
+        alpha: str
+) -> tuple[Image.Image, Image.Image, Image.Image]:
     """
-    Returns 'sc', 'gt', 'pr' formatted for the prompt.
-    Always return a list [sc, gt, pr].
+    Returns formatted images for the prompt.
+
+    Args:
+        sc: Scene image (PIL Image).
+        gt: Ground truth image (PIL Image).
+        pr: Prediction image (PIL Image).
+        idx: Index of the image.
+        layout: Layout type ('concat', 'separate', 'array').
+        scene_mode: Scene mode string.
+        align: Alignment direction.
+        alpha: Alpha blending value.
+
+    Returns:
+        Tuple of formatted images (sc, gt, pr).
     """
     if scene_mode == "overlay":
         gt = Image.blend(sc, gt, alpha)
@@ -116,123 +152,256 @@ def _format_images(sc, gt, pr, idx, layout, scene_mode, align, alpha):
 
 ### Prompt Modules ###
 
-class PromptModule():
+class PromptModule:
     """
-    This is the base class for the prompt textual modules that, together, form the full prompts.
-    It has to be implemented by the various modules according to their purpose and position in the full prompt.
-    The attributes of the sub-classes can propagated to the class 'PromptBuilder', which uses them through out the building of the prompt.
+    Base class for prompt textual modules that form the full prompts.
+    Subclasses implement their own logic for prompt construction.
+
+    Attributes:
+        prompts_path: Shared path for prompt files.
     """
     prompts_path = None # variable shared among all sub-classes, it has to be initialized externally when building the prompt.
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
         """
-        N.B. The PromperBuilder class inherits all and only the private attributes that are enclosed by '_' (e.g., self._value_ = ...)
+        Initializes the prompt module with a specific variation.
+
+        Args:
+            variation: Name of the prompt variation.
         """
         self.full_path = Path(self.prompts_path / f"{variation}.txt") # full path complete of the prompt variation.
-    def import_variation(self, variation_path):
+    
+    def import_variation(
+            self,
+            variation_path: str
+    ) -> str:
         """
-        This method returns the .txt file found at the path 'prompts_path/content_path'.
-        This is not to be re-implemented.
+        Returns the .txt file found at the path 'prompts_path/content_path'.
+        Not to be re-implemented by subclasses.
+
+        Args:
+            variation_path: Path to the variation file.
+        Returns:
+            String content of the variation file.
         """
         return read_txt(self.full_path)
-    def __call__(self):
+
+    def __call__(self) -> str:
         """
-        This method should return the textual prompt module complete with items to display.
-        It should not read images or re-format them, it should receive the images ready to be inserted in the prompt.
-        Each sub-class re-implements this method accordingly.
+        Returns the textual prompt module complete with items to display.
+        Subclasses should re-implement this method as needed.
         """
         return self.import_variation(self.full_path)
-    def __to_dict__(self):
+    
+    def __to_dict__(self) -> dict:
         """
-        This method should return the module as well as the attributes of the class in a dict.
-        It should not be re-implemented.
+        Returns the module and its attributes as a dictionary.
+        Not to be re-implemented by subclasses.
+
+        Returns:
+            Dictionary representation of the module.
         """
         return {"class": self.__class__.__name__} | vars(self)
     
 ### 1. Context ###
 
 class ContextModule(PromptModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the context module with a specific variation.
+
+        Args:
+            variation: Name of the context variation.
+        """
         super().__init__(f"1_context/{variation}")
-    def __call__(self):
+    def __call__(self) -> str:
+        """
+        Returns the context prompt string.
+        """
         return super().__call__()
 
 ### 2. Color Map ###
 
 class ColorMapModule(PromptModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the color map module with a specific variation.
+
+        Args:
+            variation: Name of the color map variation.
+        """
         super().__init__(f"2_color_map/{variation}")
-    def __call__(self, color_map_item):
+    def __call__(
+            self,
+            color_map_item: Any
+    ) -> tuple[str, Any]:
+        """
+        Returns the color map prompt and the color map item.
+
+        Args:
+            color_map_item: Color map item to include in the prompt.
+        Returns:
+            Tuple of prompt string and color map item.
+        """
         return super().__call__(), color_map_item
     
 class Image_ColorMapModule(ColorMapModule):
-    def __call__(self):
+    def __call__(self) -> tuple[str, Image.Imagr]:
+        """
+        Returns the color map prompt and image.
+        """
         return super().__call__(get_color_map_as("img"))
 
 class RGB_ColorMapModule(ColorMapModule):
-    def __call__(self):
+    def __call__(self) -> tuple[str, str]:
+        """
+        Returns the color map prompt and RGB string.
+        """
         return super().__call__(get_color_map_as("rgb"))
 
 class Names_ColorMapModule(ColorMapModule):
-    def __call__(self):
+    def __call__(self) -> tuple[str, str]:
+        """
+        Returns the color map prompt and names string.
+        """
         return super().__call__(get_color_map_as("names"))
 
 class Patches_ColorMapModule(ColorMapModule):
-    def __call__(self):
+    def __call__(self) -> tuple[str, str]:
+        """
+        Returns the color map prompt and patches string.
+        """
         return super().__call__(get_color_map_as("patches"))
     
 class ClassSplitted_ColorMapModule(ColorMapModule):
-    def __call__(self):
+    def __call__(self) -> str:
+        """
+        Returns the class-splitted color map prompt string.
+        """
         text_prompt, _ = super().__call__(None) # no color map item needed
         return text_prompt
 
 ### 3. Input Format ###
 
 class InputFormatModule(PromptModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the input format module with a specific variation.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(f"3_input_format/{variation}")
-    def __call__(self):
+    def __call__(self) -> str:
+        """
+        Returns the input format prompt string.
+        """
         return super().__call__()
 
 # Concatenated Images # 
 
-# TODO: uniform the variation names to the class names (e.g. "concat_sc_hz" --> "ConcatMasks_Sc_Hz")
 class ConcatMasks_Sc_Hz_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the concatenated masks (scene, horizontal) input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/concat_sc_hz")
         self._layout_ = "concat"
         self._scene_mode_ = "yes"
         self._align_ = "horizontal"
 
 class ConcatMasks_Sc_Vr_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the concatenated masks (scene, vertical) input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/concat_sc_vr")
         self._layout_ = "concat"
         self._scene_mode_ = "yes"
         self._align_ = "vertical"
 
 class ConcatMasks_Ovr_Hz_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the concatenated masks (overlay, horizontal) input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/concat_ovr_hz")
         self._layout_ = "concat"
         self._scene_mode_ = "overlay"
         self._align_ = "horizontal"
 
 class ConcatMasks_Ovr_Vr_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the concatenated masks (overlay, vertical) input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/concat_ovr_vr")
         self._layout_ = "concat"
         self._scene_mode_ = "overlay"
         self._align_ = "vertical"
 
 class ConcatMasks_NoSc_Hz_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the concatenated masks (no scene, horizontal) input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/concat_noSc_hz")
         self._layout_ = "concat"
         self._scene_mode_ = "no"
         self._align_ = "horizontal"
 
 class ConcatMasks_NoSc_Vr_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the concatenated masks (no scene, vertical) input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/concat_noSc_vr")
         self._layout_ = "concat"
         self._scene_mode_ = "no"
@@ -241,21 +410,48 @@ class ConcatMasks_NoSc_Vr_InputFormatModule(InputFormatModule):
 # Separated Images # 
 
 class SepMasks_NoSc_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the separated masks (no scene) input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/sep_noSc")
         self._layout_ = "separate"
         self._scene_mode_ = "no"
         self._align_ = None
 
 class SepMasks_Ovr_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the separated masks (overlay) input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/sep_ovr")
         self._layout_ = "separate"
         self._scene_mode_ = "overlay"
         self._align_ = None
 
 class SepMasks_Sc_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the separated masks (scene) input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/sep_sc")
         self._layout_ = "separate"
         self._scene_mode_ = "yes"
@@ -264,21 +460,48 @@ class SepMasks_Sc_InputFormatModule(InputFormatModule):
 # Arrays # 
 
 class ArrayMasks_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the array masks input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/array_noImgs")
         self._layout_ = "array"
         self._scene_mode_ = "no"
         self._align_ = None
 
 class ArrayMasks_Imgs_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the array masks with images input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/array_imgs")
         self._layout_ = "array_with_imgs"
         self._scene_mode_ = "no"
         self._align_ = None
 
 class ArrayMasks_Imgs_Ovr_InputFormatModule(InputFormatModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the array masks with images (overlay) input format module.
+
+        Args:
+            variation: Name of the input format variation.
+        """
         super().__init__(variation=f"{variation}/array_imgs_ovr")
         self._layout_ = "array_with_imgs"
         self._scene_mode_ = "overlay"
@@ -287,26 +510,72 @@ class ArrayMasks_Imgs_Ovr_InputFormatModule(InputFormatModule):
 ### 4. Task ###
 
 class TaskModule(PromptModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the task module with a specific variation.
+
+        Args:
+            variation: Name of the task variation.
+        """
         super().__init__(f"4_task/{variation}")
-    def __call__(self):
+    def __call__(self) -> str:
+        """
+        Returns the task prompt string.
+        """
         return super().__call__()
     
 ### 5. Output Format ###
 
 class OutputFormatModule(PromptModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the output format module with a specific variation.
+
+        Args:
+            variation: Name of the output format variation.
+        """
         super().__init__(f"5_output_format/{variation}")
-    def __call__(self):
+    def __call__(self) -> Prompt:
+        """
+        Returns the output format prompt string.
+        """
         return super().__call__()
     
 ### 6. Support Set ###
 
 class SupportSetModule(PromptModule):
-    def __init__(self, variation, sup_set_idxs):
+    def __init__(
+            self,
+            variation: str, 
+            sup_set_idxs: list[int]
+    ) -> None:
+        """
+        Initializes the support set module with a specific variation and support set indices.
+
+        Args:
+            variation: Name of the support set variation.
+            sup_set_idxs: List of support set indices.
+        """
         super().__init__(f"6_support_set/{variation}")
         self.__sup_set_idxs__ = sup_set_idxs
-    def __call__(self, sup_set_items):
+    def __call__(
+            self,
+            sup_set_items: list[int]
+    ) -> Prompt:
+        """
+        Returns the support set prompt with the given items.
+
+        Args:
+            sup_set_items: List of support set items.
+        Returns:
+            Prompt containing the support set examples.
+        """
         prompt = []
         if len(sup_set_items) != 0:
             prompt.append(super().__call__())
@@ -318,9 +587,29 @@ class SupportSetModule(PromptModule):
 ### 7. Query ###
     
 class QueryModule(PromptModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the query module with a specific variation.
+
+        Args:
+            variation: Name of the query variation.
+        """
         super().__init__(f"7_query/{variation}")
-    def __call__(self, query_item):
+    def __call__(
+            self,
+            query_item: Image.Image
+    ) -> Prompt:
+        """
+        Returns the query prompt with the given item.
+
+        Args:
+            query_item: Query item to include in the prompt.
+        Returns:
+            Prompt containing the query example.
+        """
         prompt = []
         prompt.append(super().__call__())
         prompt.append(query_item)
@@ -329,9 +618,31 @@ class QueryModule(PromptModule):
 ### 8. Evaluation ###
 
 class EvalModule(PromptModule):
-    def __init__(self, variation):
+    def __init__(
+            self,
+            variation: str
+    ) -> None:
+        """
+        Initializes the evaluation module with a specific variation.
+
+        Args:
+            variation: Name of the evaluation variation.
+        """
         super().__init__(f"8_eval/{variation}")
-    def __call__(self, target, answer):
+    def __call__(
+            self,
+            target: str,
+            answer: str
+    ) -> None:
+        """
+        Returns the evaluation prompt with the given target and answer.
+
+        Args:
+            target: Target answer string.
+            answer: Predicted answer string.
+        Returns:
+            Formatted evaluation prompt string.
+        """
         return pf.pformat(super().__call__(), target=target, answer=answer)
     
 ### Prompts Logic ###
@@ -340,7 +651,16 @@ class PromptBuilder():
 
     # TODO: can we parallelise or speed up the methods that build the prompts?
 
-    def __init__(self, by_model, alpha, split_by, image_size, array_size, class_map, color_map):
+    def __init__(
+            self,
+            by_model: str,
+            alpha: float,
+            split_by: str,
+            image_size: int | tuple[int, int],
+            array_size: int | tuple[int, int],
+            class_map: dict,
+            color_map: dict
+    ) -> None:
         # Attributes to inherit from modules
         self.layout = None
         self.scene_mode = None
@@ -358,10 +678,21 @@ class PromptBuilder():
         # sets the shared static root path for the prompts
         PromptModule.prompts_path = get_prompts_path(self.split_by)
 
-    def read_sc_gt_pr(self, idx, image_size_):
+    def read_sc_gt_pr(
+            self,
+            idx: int,
+            image_size_: int | tuple[int, int]
+    ) -> tuple[Image.Image, Image.Image, Image.Image]:
         """
         Reads the scene, ground truth and prediction masks from disk and formats them in RGB format ready to be visualised.
         The color map is applied to the masks.
+
+        Args:
+            idx: Index of the image.
+            image_size_: Desired image size.
+
+        Returns:
+            Tuple of scene, ground truth, and prediction PIL Image objects.
         """
         prs_path = get_mask_prs_path(self.by_model)
         sc = to_pil_image(get_sc(SCS_PATH / (image_UIDs[idx] + ".jpg"), image_size_))
@@ -370,11 +701,11 @@ class PromptBuilder():
         assert sc.size == gt.size == pr.size
         return sc, gt, pr
 
-    def get_state(self):
+    def get_state(self) -> dict:
         """
         Returns the current state of the prompter as a dictionary.
         """
-        def to_dict(obj):
+        def to_dict(obj: Any) -> dict | str:
             if hasattr(obj, "__to_dict__"):
                 return obj.__to_dict__()
             else:
@@ -388,10 +719,21 @@ class PromptBuilder():
         state = json.loads(formatted_json)
         return state
     
-    def build_img_prompt(self, img_idx, with_answer_gt=False):
+    def build_img_prompt(
+            self,
+            img_idx: int,
+            with_answer_gt: bool = False
+    ) -> Prompt:
         """
         Receives an image idx and optionally its target, and builds the individual formatted image prompt.
         The query and few-shot modules make use of this method to serve the images.
+
+        Args:
+            img_idx: Index of the image to build the prompt for.
+            with_answer_gt: Whether to include the ground truth answer in the prompt.
+
+        Returns:
+            Formatted image prompt.
         """
         img_prompts = []
         img_prompts.append(f"Input:")
@@ -438,7 +780,7 @@ class PromptBuilder():
             img_prompts.append(answer_gt) # add target answer if specified
         return flatten_list(img_prompts)
 
-    def inherit_settings_from_modules(self):
+    def inherit_settings_from_modules(self) -> None:
         """
         Inherit variables enclosed by '_' from the modules in 'self.modules_dict'.
         """
@@ -447,9 +789,29 @@ class PromptBuilder():
                 if attr.startswith('_') and attr.endswith('_'):
                     setattr(self, attr.strip('_'), value)
     
-    def load_modules(self, context_module, color_map_module, input_format_module, task_module, output_format_module, support_set_module, query_module, eval_module):
+    def load_modules(
+            self,
+            context_module: ContextModule,
+            color_map_module: ColorMapModule,
+            input_format_module: InputFormatModule,
+            task_module: TaskModule,
+            output_format_module: OutputFormatModule,
+            support_set_module: SupportSetModule,
+            query_module: QueryModule,
+            eval_module: EvalModule
+    ) -> None:
         """
         Load the prompt modules (in a strict order) and inherits their shared variables.
+
+        Args:
+            context_module: Instance of ContextModule.
+            color_map_module: Instance of ColorMapModule.
+            input_format_module: Instance of InputFormatModule.
+            task_module: Instance of TaskModule.
+            output_format_module: Instance of OutputFormatModule.
+            support_set_module: Instance of SupportSetModule.
+            query_module: Instance of QueryModule.
+            eval_module: Instance of EvalModule.
         """
         assert issubclass(type(context_module), ContextModule)
         assert issubclass(type(color_map_module), ColorMapModule)
@@ -477,9 +839,18 @@ class PromptBuilder():
         # Inherit shared variables from modules
         self.inherit_settings_from_modules()
 
-    def build_inference_prompt(self, query_idx):
+    def build_inference_prompt(
+            self,
+            query_idx: int
+    ) -> Prompt:
         """
         Builds the inference prompt (in which the VLM performs the differencing in textual form).
+
+        Args:
+            query_idx: Index of the query image.
+
+        Returns:
+            Formatted inference prompt.
         """
         sup_set_items = [self.build_img_prompt(idx, with_answer_gt=True) for idx in self.sup_set_idxs]
         query_item = self.build_img_prompt(query_idx)
@@ -493,17 +864,26 @@ class PromptBuilder():
             self.modules_dict["query"](query_item)]
         return flatten_list(prompt)
     
-    def create_class_specific_promptBuilder(self, pos_class):
+    def create_class_specific_promptBuilder(
+            self,
+            pos_class: int
+    ) -> Self:
         """
         Creates a clone of this 'PromptBuilder' class, but changes the color map so that:
         - The positive class is white (255, 255, 255).
         - All the other classes are black (0, 0, 0).
+
+        Args:
+            pos_class: Class index to be treated as the positive class.
+
+        Returns:
+            Class-specific PromptBuilder instance.
         """
         class_specific_promptBuilder = deepcopy(self)
         class_specific_promptBuilder.color_map = {c: [255, 255, 255] if c == pos_class else [0, 0, 0] for c in range(len(CLASSES))}
         return class_specific_promptBuilder
     
-    def build_class_splitted_support_set_items(self):
+    def build_class_splitted_support_set_items(self) -> Prompt:
         """
         Generates the few-shot example items in the class-splitted scenario.
         """
@@ -512,11 +892,20 @@ class PromptBuilder():
             sup_set_items.append(self.build_class_specific_support_set_item(idx))
         return sup_set_items
     
-    def build_class_specific_support_set_item(self, img_idx):
+    def build_class_specific_support_set_item(
+            self,
+            img_idx: int
+    ) -> Prompt:
         """
         Generates a single few-shot example in a class-specific scenario.
         In this one, since the items have to class-specific, each image is associated with a single class index, marking the class the few-shot is going to display.
         However, the actual evaluation text is hard-coded (can be adapted in future to select change dynamically the positive class).
+
+        Args:
+            img_idx: Index of the image to generate the support set item for.
+
+        Returns:
+            Formatted class-specific support set item.
         """
         img_idx_to_class_ = {
             2: 20,
@@ -526,9 +915,20 @@ class PromptBuilder():
         class_specific_promptBuilder = self.create_class_specific_promptBuilder(img_idx_to_class_[img_idx])
         return class_specific_promptBuilder.build_img_prompt(img_idx, with_answer_gt=True)
     
-    def build_class_specific_inference_prompt(self, query_idx, pos_class):
+    def build_class_specific_inference_prompt(
+            self,
+            query_idx: int,
+            pos_class: int
+    ) -> Prompt:
         """
-        Builds the inference prompt (in which the VLM performs the differencing in textual form) in a class-specific scenario..
+        Builds the inference prompt (in which the VLM performs the differencing in textual form) in a class-specific scenario.
+
+        Args:
+            query_idx: Index of the query image.
+            pos_class: Class index to be treated as the positive class.
+
+        Returns:
+            Formatted class-specific inference prompt.
         """
         significant_class_name = CLASSES[pos_class]
         sup_set_items = self.build_class_splitted_support_set_items()
@@ -546,9 +946,20 @@ class PromptBuilder():
         class_specific_prompt = [pf.pformat(s, pos_class=significant_class_name) if isinstance(s, str) else s for s in class_specific_prompt]
         return class_specific_prompt
 
-    def build_eval_prompt(self, query_idx: int, answer_pr: str) -> Prompt:
+    def build_eval_prompt(
+            self,
+            query_idx: int,
+            answer_pr: str
+    ) -> Prompt:
         """
         Builds the evaluation prompt (in which the LLM-as-a-Judge evaluates the differencing in textual form).
+
+        Args:
+            query_idx: Index of the query image.
+            answer_pr: Predicted answer string.
+
+        Returns:
+            Evaluation prompt.
         """
         answer_gt = get_one_answer_gt(self.by_model, query_idx)[query_idx]
         prompt = [self.modules_dict["eval"](answer_gt, answer_pr)]
@@ -557,10 +968,16 @@ class PromptBuilder():
     def build_class_splitted_inference_prompts(
             self,
             query_idx: int
-    ) -> dict[int, list[str]]:
+    ) -> dict[int, Prompt]:
         """
         Builds a list of full inference prompts for a given 'query_idx' split by class masks. 
         Each inference prompt masks only consider one class at a time.
+
+        Args:
+            query_idx: Index of the query image.
+
+        Returns:
+            Dictionary of class-splitted inference prompts.
         """
         # TODO: if the masks only have BACKGROUND class, there might be an error when trying to build the prompt.
         significant_classes_gt = get_significant_classes(GTS_PATH / (image_UIDs[query_idx] + ".png"), self.image_size, self.class_map)
@@ -576,13 +993,24 @@ class PromptBuilder():
     def build_class_splitted_inference_prompts_fixed(
             self,
             query_idx: int
-    ) -> dict[int, list[str]]:
-        pass
+    ) -> dict[int, Prompt]:
+        raise NotImplementedError
 
-    def build_class_splitted_eval_prompt(self, query_idx, pos_class_2_answer_pr) -> dict[int, str]:
+    def build_class_splitted_eval_prompt(
+            self,
+            query_idx: int,
+            pos_class_2_answer_pr: dict[int, str]
+    ) -> dict[int, Prompt]:
         """
         Builds a list of full evaluation prompts for a given 'query_idx' split by class masks. 
         Each evaluation prompt masks only consider one class at a time.
+
+        Args:
+            query_idx: Index of the query image.
+            pos_class_2_answer_pr: Dictionary mapping class positions to predicted answers.
+
+        Returns:
+            Dictionary of class-splitted evaluation prompts.
         """
         pos_class_2_eval_prompt = {}
         significant_classes = pos_class_2_answer_pr.keys()
@@ -592,7 +1020,17 @@ class PromptBuilder():
             pos_class_2_eval_prompt[pos_class] = [pf.pformat(self.build_eval_prompt(query_idx, answer_pr)[0], pos_class=CLASSES[pos_class])]
         return pos_class_2_eval_prompt
     
-def save_formatted_images(promptBuilder: PromptBuilder, img_idxs: tuple[int]) -> None:
+def save_formatted_images(
+        promptBuilder: PromptBuilder,
+        img_idxs: tuple[int]
+) -> None:
+    """
+    Saves formatted images for the given indices using the provided prompt builder.
+
+    Args:
+        promptBuilder: Instance of PromptBuilder.
+        img_idxs: Tuple of image indices to process.
+    """
     for img_idx in img_idxs:
         sc, gt, pr = promptBuilder.read_sc_gt_pr(img_idx, promptBuilder.image_size)
         formatted_image = _format_images(sc, gt, pr, img_idx, promptBuilder.layout, promptBuilder.scene_mode, promptBuilder.align, promptBuilder.alpha)[0]
