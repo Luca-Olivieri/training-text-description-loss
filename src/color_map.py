@@ -3,6 +3,7 @@ import webcolors
 from PIL import Image
 import matplotlib.pyplot as plt
 from data import CLASSES, NUM_CLASSES
+from typing import Tuple
 from utils import DEVICE
 import io
 
@@ -12,12 +13,11 @@ import torch
 from torchvision.utils import draw_segmentation_masks
 from torchvision.transforms.functional import to_pil_image
 
-# TODO: find out if this is the same
-def create_pascal_label_colormap():
+def create_pascal_label_colormap() -> np.ndarray[int]:
   """Creates a label colormap used in PASCAL VOC segmentation benchmark.
 
   Returns:
-    A Colormap for visualizing segmentation results.
+    A colormap for visualizing segmentation results.
   """
   colormap = np.zeros((256, 3), dtype=int)
   ind = np.arange(256, dtype=int)
@@ -29,11 +29,20 @@ def create_pascal_label_colormap():
 
   return colormap
 
-def _full_color_map(N=256, normalized=False):
+def _full_color_map(
+        N: int = 256,
+        normalized: bool = False
+) -> np.ndarray[int]:
+    """Generates a full color map with N colors (integer or normalised to float).
+
+    Args:
+        N: The number of colors to account for.
+        normalized: if True, colors are float in range (0., 1.). Otherwise, they are int in range (0, 255)
+    
+    Returns:
+        NumPy ndarray enumerating the class colors.
     """
-    Generate a full color map with N colors (integer or normalised to float).
-    """
-    def bitget(byteval, idx):
+    def bitget(byteval: int, idx: int) -> bool:
         return ((byteval & (1 << idx)) != 0)
 
     dtype = 'float32' if normalized else 'uint8'
@@ -52,27 +61,34 @@ def _full_color_map(N=256, normalized=False):
     cmap = cmap/255 if normalized else cmap
     return cmap
 
-def get_color_map_dict():
-    """
-    Get the color map as dictionary {cls_idx: (r, g, b)} for the 21 VOC classes.
+def get_color_map_dict() -> dict[int, Tuple[int, int, int]]:
+    """Gets the color map as dictionary {cls_idx: (r, g, b)} for the 21 VOC classes.
+
+    Returns:
+        Dictionary mapping class index to RGB tuple.
     """
     color_map_list = _full_color_map()[:21].tolist()
     return {i: tuple(rgb) for i, rgb in enumerate(color_map_list)}
 
 COLOR_MAP_DICT = get_color_map_dict()
 
-def get_inv_color_map_dict():
-    """
-    Get the color map as dictionary {(r, g, b): cls_idx} for the 21 VOC classes.
+def get_inv_color_map_dict() -> dict[tuple[int, int, int], int]:
+    """Gets the color map as dictionary {(r, g, b): cls_idx} for the 21 VOC classes.
+
+    Returns:
+        Dictionary mapping RGB tuple to class index.
     """
     color_map_dict = get_color_map_dict()
     inv_color_map_dict = {tuple(rgb): i for i, rgb in color_map_dict.items()}
     inv_color_map_dict[(255, 255, 255)] = 1 # to account for class-splitted prompts
     return inv_color_map_dict
 
-def get_color_map_as_img():
-    """
-    Get the color map as RGB image for the 21 VOC classes.
+
+def get_color_map_as_img() -> Image.Image:
+    """Gets the color map as RGB image for the 21 VOC classes.
+
+    Returns:
+        Image visualizing the color map.
     """
     labels = CLASSES.copy()
     labels.append("VOID")
@@ -99,19 +115,27 @@ def get_color_map_as_img():
     plt.close(fig)
     return Image.open(buf)
 
-def get_color_map_as_rgb():
-    """
-    Get the color map as dictionary {"cls [cls_idx]": (r, g, b)}
+
+def get_color_map_as_rgb() -> str:
+    """Gets the color map as dictionary {"cls [cls_idx]": (r, g, b)}.
+
+    Returns:
+        String representation of class name to RGB mapping.
     """
     color_map = get_color_map_dict()
     return str({f"{CLASSES[i]} [{i}]": rgb for i, rgb in color_map.items()})
 
-def get_color_map_as_names():
+
+def get_color_map_as_names() -> str:
+    """Gets the color map as dictionary {"cls [cls_idx]": name}.
+
+    Each color is associated to the name of the RGB nearest-neighbour to CSS3 colors.
+
+    Returns:
+        String representation of class name to closest CSS3 color name mapping.
     """
-    Get the color map as dictionary {"cls [cls_idx]": name}
-    Each colors is associated to the name of RGB nearest-neighbour to CSS3 colors.
-    """
-    def closest_color_name(rgb):
+    def closest_color_name(rgb: tuple[int, int, int]) -> str:
+        """Gets the closest CSS3 color name for a given RGB tuple."""
         spec = "css3"
         rgb_to_names = {tuple(webcolors.name_to_rgb(c_name, spec)): c_name for c_name in webcolors.names(spec=spec)}
         try:
@@ -129,9 +153,15 @@ def get_color_map_as_names():
     c_names[8] = "darkmaroon"
     return str({f"{CLASSES[i]} [{i}]": c_names[i] for i, rgb in enumerate(color_map.values())})
 
-def get_color_map_as_patches(patch_size=(32, 32)):
-    """
-    Get the color map as list of patches of size 'patch_size'. 
+
+def get_color_map_as_patches(patch_size: tuple[int, int] = (32, 32)) -> tuple:
+    """Gets the color map as list of patches of size 'patch_size'.
+
+    Args:
+        patch_size: Size of each patch. Defaults to (32, 32).
+
+    Returns:
+        Tuple of class name and PIL.Image.Image patch pairs.
     """
     color_map = get_color_map_dict()
     color_patches = []
@@ -142,7 +172,16 @@ def get_color_map_as_patches(patch_size=(32, 32)):
         color_patches.append(patch)
     return tuple(color_patches)
 
-def get_color_map_as(format):
+
+def get_color_map_as(format: str):
+    """Gets the color map in a specified format.
+
+    Args:
+        format: Format type ('img', 'rgb', 'names', 'patches').
+
+    Returns:
+        The color map in the selected format.
+    """
     format2fn = {
         "img": get_color_map_as_img,
         "rgb": get_color_map_as_rgb,
@@ -152,9 +191,15 @@ def get_color_map_as(format):
     fn = format2fn[format]
     return fn()
 
-def apply_colormap(mask, color_map):
-    """
-    Receives a tensor of shape [C, H, W] and returns a PIL Image with the color map applied.
+def apply_colormap(mask: torch.Tensor, color_map: dict[int, tuple[int, int, int]]) -> Image.Image:
+    """Receives a tensor of shape [C, H, W] and returns a PIL Image with the color map applied.
+
+    Args:
+        mask: Segmentation mask tensor of shape [C, H, W].
+        color_map: Dictionary mapping class indices to RGB tuples.
+
+    Returns:
+        Image with color map applied.
     """
     assert len(mask.shape) == 3, mask.shape
     mask_all_classes = (mask == torch.arange(NUM_CLASSES).to(DEVICE)[:, None, None, None]).swapaxes(0, 1)
@@ -164,9 +209,14 @@ def apply_colormap(mask, color_map):
     mask = to_pil_image(mask)
     return mask
 
-def rgb_to_class(mask_np):
-    """
-    Receives a (H, W, 3) NumPy Array encoding an image and maps it to class indices.
+def rgb_to_class(mask_np: np.ndarray) -> np.ndarray:
+    """Receives a (H, W, 3) NumPy Array encoding an image and maps it to class indices.
+
+    Args:
+        mask_np: RGB image as NumPy array of shape (H, W, 3).
+
+    Returns:
+        Segmentation mask of class indices.
     """
     H, W, _ = mask_np.shape
     segmentation_mask = np.zeros((H, W), dtype=np.uint8)
@@ -181,7 +231,15 @@ def rgb_to_class(mask_np):
 #     mask_array = str(mask_array.tolist())
 #     return mask_array
 
-def pil_to_class_array(mask):
+def pil_to_class_array(mask: Image.Image) -> str:
+    """Converts a PIL Image mask to a string representation of class indices array.
+
+    Args:
+        mask: Input mask image.
+
+    Returns:
+        String representation of class indices array.
+    """
     mask_array = np.array(mask)
     mask_array = rgb_to_class(mask_array)
     mask_array = str(mask_array.tolist())
