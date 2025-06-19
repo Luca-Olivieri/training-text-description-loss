@@ -25,7 +25,6 @@ class GenParams(DictObject):
     A dictionary-like class with a predefined set of keys, initially unassigned (None).
     The keys are defined within the class itself.
     """
-    # TODO: comment each key.
     def __init__(
             self,
             seed: Optional[int] = None,
@@ -70,7 +69,7 @@ class GenParams(DictObject):
 
 class Response(DictObject):
     """
-    TODO
+    Represents a model response, including the response text and optional token count.
     """
     def __init__(
             self,
@@ -622,7 +621,8 @@ class MLLM(ABC):
     
 class OllamaMLLM(MLLM):
     """
-    TODO
+    Multimodal Large Language Model implementation for Ollama backend.
+    Handles model initialization and client setup for Ollama models.
     """
     def __init__(
             self,
@@ -861,7 +861,8 @@ class GoogleAIStudioMLLM(MLLM):
     
 class HuggingFaceMLLM(MLLM):
     """
-    TODO
+    Multimodal Large Language Model implementation for HuggingFace backend.
+    Handles model initialization for HuggingFace models.
     """
     def __init__(
             self,
