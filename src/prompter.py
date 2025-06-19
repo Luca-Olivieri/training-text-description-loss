@@ -254,7 +254,7 @@ class ColorMapModule(PromptModule):
         return super().__call__(), color_map_item
     
 class Image_ColorMapModule(ColorMapModule):
-    def __call__(self) -> tuple[str, Image.Imagr]:
+    def __call__(self) -> tuple[str, Image.Image]:
         """
         Returns the color map prompt and image.
         """
