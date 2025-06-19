@@ -834,7 +834,7 @@ class GoogleAIStudioMLLM(MLLM):
                 top_k=gen_params["top_k"],
                 maxOutputTokens=gen_params["max_tokens"],
                 stop_sequences=gen_params["stop_sequences"],
-                seed=get_seed()
+                seed=CONFIG["seed"]
             ),
         )
 
