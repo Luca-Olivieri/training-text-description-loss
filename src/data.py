@@ -1,6 +1,8 @@
 import json
 import random
 from glob import glob
+import io
+from collections import Counter
 
 import numpy as np
 import xarray as xr
@@ -10,14 +12,17 @@ from path import *
 from utils import *
 from config import *
 
+import math
+import torch
 from torch import Tensor
 from torchvision.io import decode_image
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
 from torch.utils.data import Dataset, DataLoader
-from PIL.Image import Image as PILImage
+from PIL import Image
 import base64
-import io
+import nltk
+from nltk import ngrams
 
 CLASSES = ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR"]
 
@@ -71,7 +76,7 @@ def get_image(
     return img
 
 def image_to_base64(
-        img: PILImage
+        img: Image.Image
 ) -> str:
     """
     Converts a PIL image to a base64-encoded string.
@@ -844,10 +849,138 @@ def compute_results_da_class_splitted(
 
     return data_da
 
-def main() -> None:
-    da = create_empty_dataarray({"n": [0, 2, 5], "type": ["a", "b"]})
-    da.loc[0, "a"] = 4
-    print(da)
+def distinct_k(
+        texts: list[str],
+        k_max: int = 4, 
+) -> float:
+    """ Calculates corpus-level ngram diversity based on unique ngrams 
+       (e.g., https://arxiv.org/pdf/2202.00666.pdf).
+
+    Args:
+        data (List[str]): List of documents. 
+        num_n (int): Max ngrams to test up to. Defaults to 5. 
+
+    Returns:
+        float: ngram diveristy score.
+    """
+    score = 0 
+    texts = ' '.join(texts).split(' ') # format to list of words
+
+    for k in range(1, k_max + 1): 
+        ngrams = list(nltk.ngrams(texts, k))
+        # num unique ngrams / all ngrams for each size n 
+        score += len(set(ngrams)) / len(ngrams)
+
+    return round(score, 3)
+
+def ent_k(
+        texts: list[str],
+        k: int = 4
+) -> float:
+    def generate_ngrams(
+            words: list[str],
+            k: int
+    ):
+        return [" ".join(words[i : i + k]) for i in range(len(words) - k + 1)]
+    
+    ngrams = []
+    for text in texts:
+        words = text.split()
+        ngrams.extend(generate_ngrams(words, k))
+
+    ngram_counts = Counter(ngrams)
+    total_ngrams = sum(ngram_counts.values())
+
+    ngram_frequencies = [count / total_ngrams for _, count in ngram_counts.items()]
+
+    entropy = -sum(freq * math.log(freq, 2) for freq in ngram_frequencies)
+        
+    return entropy
+
+def embd_diversity(
+        embds: list[Tensor],
+) -> float:
+    """
+    Computes the average cosine similarity between the tensors in a fast way.
+
+    Args:
+        embds: A list of PyTorch tensors (embeddings).
+
+    Returns:
+        The average cosine similarity between all unique pairs of tensors.
+    """
+    if len(embds) < 2:
+        raise AttributeError("Embedding diversity is not defined for just 1 vector.")
+
+    stacked_embds = torch.stack(embds) # stack the tensors into a single 2D tensor for efficient computation
+
+    normalized_embds = torch.nn.functional.normalize(stacked_embds, p=2, dim=1) # normalize the embeddings to have unit L2 norm
+
+    similarity_matrix = torch.matmul(normalized_embds, normalized_embds.T) # compute the pairwise dot products (which are now cosine similarities)
+    
+    total_sum = torch.sum(similarity_matrix) # get the sum of all elements in the matrix    
+    diagonal_sum = torch.trace(similarity_matrix) # get the sum of diagonal elements (which are all 1s)
+    sum_of_unique_pairwise_similarities = (total_sum - diagonal_sum) / 2 # sum of unique pairwise similarities
+
+    # Calculate the number of unique pairs
+    num_embeddings = len(embds)
+    num_unique_pairs = num_embeddings * (num_embeddings - 1) / 2
+
+    return sum_of_unique_pairwise_similarities / num_unique_pairs
+
+def vendi_score(
+    embds: list[Tensor],
+) -> float:
+    """
+    Computes the VendiScore for a list of PyTorch tensors (embeddings).
+
+    Args:
+        embds: A list of PyTorch tensors (embeddings).
+
+    Returns:
+        The VendiScore.
+    """
+    if len(embds) < 1:
+        raise AttributeError("VendiScore is not defined for an empty list of vectors.")
+
+    stacked_embds = torch.stack(embds) # stack the tensors into a single 2D tensor
+
+    # Normalize the embeddings to have unit L2 norm
+    # This assumes a cosine similarity kernel where K(x,x) = 1
+    normalized_embds = torch.nn.functional.normalize(stacked_embds, p=2, dim=1)
+
+    # Compute the pairwise dot products (which are now cosine similarities), forming the kernel matrix K
+    similarity_matrix = torch.matmul(normalized_embds, normalized_embds.T)
+
+    # The VendiScore is typically defined with a normalized kernel matrix K/n,
+    # where n is the number of embeddings.
+    # However, the eigenvalues are often normalized directly after computing from K.
+    # Let's follow the definition where lambda_i are the eigenvalues of K/n.
+    num_embeddings = len(embds)
+    normalized_kernel_matrix = similarity_matrix / num_embeddings
+
+    # Compute the eigenvalues
+    # torch.linalg.eigvalsh is for symmetric matrices, which our similarity_matrix is.
+    eigenvalues = torch.linalg.eigvalsh(normalized_kernel_matrix)
+
+    # Filter out any tiny negative eigenvalues that might arise from numerical instability
+    eigenvalues = torch.relu(eigenvalues)
+
+    # Normalize eigenvalues to sum to 1, if they don't already (they should for K/n)
+    sum_eigenvalues = torch.sum(eigenvalues)
+    if sum_eigenvalues == 0:
+        return 0.0 # Handle case where all embeddings are identical (or zero vectors)
+    normalized_eigenvalues = eigenvalues / sum_eigenvalues
+
+    # Compute Shannon entropy of the normalized eigenvalues
+    # Handle log(0) case: 0 * log(0) is defined as 0
+    entropy_terms = normalized_eigenvalues * torch.log(normalized_eigenvalues + 1e-12) # Add small epsilon for log(0) stability
+    shannon_entropy = -torch.sum(entropy_terms)
+
+    # Compute VendiScore
+    vendi_score_value = torch.exp(shannon_entropy)
+
+    return vendi_score_value.item()
 
 class SegDataset(Dataset):
     """
@@ -903,9 +1036,20 @@ def extract_augment_preprocess_batch(
         x = augment_fn(x)
 
     if preprocess_fn is not None:
-        x = preprocess_fn(x) # TODO:  this should handle y as well!
+        x = preprocess_fn(x) # TODO: this should handle y as well!
 
     return x, y
+
+def main() -> None:
+    texts = ["Call an Uber for me", "Play the music to us", "Play the piano with me"]
+    embds = [torch.tensor([0., 1., 2.]), torch.tensor([0, -1., -2.])] * 2000
+    print(distinct_k(texts, 4))
+    print(ent_k(texts, 4))
+    print(embd_diversity(embds).item())
+    print(vendi_score(embds))
+    # gts_text = [d["content"] for d in get_many_answer_gt(by_model="LRASPP_MobileNet_V3", return_state=False)]
+    # print(distinct_k(gts_text, 4))
+    # print(ent_k(gts_text, 4))
 
 if __name__ == "__main__":
     main()
