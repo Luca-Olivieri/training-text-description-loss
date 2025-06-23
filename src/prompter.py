@@ -1069,6 +1069,8 @@ class PromptBuilder():
             self,
             prompt_blueprint: OrderedDict[str, str],
             seeds: list[str],
+            score_level_range: tuple[int, int],
+            num_outputs: int,
             shuffle_seeds: bool
     ) -> Prompt:
         def populate_seeds(
@@ -1081,9 +1083,13 @@ class PromptBuilder():
         prompt_corpus = read_json(get_data_gen_prompts_path() / "syn_data_gen.json")
         prompt = [prompt_corpus[mod][var] for mod, var in prompt_blueprint.items()]
         seeds_module_idx = list(prompt_blueprint.keys()).index("seeds")
+        instruct_module_idx = list(prompt_blueprint.keys()).index("instruct")
+        query_module_idx = list(prompt_blueprint.keys()).index("query")
         if shuffle_seeds:
             random.shuffle(seeds)
         prompt[seeds_module_idx] = populate_seeds(prompt[seeds_module_idx], seeds)
+        prompt[instruct_module_idx] = prompt[instruct_module_idx].format(score_level_range=score_level_range)
+        prompt[query_module_idx] = prompt[query_module_idx].format(num_outputs=num_outputs)
         return flatten_list(prompt)
     
 def save_formatted_images(
@@ -1113,8 +1119,17 @@ def main() -> None:
         split_by            = "class-splitted"
     )
     out = promptBuilder.build_data_gen_prompt(
-        prompt_blueprint={"instructions": "0_baseline", "seeds": "0_baseline", "context": "0_baseline"},
+        prompt_blueprint={
+            "role": "0_baseline",
+            "instruct": "0_baseline",
+            "output_format": "0_baseline",
+            "seeds_intro": "0_baseline",
+            "seeds": "0_baseline",
+            "query": "0_baseline",
+        },
         seeds=["EXAMPLE_1", "EXAMPLE_2"],
+        score_level_range=[1, 5],
+        num_outputs=5,
         shuffle_seeds=True)
     print(out)
 

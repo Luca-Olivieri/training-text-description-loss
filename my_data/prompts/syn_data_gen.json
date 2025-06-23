@@ -1,17 +1,20 @@
 {
-    "context": {
-        "0_baseline": "..."
+    "role": {
+        "0_baseline": "You are an expert in evaluating the quality of textual descriptions of predictions produced against ground truth.\n"
     },
-    "instructions": {
-        "0_baseline": "Generate..."
+    "instruct": {
+        "0_baseline": "Your task is to generate synthetic data <text, score> pairs, in which :\n- 'text' describes how well a prediction aligns with a ground truth.\n- 'score' (integer in the range {score_level_range}, the higher the better) indicating the quality of that prediction based on 'text'.\n"
+    },
+    "output_format": {
+        "0_baseline": "Your output should be a JSON array of objects containing the 'text' and 'score' field."
     },
     "seeds_intro": {
-        "0_baseline": "Here are some example pairs:"
+        "0_baseline": "Here are a few examples of the desired output:\n"
     },
     "seeds": {
-        "0_baseline": "[seed]"
+        "0_baseline": "[seed]\n"
     },
     "query": {
-        "0_baseline": "..."
+        "0_baseline": "Please generate {num_outputs} unique <text, score> pairs. Ensure variety in the score level, sentence structure, vocabulary, and the specific aspects of similarity/difference. Avoid to repeat the examples provided.\n"
     }
 }
