@@ -98,6 +98,13 @@ def get_prompts_path(split_by: str) -> Path:
     prompts_path = MY_DATA_PATH / "prompts" / split_by
     return prompts_path
 
+def get_data_gen_prompts_path() -> Path:
+    """
+    Returns the path to the synthetic data generation prompts directory.
+    """
+    prompts_path = MY_DATA_PATH / "prompts"
+    return prompts_path
+
 def get_mask_prs_path(by_model: str) -> Path:
     """
     Gets the path to the mask predictions directory for a given model.

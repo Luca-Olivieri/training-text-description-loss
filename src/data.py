@@ -10,9 +10,11 @@ from path import *
 from utils import *
 from config import *
 
+from torch import Tensor
 from torchvision.io import decode_image
 import torch.nn.functional as F
 import torchvision.transforms.functional as TF
+from torch.utils.data import Dataset, DataLoader
 from PIL.Image import Image as PILImage
 import base64
 import io
@@ -65,7 +67,7 @@ def get_image(
         Image as a torch.Tensor on the global device.
     """
     img = decode_image(path)
-    img = img.to(DEVICE)
+    img = img.to(CONFIG["device"])
     return img
 
 def image_to_base64(
@@ -97,7 +99,7 @@ def one_hot_encode_masks(
     Returns:
         One-hot encoded tensor of masks.
     """
-    one_hot_masks = masks == torch.arange(NUM_CLASSES).to(DEVICE)[:, None, None, None]
+    one_hot_masks = masks == torch.arange(NUM_CLASSES).to(CONFIG["device"])[:, None, None, None]
     one_hot_masks = one_hot_masks.swapaxes(0, 1)
     return one_hot_masks
 
@@ -223,7 +225,7 @@ def apply_class_map(
     """
     mask_ = mask.cpu()
     mask_.apply_(lambda x: class_map.get(x, 0)) # class mapping
-    mask = mask_.to(DEVICE)
+    mask = mask_.to(CONFIG["device"])
     return mask
 
 def _get_mask(
@@ -320,6 +322,11 @@ def get_significant_classes(
     significant_classes = mask.unique().tolist() # classes that actually appear in 'gt'
     significant_classes.remove(0)
     return significant_classes
+
+def read_json(json_path: Path) -> dict:
+    with open(json_path, 'r', encoding='utf-8') as f:
+        data = json.load(f)
+    return data
 
 def read_txt(
         txt_path: str
@@ -841,6 +848,64 @@ def main() -> None:
     da = create_empty_dataarray({"n": [0, 2, 5], "type": ["a", "b"]})
     da.loc[0, "a"] = 4
     print(da)
+
+class SegDataset(Dataset):
+    """
+    TODO
+    """
+    def __init__(
+            self,
+            uids: list[int],
+            image_size: int | list[int, int],
+            class_map: dict,
+            mask_resize_mode: str = "nearest",
+            center_crop: bool = True
+    ) -> None:
+        self.scs_paths = [SCS_PATH / (UID + ".jpg") for UID in uids]
+        self.gts_paths = [GTS_PATH / (UID + ".png") for UID in uids]
+        self.image_size = image_size
+        self.class_map = class_map
+        self.mask_resize_mode = mask_resize_mode
+        self.center_crop = center_crop
+
+    def __len__(self) -> int:
+        return len(self.gts_paths)
+
+    def __getitem__(
+            self,
+            idx: int
+    ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor]:
+        if isinstance(idx, slice):
+            indices = range(*idx.indices(len(self)))
+            scs = torch.stack([get_sc(self.scs_paths[i], self.image_size, self.center_crop) for i in indices])
+            gts = torch.stack([get_gt(self.gts_paths[i], self.class_map, self.image_size, self.mask_resize_mode, self.center_crop) for i in indices])
+            return scs, gts
+        else:
+            sc = get_sc(self.scs_paths[idx], self.image_size, self.center_crop)
+            gt = get_gt(self.gts_paths[idx], self.class_map, self.image_size, self.mask_resize_mode, self.center_crop)
+            return sc, gt
+    
+def extract_augment_preprocess_batch(
+        batch: list,
+        augment_fn: Callable,
+        preprocess_fn: Callable
+) -> tuple[Tensor, Tensor]:
+    # Has to be made into a 'collate_fn' by fixing the parameters other than 'batch'!
+    x, y = zip(*batch)
+    x = (torch.stack(x)/255.).float()
+    y = torch.stack(y).long().squeeze(1)
+
+    # when the images are sampled in the batch, they are:
+    #   1. in Float32 in the range [0, 1],
+    #   2. in shape [B, C, H, W],
+
+    if augment_fn is not None:
+        x = augment_fn(x)
+
+    if preprocess_fn is not None:
+        x = preprocess_fn(x) # TODO:  this should handle y as well!
+
+    return x, y
 
 if __name__ == "__main__":
     main()

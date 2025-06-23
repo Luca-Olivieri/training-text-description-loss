@@ -1,9 +1,10 @@
+from config import *
+
 import numpy as np
 import webcolors
 from PIL import Image
 import matplotlib.pyplot as plt
 from data import CLASSES, NUM_CLASSES
-from utils import DEVICE
 import io
 
 from config import *
@@ -204,7 +205,7 @@ def apply_colormap(
         Image with color map applied.
     """
     assert len(mask.shape) == 3, mask.shape
-    mask_all_classes = (mask == torch.arange(NUM_CLASSES).to(DEVICE)[:, None, None, None]).swapaxes(0, 1)
+    mask_all_classes = (mask == torch.arange(NUM_CLASSES).to(CONFIG["device"])[:, None, None, None]).swapaxes(0, 1)
     if mask.shape[0] == 1:
         mask = mask.repeat(3, 1, 1)
     mask = draw_segmentation_masks(mask, mask_all_classes[0], colors=list(color_map.values()), alpha=1.)

@@ -32,10 +32,6 @@ GenericResponse = TypeVar
 def download_VOC2012() -> None:
     """Downloads the VOC2012 dataset using torchvision's VOCSegmentation utility."""
     VOCSegmentation(root=PRIVATE_DATASETS_PATH, image_set='trainval', download=True)
-    
-### Devices ###
-
-DEVICE = torch.device('cuda')
 
 ### Utility Methods ###
 

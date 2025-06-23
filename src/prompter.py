@@ -1,17 +1,17 @@
-from PIL import Image, ImageFont, ImageDraw, ImageOps
-from pathlib import Path
-import json
-import pformat as pf
-
 from config import *
 from color_map import *
 from utils import *
 from data import *
 from path import *
+
+from PIL import Image, ImageFont, ImageDraw, ImageOps
+from pathlib import Path
+import json
+import pformat as pf
 from copy import deepcopy
 from typing import Self
-
 from torchvision.transforms.functional import to_pil_image
+from collections import OrderedDict
 
 ### Methods ###
 
@@ -1020,6 +1020,14 @@ class PromptBuilder():
             pos_class_2_eval_prompt[pos_class] = [pf.pformat(self.build_eval_prompt(query_idx, answer_pr)[0], pos_class=CLASSES[pos_class])]
         return pos_class_2_eval_prompt
     
+    def build_data_gen_prompt(
+            self,
+            prompt_blueprint: OrderedDict[str, str]
+    ) -> Prompt:
+        prompt_corpus = read_json(get_data_gen_prompts_path() / "syn_data_gen.json")
+        for mod, var in prompt_blueprint.items():
+            print(prompt_corpus[mod][var])
+    
 def save_formatted_images(
         promptBuilder: PromptBuilder,
         img_idxs: tuple[int]
@@ -1036,29 +1044,17 @@ def save_formatted_images(
         formatted_image = _format_images(sc, gt, pr, img_idx, promptBuilder.layout, promptBuilder.scene_mode, promptBuilder.align, promptBuilder.alpha)[0]
         formatted_image.save(LOCAL_ANNOT_IMGS_PATH / f"annot_image_{img_idx}.png") 
 
-if __name__ == "__main__":
-
-    PromptModule.prompts_path = get_prompts_path("non-splitted")
-
+def main() -> None:
     promptBuilder = PromptBuilder(
         by_model            = "LRASPP_MobileNet_V3",
-        alpha               = 0.8,
-        split_by            = "class-splitted",
-        image_size          = 520,
+        alpha               = 0.6,
+        image_size          = 224,
         array_size          = (32, 32),
         class_map           = CLASS_MAP, # imported from 'class_map.py'
         color_map           = COLOR_MAP_DICT,
+        split_by            = "class-splitted"
     )
-    
-    promptBuilder.load_modules(
-    context_module          = ContextModule(variation="default"),
-    color_map_module        = ClassSplitted_ColorMapModule(variation="default"),
-    input_format_module     = ArrayMasks_Imgs_Ovr_InputFormatModule("original"),
-    task_module             = TaskModule(variation="default"),
-    output_format_module    = OutputFormatModule(variation="default"),
-    support_set_module      = SupportSetModule(variation="default", sup_set_idxs=(16, 2, 18)),
-    query_module            = QueryModule(variation="default"),
-    eval_module             = EvalModule(variation="3_specify_pos_class_recency")
-    )
+    promptBuilder.build_data_gen_prompt({"instructions": "0_baseline", "context": "0_baseline"})
 
-    print(promptBuilder.build_class_specific_inference_prompt(0, 15))
+if __name__ == '__main__':
+    main()
