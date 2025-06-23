@@ -2,11 +2,16 @@
     "context": {
         "0_baseline": "..."
     },
-    "seeds":
-    {
-        "0_baseline": "Here are some example pairs:"
-    },
     "instructions": {
         "0_baseline": "Generate..."
+    },
+    "seeds_intro": {
+        "0_baseline": "Here are some example pairs:"
+    },
+    "seeds": {
+        "0_baseline": "[seed]"
+    },
+    "query": {
+        "0_baseline": "..."
     }
 }

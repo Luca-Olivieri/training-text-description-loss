@@ -150,6 +150,51 @@ def _format_images(
         res = [sc, gt_arr, pr_arr]
     return res
 
+def map_placeholders(
+        text: str,
+        placeholder: str,
+        objects_list: list[Any]
+) -> list[str | Any]:
+    """
+    Substitutes placeholders in a text string with objects from a list.
+
+    The function splits the string into a list of strings and objects,
+    interleaving text and the provided objects.
+
+    Args:
+        text_string (str): The input text string containing placeholders.
+        placeholder_symbol (str): The symbol representing the placeholder (e.g., '[img]').
+        objects_list (list): A list of objects to insert into the string.
+
+    Returns:
+        A list interleaving text segments and the inserted objects.
+        Returns the original text string in a list if no placeholders are found.
+        Returns the original text string in a list if the number of placeholders
+        does not match the number of objects.
+    """
+    parts = re.split(f"({re.escape(placeholder)})", text) # split the string by the placeholder symbol
+    parts = [part for part in parts if part] # filter out empty strings that might result from splitting
+
+    placeholder_amount = sum(1 for part in parts if part == placeholder) # count actual placeholders found in the split parts
+
+    if not placeholder_amount:
+        return text # no placeholders found, return original string
+    
+    if placeholder_amount != len(objects_list):
+        raise AttributeError(f"The string '{text}' contains {placeholder_amount} placeholders, but only {len(objects_list)} objects were given.")
+
+    result = []
+    object_index = 0
+    for part in parts:
+        if part == placeholder:
+            if object_index < len(objects_list):
+                result.append(objects_list[object_index])
+                object_index += 1
+        else:
+            result.append(part)
+    
+    return result
+
 ### Prompt Modules ###
 
 class PromptModule:
@@ -1022,11 +1067,24 @@ class PromptBuilder():
     
     def build_data_gen_prompt(
             self,
-            prompt_blueprint: OrderedDict[str, str]
+            prompt_blueprint: OrderedDict[str, str],
+            seeds: list[str],
+            shuffle_seeds: bool
     ) -> Prompt:
+        def populate_seeds(
+            seeds_module: str,
+            seeds: list[str],
+        ) -> list[str]:
+            seeds_module = seeds_module*len(seeds) # repliace the placeholder for each seed.
+            seeds_module = map_placeholders(seeds_module, placeholder="[seed]", objects_list=seeds)
+            return seeds_module
         prompt_corpus = read_json(get_data_gen_prompts_path() / "syn_data_gen.json")
-        for mod, var in prompt_blueprint.items():
-            print(prompt_corpus[mod][var])
+        prompt = [prompt_corpus[mod][var] for mod, var in prompt_blueprint.items()]
+        seeds_module_idx = list(prompt_blueprint.keys()).index("seeds")
+        if shuffle_seeds:
+            random.shuffle(seeds)
+        prompt[seeds_module_idx] = populate_seeds(prompt[seeds_module_idx], seeds)
+        return flatten_list(prompt)
     
 def save_formatted_images(
         promptBuilder: PromptBuilder,
@@ -1042,7 +1100,7 @@ def save_formatted_images(
     for img_idx in img_idxs:
         sc, gt, pr = promptBuilder.read_sc_gt_pr(img_idx, promptBuilder.image_size)
         formatted_image = _format_images(sc, gt, pr, img_idx, promptBuilder.layout, promptBuilder.scene_mode, promptBuilder.align, promptBuilder.alpha)[0]
-        formatted_image.save(LOCAL_ANNOT_IMGS_PATH / f"annot_image_{img_idx}.png") 
+        formatted_image.save(LOCAL_ANNOT_IMGS_PATH / f"annot_image_{img_idx}.png")
 
 def main() -> None:
     promptBuilder = PromptBuilder(
@@ -1054,7 +1112,11 @@ def main() -> None:
         color_map           = COLOR_MAP_DICT,
         split_by            = "class-splitted"
     )
-    promptBuilder.build_data_gen_prompt({"instructions": "0_baseline", "context": "0_baseline"})
+    out = promptBuilder.build_data_gen_prompt(
+        prompt_blueprint={"instructions": "0_baseline", "seeds": "0_baseline", "context": "0_baseline"},
+        seeds=["EXAMPLE_1", "EXAMPLE_2"],
+        shuffle_seeds=True)
+    print(out)
 
 if __name__ == '__main__':
     main()
