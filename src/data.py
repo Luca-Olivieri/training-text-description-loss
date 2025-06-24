@@ -57,7 +57,39 @@ def get_image_UIDs(
     image_UIDs[23:] = to_shuffle
     return image_UIDs
 
+def get_image_UIDs(
+        path: Path,
+        split="trainval"
+) -> list[int]:
+    """
+    Lists the UIDs of the images stored into a certain path and by split.
+
+    Args:
+        path: root directory of the images.
+        split: split type ('non-splitted' or 'class-splitted').
+    
+    Returns:
+        List of image UIDs.
+
+    Returns a list of image UIDs read in the "splits.txt" file for a specified split.
+    """
+    image_UIDs = []
+    with open(path / f"{split}.txt", "r") as f:
+        for line in f:
+            image_id = line.strip()  # Remove any leading/trailing whitespace
+            image_UIDs.append(image_id)
+    match split:
+        case "trainval":
+            to_shuffle = image_UIDs[23:]
+            random.shuffle(to_shuffle)
+            image_UIDs[23:] = to_shuffle
+        case _:
+            random.shuffle(image_UIDs)
+    return image_UIDs
+
 image_UIDs = np.array(get_image_UIDs(SPLITS_PATH, split="trainval"))
+image_train_UIDs = np.array(get_image_UIDs(SPLITS_PATH, split="train"))
+image_val_UIDs = np.array(get_image_UIDs(SPLITS_PATH, split="val"))
 
 def get_image(
         path: str
@@ -981,6 +1013,18 @@ def vendi_score(
     vendi_score_value = torch.exp(shannon_entropy)
 
     return vendi_score_value.item()
+
+def flatten_class_splitted_answers(
+        class_splitted_answers: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    flat_answers = []
+    b = 0
+    for csa in class_splitted_answers:
+        new_answers = list(csa["content"].values())
+        new_answers = [{"img_idx": b+i, "content": a} for i, a in enumerate(new_answers)]
+        flat_answers.extend(new_answers)
+        b += len(new_answers)
+    return flat_answers
 
 class SegDataset(Dataset):
     """

@@ -3,6 +3,7 @@ from color_map import *
 from utils import *
 from data import *
 from path import *
+from model import GenParams, MLLM
 
 from PIL import Image, ImageFont, ImageDraw, ImageOps
 from pathlib import Path
@@ -1065,19 +1066,47 @@ class PromptBuilder():
             pos_class_2_eval_prompt[pos_class] = [pf.pformat(self.build_eval_prompt(query_idx, answer_pr)[0], pos_class=CLASSES[pos_class])]
         return pos_class_2_eval_prompt
     
+class DataGenPromptBuilder():
+    def __init__(
+            self,
+            seed: int,
+            prompt_blueprint: OrderedDict[str, str],
+            by_model: str,
+            seed_idxs: list[int],
+            score_level_range: tuple[int, int],
+            num_seeds: int,
+            num_outputs: int,
+            rotate_prompts: bool,
+            jsonl_save_path: Path
+    ) -> None:
+        """
+        Initializea GenParams with optional generation parameters.
+
+        Args:
+            seed: Random seed for generation.
+            shuffle_seeds: Whether to shuffle the examples.
+        """
+        self.seed = seed
+        self.prompt_blueprint = prompt_blueprint
+        self.by_model = by_model
+        self.seed_idxs = seed_idxs
+        self.score_level_range = score_level_range
+        self.num_seeds = num_seeds
+        self.num_outputs = num_outputs
+        self.rotate_prompts = rotate_prompts
+        self.jsonl_save_path = jsonl_save_path
+
     def build_data_gen_prompt(
             self,
             prompt_blueprint: OrderedDict[str, str],
             seeds: list[str],
-            score_level_range: tuple[int, int],
             num_outputs: int,
-            shuffle_seeds: bool
     ) -> Prompt:
         def populate_seeds(
             seeds_module: str,
             seeds: list[str],
         ) -> list[str]:
-            seeds_module = seeds_module*len(seeds) # repliace the placeholder for each seed.
+            seeds_module = seeds_module*len(seeds) # replace the placeholder for each seed.
             seeds_module = map_placeholders(seeds_module, placeholder="[seed]", objects_list=seeds)
             return seeds_module
         prompt_corpus = read_json(get_data_gen_prompts_path() / "syn_data_gen.json")
@@ -1085,12 +1114,61 @@ class PromptBuilder():
         seeds_module_idx = list(prompt_blueprint.keys()).index("seeds")
         instruct_module_idx = list(prompt_blueprint.keys()).index("instruct")
         query_module_idx = list(prompt_blueprint.keys()).index("query")
-        if shuffle_seeds:
-            random.shuffle(seeds)
         prompt[seeds_module_idx] = populate_seeds(prompt[seeds_module_idx], seeds)
-        prompt[instruct_module_idx] = prompt[instruct_module_idx].format(score_level_range=score_level_range)
+        prompt[instruct_module_idx] = prompt[instruct_module_idx].format(score_level_range=self.score_level_range)
         prompt[query_module_idx] = prompt[query_module_idx].format(num_outputs=num_outputs)
         return flatten_list(prompt)
+    
+    async def generate_one_sample(
+            self,
+            model: MLLM,
+            gen_params: GenParams,
+            query_idxs: list[int],
+            seed_idxs: list[int]
+    ) -> None:
+        seeds = [str(get_one_answer_gt(by_model=self.by_model, idx=i, return_state=False)) for i in seed_idxs] 
+
+        data_gen_prompt = self.build_data_gen_prompt(
+            prompt_blueprint=self.prompt_blueprint,
+            seeds=seeds,
+            num_outputs=self.num_outputs
+        )
+
+        syn_sample = await model.predict_one(
+            query_prompt=data_gen_prompt,
+            query_idx=query_idxs,
+            gen_params=gen_params,
+            system_prompt=None,
+            only_text=True,
+            parse_to_dict=True,
+        )
+
+        print(syn_sample)
+
+        # TODO: syn_sample contains a batch of 'num_outputs' answers. Flatten it before saving it (and handle 'query_idxs' accordingly).
+        
+    def generate_many_samples(
+            self,
+            model: MLLM,
+            gen_params: GenParams,
+            num_samples: int,
+            seed_idxs: list[int],
+    ) -> None:
+        
+        if num_samples % self.num_outputs != 0:
+            raise AttributeError(f"The number of generated samples ({num_samples}) must be divisible by the number of outputs per request ({self.num_outputs}).")
+        
+        num_steps = int(num_samples // self.num_outputs)
+        
+        for step in range(num_steps):
+            request_query_idxs = [i + self.num_outputs*step for i in range(self.num_outputs)]
+            request_seed_idxs = random.sample(seed_idxs, self.num_seeds)
+            self.generate_one_sample(
+                model=model,
+                gen_params=gen_params,
+                query_idxs=request_query_idxs,
+                seed_idxs=request_seed_idxs
+            )
     
 def save_formatted_images(
         promptBuilder: PromptBuilder,
