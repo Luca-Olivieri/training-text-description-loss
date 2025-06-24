@@ -29,7 +29,7 @@ def create_pascal_label_colormap() -> np.ndarray[int]:
 
   return colormap
 
-def _full_color_map(
+def full_color_map(
         N: int = 256,
         normalized: bool = False
 ) -> np.ndarray[int]:
@@ -61,30 +61,32 @@ def _full_color_map(
     cmap = cmap/255 if normalized else cmap
     return cmap
 
-def get_color_map_dict() -> dict[int, tuple[int, int, int]]:
+def get_color_map_dict(with_void: bool = False) -> dict[int, tuple[int, int, int]]:
     """Gets the color map as dictionary {cls_idx: (r, g, b)} for the 21 VOC classes.
 
     Returns:
         Dictionary mapping class index to RGB tuple.
     """
-    color_map_list = _full_color_map()[:21].tolist()
+    color_map_list = full_color_map()[:21].tolist()
+    if with_void:
+        color_map_list += [full_color_map()[255].tolist()]
     return {i: tuple(rgb) for i, rgb in enumerate(color_map_list)}
 
 COLOR_MAP_DICT = get_color_map_dict()
+COLOR_MAP_VOID_DICT = get_color_map_dict(with_void=True)
 
-def get_inv_color_map_dict() -> dict[tuple[int, int, int], int]:
+def get_inv_color_map_dict(with_void: bool = False) -> dict[tuple[int, int, int], int]:
     """Gets the color map as dictionary {(r, g, b): cls_idx} for the 21 VOC classes.
 
     Returns:
         Dictionary mapping RGB tuple to class index.
     """
-    color_map_dict = get_color_map_dict()
+    color_map_dict = get_color_map_dict(with_void)
     inv_color_map_dict = {tuple(rgb): i for i, rgb in color_map_dict.items()}
     inv_color_map_dict[(255, 255, 255)] = 1 # to account for class-splitted prompts
     return inv_color_map_dict
 
-
-def get_color_map_as_img() -> Image.Image:
+def get_color_map_as_img(with_void: bool = False) -> Image.Image:
     """Gets the color map as RGB image for the 21 VOC classes.
 
     Returns:
@@ -95,18 +97,22 @@ def get_color_map_as_img() -> Image.Image:
 
     labels = [f"{l} [{i}]" for i, l in enumerate(labels)]
 
-    nclasses = 21
+    nclasses = 21 if not with_void else 22
     row_size = 50
     col_size = 500 # 500 default
-    cmap = _full_color_map()
+    cmap = full_color_map()
     array = np.empty((row_size*(nclasses), col_size, cmap.shape[1]), dtype=cmap.dtype)
     for i in range(nclasses):
-        array[i*row_size:i*row_size+row_size, :] = cmap[i]
+        if i < 21:
+            array[i*row_size:i*row_size+row_size, :] = cmap[i]
+        else:
+            array[i*row_size:i*row_size+row_size, :] = cmap[255]
 
     fig, ax = plt.subplots(figsize=(6, 12))
     ax.imshow(array)
     ax.set_yticks([row_size * i + row_size / 2 for i in range(nclasses)])
-    labels.remove("VOID [21]")
+    if not with_void:
+        labels.remove("VOID [21]")
     ax.set_yticklabels(labels)
     ax.set_xticks([])
     buf = io.BytesIO()

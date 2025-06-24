@@ -349,6 +349,11 @@ def my_tqdm(
         colour="#67ad5b", # Set a vibrant color,
         bar_format="{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}]")
 
+def get_compute_capability() -> float:
+    compute_capability = torch.cuda.get_device_capability()
+    compute_capability = compute_capability[0] + 0.1*compute_capability[1]
+    return compute_capability
+
 def main() -> None:
     pass
 

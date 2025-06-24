@@ -3,16 +3,19 @@ from data import *
 from utils import *
 
 import os
-from typing import Any, Dict, Generator, AsyncGenerator, List, Optional
+from typing import Any, Generator, AsyncGenerator, Optional
 from PIL.Image import Image as PILImage
 import asyncio
+from collections import OrderedDict
 
 from abc import abstractmethod
-# Google
 from google import genai
 from google.genai import types as genai_types
-
 from google.genai.errors import ServerError
+
+from torch import nn
+import torchmetrics as tm
+from torchmetrics.metric import Metric
 
 # Custom types
 Conversation = list[dict[str, str]] # list of chat-templated turns.
@@ -32,12 +35,12 @@ class GenParams(DictObject):
             last_n_not_to_repeat: Optional[int] = None,
             repeat_penalty: Optional[float] = None,
             temperature: Optional[float] = None,
-            stop_sequences: Optional[List[str]] = None,
+            stop_sequences: Optional[list[str]] = None,
             max_tokens:  Optional[int]  = None,
             top_k: Optional[int] = None,
             top_p: Optional[float] = None,
             min_p: Optional[float] = None,
-            answer_format: Optional[str | Dict[str, str]] = None
+            answer_format: Optional[str | dict[str, str]] = None
     ) -> None:
         """
         Initializea GenParams with optional generation parameters.
@@ -680,6 +683,7 @@ class OllamaMLLM(MLLM):
         if isinstance(user_prompt, list):
             user_prompt = ["[img]" if isinstance(item, PILImage) else item for item in user_prompt] # replaces all images with "[img]"
         if any([not isinstance(piece, str) for piece in user_prompt]):
+            print(user_prompt)
             raise TypeError(f"After having substitued PIL images with the placeholder '[img]', some pieces are not of type 'str'.")
         if isinstance(user_prompt, list):
             user_prompt = "".join(user_prompt)
@@ -877,6 +881,56 @@ class HuggingFaceMLLM(MLLM):
         self.model = model_name
         pass
 
+# used only to validate the correctness of the TorchMetrics metrics
+def my_accuracy(
+        logits: Tensor,
+        gts: Tensor
+) -> float:
+    preds = logits.argmax(dim=1, keepdim=False).flatten()
+    gts = gts.flatten()
+    total = gts.size(0)
+    acc = (preds == gts).sum().item() / total
+    return acc
+
+def evaluate(
+        model: nn.Module,
+        dl: DataLoader,
+        criterion: nn.modules.loss._Loss,
+        metrics_dict: dict[str, Metric]
+) -> dict[str, float]:
+    running_loss = 0.0
+    running_supcount = 0
+
+    metrics = tm.MetricCollection(metrics_dict)
+    metrics.reset()
+
+    model.eval()
+    progress_bar = tqdm(dl, desc=f"Evaluation")
+
+    with torch.no_grad():
+        for step, (scs, gts) in enumerate(progress_bar):
+            scs = scs.to(CONFIG["device"])
+            gts = gts.to(CONFIG["device"])
+            logits = model(scs)
+            logits = logits["out"] if isinstance(logits, OrderedDict) else logits
+
+            batch_loss = criterion(logits, gts)
+            running_loss += batch_loss.item() * gts.size(0)
+            running_supcount += gts.size(0)
+
+            metrics.update(logits.argmax(dim=1), gts)
+
+            torch.cuda.synchronize() if CONFIG["device"] == "cuda" else None
+    
+    loss = running_loss / running_supcount
+    metrics_score = metrics.compute()
+    return loss, metrics_score
+
+def pretty_metrics(
+        metric_collection: tm.MetricCollection
+) -> dict:
+    return {m: f"{s.item():.4f}" for m, s in metric_collection.items()}
+    
 def main() -> None:
     pass
     

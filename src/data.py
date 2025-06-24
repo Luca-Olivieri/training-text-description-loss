@@ -25,11 +25,14 @@ import nltk
 from nltk import ngrams
 
 CLASSES = ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR"]
+CLASSES_VOID = CLASSES + ["UNLABELLED"]
 
 # define the class mappings
 CLASS_MAP = {i: i for i in range(len(CLASSES))} # default mapping
+CLASS_MAP_VOID = {i: i for i in range(len(CLASSES_VOID))} # default mapping
 
 NUM_CLASSES = len(list(CLASS_MAP.values())) # actual number of classes
+NUM_CLASSES_VOID = len(list(CLASS_MAP_VOID.values())) # actual number of classes
 
 def get_image_UIDs(
         path: Path,
@@ -1061,6 +1064,58 @@ class SegDataset(Dataset):
             sc = get_sc(self.scs_paths[idx], self.image_size, self.center_crop)
             gt = get_gt(self.gts_paths[idx], self.class_map, self.image_size, self.mask_resize_mode, self.center_crop)
             return sc, gt
+        
+def class_pixel_distribution(
+        dl: DataLoader,
+        num_classes: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Computes the pixel-wise class distribution for a segmentation dataset.
+
+    Args:
+        dl: PyTorch DataLoader providing (image, label) batches.
+                                 Labels are expected to be 2D tensors (HxW) with integer class IDs.
+        num_classes: The total number of classes in the dataset.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+            - class_pixel_counts (torch.Tensor): A 1D tensor where each element
+                                                 is the total count of pixels for that class.
+            - class_pixel_distribution_percentage (torch.Tensor): A 1D tensor
+                                                                   with the percentage of pixels
+                                                                   for each class.
+    """
+    if not isinstance(num_classes, int) or num_classes <= 0:
+        raise ValueError("'num_classes' must be a positive integer.")
+
+    # Initialize a tensor to store pixel counts for each class
+    class_pixel_counts = torch.zeros(num_classes, dtype=torch.long, device=CONFIG["device"])
+
+    # Iterate through the DataLoader
+    for i, (_, labels) in enumerate(dl):
+        # labels will be of shape [batch_size, H, W]
+        # For each label in the batch:
+        for label_map in labels:
+            # label_map is [H, W]
+            # Flatten the label map to easily count pixel values
+            flattened_label = label_map.view(-1)
+
+            # Use torch.bincount to count occurrences of each class ID
+            # minlength ensures the tensor has 'num_classes' elements even if some classes are missing
+            counts = torch.bincount(flattened_label, minlength=num_classes)
+
+            # Add these counts to our total
+            class_pixel_counts += counts
+        
+    total_pixels = torch.sum(class_pixel_counts).item()
+
+    if total_pixels == 0:
+        print("Warning: No pixels processed. Check your dataset and labels.")
+        return class_pixel_counts, torch.zeros(num_classes, dtype=torch.float)
+    else:
+        # Calculate percentages
+        class_pixel_distribution_percentage = (class_pixel_counts.float() / total_pixels) * 100
+        return class_pixel_counts, class_pixel_distribution_percentage
     
 def extract_augment_preprocess_batch(
         batch: list,
