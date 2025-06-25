@@ -3,7 +3,7 @@ from data import *
 from utils import *
 from color_map import apply_colormap, COLOR_MAP_VOID_DICT
 from model import *
-from logger import get_tb_logger
+from logger import get_logger, get_tb_logger
 
 from torchvision.models import segmentation as segmodels
 from torchvision.models.segmentation import lraspp_mobilenet_v3_large, LRASPP_MobileNet_V3_Large_Weights
@@ -13,6 +13,7 @@ from torchvision.transforms._presets import SemanticSegmentation
 from torchmetrics.segmentation import MeanIoU
 from torchmetrics.classification import MulticlassAccuracy
 import torchmetrics as tm
+from datetime import datetime
 
 def set_trainable_params(
         model: nn.Module,
@@ -40,15 +41,18 @@ def train_loop(
     lr = 1e-4
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
+    CONFIG["exp_name"] += f'_{datetime.now().strftime("%y%m%d_%H%M")}'
+
+    logger = get_logger(CONFIG["log_dir"], CONFIG["exp_name"])
     tb_writer = get_tb_logger(CONFIG["tb_dir"], CONFIG["exp_name"])
+
+    logger.info(CONFIG["exp_name"])
 
     for epoch in range(CONFIG["seg"]["num_epochs"]):
 
         train_metrics.reset()
 
-        progress_bar = tqdm(train_dl, desc=f"Epoch {epoch+1}/{CONFIG['seg']['num_epochs']}")
-
-        for step, (scs, gts) in enumerate(progress_bar):
+        for step, (scs, gts) in enumerate(train_dl):
 
             model.train()
 
@@ -68,24 +72,21 @@ def train_loop(
 
             train_metrics_score = train_metrics(logits.argmax(dim=1), gts)
 
-            tb_log_counter = epoch*len(train_dl) + step
+            log_counter = epoch*len(train_dl) + step
 
-            # TensorBoard logging
-            tb_writer.add_scalar('val_loss', batch_loss, tb_log_counter)
-            for m, s in pretty_metrics(train_metrics_score).items():
-                tb_writer.add_scalar(f"train_{m}", s, tb_log_counter)
-
-            # tqdm updating
-            postfixes = {}
-            postfixes["batch_loss"] = f"{batch_loss:.4f}"
-            postfixes = postfixes | pretty_metrics(train_metrics_score)
-            postfixes["lr"] = f"{lr:.2e}"
-            postfixes["grad_norm"] = f"{grad_norm:.2f}"
-            progress_bar.set_postfix(postfixes)
+            # logging to file and TensorBoard
+            if (log_counter+1) % CONFIG["log_every"] == 0:
+                log_str = f"[{epoch+1}/{CONFIG['seg']['num_epochs']}:{step}] loss: {batch_loss:.4f}"
+                tb_writer.add_scalar('train/loss', batch_loss, log_counter)
+                for m, s in pretty_metrics(train_metrics_score).items():
+                    log_str += f", {m}: {s}"
+                    tb_writer.add_scalar(f'train/{m}', s, log_counter)
+                log_str += f", lr: {lr:.2e}, grad_norm: {grad_norm:.2f}"
+                logger.info(log_str)
 
             torch.cuda.synchronize() if CONFIG["device"] == "cuda" else None
 
-        loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict, "val_dl")
+        loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict, "val_dl", tb_writer, "val", epoch)
         print({"loss": f"{loss:.4f}"} | pretty_metrics(val_metrics_score))
 
 def main() -> None:
@@ -129,12 +130,8 @@ def main() -> None:
     # TODO assert complete data reproducility
     # TODO speed up things
     # TODO refactor everything
-    # TODO implement TensorBoard
     # TODO check if the pre-processing can in be coded better.
     # TODO try SegmentationModels library
-
-    # print(evaluate(model, train_dl, criterion, metrics_dict, "train_dl"))
-    # print(evaluate(model, val_dl, criterion, metrics_dict, "val_dl"))
 
     train_loop(
         model,

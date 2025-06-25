@@ -16,6 +16,7 @@ from google.genai.errors import ServerError
 from torch import nn
 import torchmetrics as tm
 from torchmetrics.metric import Metric
+from torch.utils.tensorboard import SummaryWriter
 
 # Custom types
 Conversation = list[dict[str, str]] # list of chat-templated turns.
@@ -898,6 +899,9 @@ def evaluate(
         criterion: nn.modules.loss._Loss,
         metrics_dict: dict[str, Metric],
         dl_desc: str = "",
+        tb_writer: SummaryWriter = None,
+        tb_tag_prefix: str = "eval",
+        tb_log_counter: int = 0
 ) -> dict[str, float]:
     running_loss = 0.0
     running_supcount = 0
@@ -925,6 +929,13 @@ def evaluate(
     
     loss = running_loss / running_supcount
     metrics_score = metrics.compute()
+
+    # TensorBoard logging
+    if tb_writer:
+        tb_writer.add_scalar(f'{tb_tag_prefix}/loss', batch_loss, tb_log_counter)
+        for m, s in pretty_metrics(metrics_score).items():
+            tb_writer.add_scalar(f'{tb_tag_prefix}/{m}', s, tb_log_counter)
+    
     return loss, metrics_score
 
 def pretty_metrics(
