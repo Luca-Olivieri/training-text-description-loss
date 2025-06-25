@@ -896,7 +896,8 @@ def evaluate(
         model: nn.Module,
         dl: DataLoader,
         criterion: nn.modules.loss._Loss,
-        metrics_dict: dict[str, Metric]
+        metrics_dict: dict[str, Metric],
+        dl_desc: str = "",
 ) -> dict[str, float]:
     running_loss = 0.0
     running_supcount = 0
@@ -905,7 +906,7 @@ def evaluate(
     metrics.reset()
 
     model.eval()
-    progress_bar = tqdm(dl, desc=f"Evaluation")
+    progress_bar = tqdm(dl, desc=f"Evaluating '{dl_desc}'")
 
     with torch.no_grad():
         for step, (scs, gts) in enumerate(progress_bar):

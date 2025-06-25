@@ -28,8 +28,8 @@ CLASSES = ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS"
 CLASSES_VOID = CLASSES + ["UNLABELLED"]
 
 # define the class mappings
-CLASS_MAP = {i: i for i in range(len(CLASSES))} # default mapping
-CLASS_MAP_VOID = {i: i for i in range(len(CLASSES_VOID))} # default mapping
+CLASS_MAP: dict[int, int] = {i: i for i in range(len(CLASSES))} # default mapping
+CLASS_MAP_VOID: dict[int, int] = {i: i for i in range(len(CLASSES_VOID))} # default mapping
 
 NUM_CLASSES = len(list(CLASS_MAP.values())) # actual number of classes
 NUM_CLASSES_VOID = len(list(CLASS_MAP_VOID.values())) # actual number of classes

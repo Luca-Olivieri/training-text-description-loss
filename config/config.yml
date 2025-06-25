@@ -1,2 +1,9 @@
 seed: 42
 device: "cuda"
+
+seg:
+  exp_name: "test"
+  image_size: 520
+  train_decoder_only: True
+  batch_size: 16
+  num_epochs: 100
