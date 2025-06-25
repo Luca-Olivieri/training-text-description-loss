@@ -32,10 +32,6 @@ def train_loop(
     if get_compute_capability() >= 7.0:
         model = torch.compile(model)
 
-    print(f"- Train. data-loader of {len(train_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
-    print(f"- Val. data-loader of {len(val_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
-    display("\n----------[Training Start]----------\n")
-
     train_metrics = tm.MetricCollection(metrics_dict)
 
     lr = 1e-4
@@ -46,7 +42,21 @@ def train_loop(
     logger = get_logger(CONFIG["log_dir"], CONFIG["exp_name"])
     tb_writer = get_tb_logger(CONFIG["tb_dir"], CONFIG["exp_name"])
 
-    logger.info(CONFIG["exp_name"])
+    logger.info(title(CONFIG['exp_name'], pad_symbol='='))
+    logger.info(CONFIG["exp_desc"]) if CONFIG["exp_desc"] is not None else None
+    logger.info(title("Data Loaders"))
+    logger.info(f"- Training data: {train_dl.size} samples, in {len(train_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
+    logger.info(f"- Vaòlidation data: {val_dl.size} samples, in {len(val_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
+    logger.info(title("Training Start"))
+
+    # initial val. logs log to file and TensorBoard
+    val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
+    log_str = f"[Before any weight update, VALIDATION] val_loss: {val_loss:.4f}"
+    tb_writer.add_scalar(f'val/loss', val_loss, 0)
+    for m, s in pretty_metrics(val_metrics_score).items():
+        log_str += f", val_{m}: {s}"
+        tb_writer.add_scalar(f'val/{m}', s, 0)
+    logger.info(log_str)
 
     for epoch in range(CONFIG["seg"]["num_epochs"]):
 
@@ -72,34 +82,43 @@ def train_loop(
 
             train_metrics_score = train_metrics(logits.argmax(dim=1), gts)
 
-            log_counter = epoch*len(train_dl) + step
+            tb_log_counter = epoch*len(train_dl) + step + 1
 
-            # logging to file and TensorBoard
-            if (log_counter+1) % CONFIG["log_every"] == 0:
-                log_str = f"[{epoch+1}/{CONFIG['seg']['num_epochs']}:{step}] loss: {batch_loss:.4f}"
-                tb_writer.add_scalar('train/loss', batch_loss, log_counter)
+            # train. logs to file and TensorBoard
+            if (step+1) % CONFIG["log_every"] == 0:
+                log_str = f"[epoch: {epoch+1}/{CONFIG['seg']['num_epochs']}, step: {step+1}/{len(train_dl)}] loss: {batch_loss:.4f}"
+                tb_writer.add_scalar('train/loss', batch_loss, tb_log_counter)
                 for m, s in pretty_metrics(train_metrics_score).items():
                     log_str += f", {m}: {s}"
-                    tb_writer.add_scalar(f'train/{m}', s, log_counter)
+                    tb_writer.add_scalar(f'train/{m}', s, tb_log_counter)
                 log_str += f", lr: {lr:.2e}, grad_norm: {grad_norm:.2f}"
                 logger.info(log_str)
 
             torch.cuda.synchronize() if CONFIG["device"] == "cuda" else None
 
-        loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict, "val_dl", tb_writer, "val", epoch)
-        print({"loss": f"{loss:.4f}"} | pretty_metrics(val_metrics_score))
+        val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
+
+        # val. logs log to file and TensorBoard
+        log_str = f"[epoch: {epoch+1}/{CONFIG['seg']['num_epochs']}, VALIDATION] val_loss: {val_loss:.4f}"
+        tb_writer.add_scalar(f'val/loss', val_loss, epoch)
+        for m, s in pretty_metrics(val_metrics_score).items():
+            log_str += f", val_{m}: {s}"
+            tb_writer.add_scalar(f'val/{m}', s, epoch)
+        logger.info(log_str)
+
+    tb_writer.close()
+
+    logger.info(title("Training Finished"))
+    torch.save(model.state_dict(), MODEL_WEIGHTS_CHECKPOINTS / f"lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth")
+    logger.info(f"Model 'lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth' successfully saved.")
 
 def main() -> None:
     
     train_ds = SegDataset(image_train_UIDs, CONFIG["seg"]["image_size"], CLASS_MAP_VOID)
     val_ds = SegDataset(image_val_UIDs, CONFIG["seg"]["image_size"], CLASS_MAP_VOID)
-    print(f"{len(train_ds)=}, {len(val_ds)=}")
 
-    model = segmodels.lraspp_mobilenet_v3_large(
-        # weights=None, # initialised decoder
-        weights=segmodels.LRASPP_MobileNet_V3_Large_Weights.DEFAULT, # pre-trained decoder
-        weights_backbone=MobileNet_V3_Large_Weights.IMAGENET1K_V2 # pre-trained backbone
-    ).to(CONFIG["device"])
+    model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
+    model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-test_250625_1527" + ".pth")))
     model.eval()
     
     preprocess = partial(SemanticSegmentation, resize_size=CONFIG["seg"]["image_size"])() # same as default transforms, but resize to 224 (instead of 520), as original backbone is trained on 224x224 ImageNet pictures.
@@ -115,21 +134,21 @@ def main() -> None:
         generator=torch_gen,
         collate_fn=collate_fn,
     )
+    train_dl.size = len(train_ds)
     val_dl = DataLoader(
         val_ds,
         batch_size=CONFIG["seg"]["batch_size"],
         generator=torch_gen,
         collate_fn=collate_fn,
     )
+    val_dl.size = len(val_ds)
 
     metrics_dict = {
         "acc": MulticlassAccuracy(num_classes=NUM_CLASSES_VOID, top_k=1, average="micro", multidim_average="global", ignore_index=21).to(CONFIG["device"]),
         "mIoU": MeanIoU(num_classes=NUM_CLASSES, include_background=True, per_class=False, input_format="index").to(CONFIG["device"])
     }
 
-    # TODO assert complete data reproducility
     # TODO speed up things
-    # TODO refactor everything
     # TODO check if the pre-processing can in be coded better.
     # TODO try SegmentationModels library
 

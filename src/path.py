@@ -10,6 +10,7 @@ PRIVATE_DATASETS_PATH = BASE_PATH / "data"
 MISC_PATH = BASE_PATH / "misc"
 
 MODEL_WEIGHTS_ROOT = PRIVATE_DATASETS_PATH / "torch_weights"
+MODEL_WEIGHTS_CHECKPOINTS = MODEL_WEIGHTS_ROOT / "checkpoints"
 torch.hub.set_dir(MODEL_WEIGHTS_ROOT) # set local model weights directory
 # os.environ["HF_HOME"] = str(PRIVATE_DATASETS_PATH / "huggingface_hub") # HuggingFace Hub Directory
 

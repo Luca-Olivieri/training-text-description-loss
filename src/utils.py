@@ -354,6 +354,37 @@ def get_compute_capability() -> float:
     compute_capability = compute_capability[0] + 0.1*compute_capability[1]
     return compute_capability
 
+def title(
+        text: str,
+        total_length: int = 100,
+        pad_symbol: str = '-'
+) -> str:
+    """
+    Centers a title within a given total length, padding with hyphens.
+
+    Args:
+        title (str): The string to be centered.
+        total_length (int): The total desired length of the output string.
+
+    Returns:
+        str: The centered string with hyphen padding.
+             Returns the original title if total_length is less than
+             or equal to the length of the title.
+    """
+    text = f"[ {text} ]"
+    if total_length <= len(text):
+        return text
+
+    padding_needed = total_length - len(text)
+    
+    # Calculate padding for left and right
+    # Integer division might put an extra '-' on the right if padding_needed is odd
+    left_padding = padding_needed // 2
+    right_padding = padding_needed - left_padding
+
+    centered_string = pad_symbol * left_padding + text + pad_symbol * right_padding
+    return centered_string
+
 def main() -> None:
     pass
 

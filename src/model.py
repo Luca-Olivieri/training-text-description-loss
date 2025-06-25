@@ -898,10 +898,6 @@ def evaluate(
         dl: DataLoader,
         criterion: nn.modules.loss._Loss,
         metrics_dict: dict[str, Metric],
-        dl_desc: str = "",
-        tb_writer: SummaryWriter = None,
-        tb_tag_prefix: str = "eval",
-        tb_log_counter: int = 0
 ) -> dict[str, float]:
     running_loss = 0.0
     running_supcount = 0
@@ -910,10 +906,9 @@ def evaluate(
     metrics.reset()
 
     model.eval()
-    progress_bar = tqdm(dl, desc=f"Evaluating '{dl_desc}'")
 
     with torch.no_grad():
-        for step, (scs, gts) in enumerate(progress_bar):
+        for step, (scs, gts) in enumerate(dl):
             scs = scs.to(CONFIG["device"])
             gts = gts.to(CONFIG["device"])
             logits = model(scs)
@@ -929,12 +924,6 @@ def evaluate(
     
     loss = running_loss / running_supcount
     metrics_score = metrics.compute()
-
-    # TensorBoard logging
-    if tb_writer:
-        tb_writer.add_scalar(f'{tb_tag_prefix}/loss', batch_loss, tb_log_counter)
-        for m, s in pretty_metrics(metrics_score).items():
-            tb_writer.add_scalar(f'{tb_tag_prefix}/{m}', s, tb_log_counter)
     
     return loss, metrics_score
 

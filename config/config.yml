@@ -1,13 +1,16 @@
-seed: 42
-device: "cuda"
+exp_name: "test"
+exp_desc: "This is just a test."
 
 tb_dir: "logs_tb"
 log_dir: "logs"
-exp_name: "test"
+
+seed: 42
+device: "cuda"
+
 log_every: 10
 
 seg:
   image_size: 520
   train_decoder_only: True
   batch_size: 16
-  num_epochs: 100
+  num_epochs: 2
