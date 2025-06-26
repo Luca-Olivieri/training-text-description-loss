@@ -11,6 +11,6 @@ log_every: 10
 
 seg:
   image_size: 520
-  train_decoder_only: False
+  train_decoder_only: True
   batch_size: 16
   num_epochs: 50

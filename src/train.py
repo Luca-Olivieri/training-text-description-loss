@@ -3,7 +3,7 @@ from data import *
 from utils import *
 from color_map import apply_colormap, COLOR_MAP_VOID_DICT
 from model import *
-from logger import get_logger, get_tb_logger
+from logger import *
 
 from torchvision.models import segmentation as segmodels
 from torchvision.models.segmentation import lraspp_mobilenet_v3_large, LRASPP_MobileNet_V3_Large_Weights
@@ -21,9 +21,6 @@ def set_trainable_params(
 ) -> None:
     model.backbone.requires_grad_(False) if train_decoder_only else model.backbone.requires_grad_(True)
     model.classifier.requires_grad_(True)
-    
-logger = get_logger(CONFIG["log_dir"], CONFIG["exp_name"])
-tb_writer = get_tb_logger(CONFIG["tb_dir"], CONFIG["exp_name"])
 
 def train_loop(
         model: nn.Module,
@@ -42,12 +39,7 @@ def train_loop(
 
     # initial val. logs log to file and TensorBoard
     val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
-    log_str = f"[Before any weight update, VALIDATION] val_loss: {val_loss:.4f}"
-    tb_writer.add_scalar(f'val/loss', val_loss, 0)
-    for m, s in pretty_metrics(val_metrics_score).items():
-        log_str += f", val_{m}: {s}"
-        tb_writer.add_scalar(f'val/{m}', s, 0)
-    logger.info(log_str)
+    log_segnet_scores(f"Before any weight update, VALIDATION", val_loss, val_metrics_score, 0, "val", None, "val_")
 
     for epoch in range(CONFIG["seg"]["num_epochs"]):
 
@@ -77,34 +69,28 @@ def train_loop(
 
             # train. logs to file and TensorBoard
             if (step+1) % CONFIG["log_every"] == 0:
-                log_str = f"[epoch: {epoch+1}/{CONFIG['seg']['num_epochs']}, step: {step+1}/{len(train_dl)}] loss: {batch_loss:.4f}"
-                tb_writer.add_scalar('train/loss', batch_loss, tb_log_counter)
-                for m, s in pretty_metrics(train_metrics_score).items():
-                    log_str += f", {m}: {s}"
-                    tb_writer.add_scalar(f'train/{m}', s, tb_log_counter)
-                log_str += f", lr: {lr:.2e}, grad_norm: {grad_norm:.2f}"
-                logger.info(log_str)
+                log_segnet_scores(f"epoch: {epoch+1}/{CONFIG['seg']['num_epochs']}, step: {step+1}/{len(train_dl)}", batch_loss, train_metrics_score, tb_log_counter, "train", f", lr: {lr:.2e}, grad_norm: {grad_norm:.2f}" ,"batch_")
 
             torch.cuda.synchronize() if CONFIG["device"] == "cuda" else None
 
         val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
 
-        # val. logs log to file and TensorBoard
-        log_str = f"[epoch: {epoch+1}/{CONFIG['seg']['num_epochs']}, VALIDATION] val_loss: {val_loss:.4f}"
-        tb_writer.add_scalar(f'val/loss', val_loss, epoch)
-        for m, s in pretty_metrics(val_metrics_score).items():
-            log_str += f", val_{m}: {s}"
-            tb_writer.add_scalar(f'val/{m}', s, epoch)
-        logger.info(log_str)
+        log_segnet_scores(f"epoch: {epoch+1}/{CONFIG['seg']['num_epochs']}, VALIDATION", val_loss, val_metrics_score, epoch+1, "val", None,"val_")
+    
+    logger.info(title("Training Finished"))
+    
+    # final train. logs to file
+    train_loss, train_metrics_score = evaluate(model, train_dl, criterion, metrics_dict)
+    log_segnet_scores(f"After {CONFIG['seg']['num_epochs']} epochs of training, TRAINING", train_loss, train_metrics_score, tb_log_counter, "train", None, "train_")
+    log_segnet_scores(f"After {CONFIG['seg']['num_epochs']} epochs of training, VALIDATION", val_loss, val_metrics_score, None, None, None, "val_")
 
 def main() -> None:
     
-    train_ds = SegDataset(image_train_UIDs, CONFIG["seg"]["image_size"], CLASS_MAP_VOID)
-    val_ds = SegDataset(image_val_UIDs, CONFIG["seg"]["image_size"], CLASS_MAP_VOID)
+    train_ds = SegDataset(image_train_UIDs, CONFIG['seg']['image_size'], CLASS_MAP_VOID)
+    val_ds = SegDataset(image_val_UIDs, CONFIG['seg']['image_size'], CLASS_MAP_VOID)
 
     model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
-    # model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
-    model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-baseline_250626_0527" + ".pth")))
+    model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
     model.eval()
 
     set_trainable_params(model, train_decoder_only=CONFIG["seg"]["train_decoder_only"])
@@ -139,16 +125,14 @@ def main() -> None:
     # TODO try SegmentationModels library
     # TODO integrate callbacks such as save the best model, etc.
     # TODO look up for the training protocol usually adopted for this dataset.
-    
-    CONFIG["exp_name"] += f'_{datetime.now().strftime("%y%m%d_%H%M")}'
 
     logger.info(title(CONFIG['exp_name'], pad_symbol='='))
     logger.info(CONFIG["exp_desc"]) if CONFIG["exp_desc"] is not None else None
     logger.info(title("Config"))
     logger.info(CONFIG)
-    logger.info(title("Data Loaders"))
+    logger.info(title("Data"))
     logger.info(f"- Training data: {len(train_ds)} samples, in {len(train_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
-    logger.info(f"- Validation data: {len(val_dl)} samples, in {len(val_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
+    logger.info(f"- Validation data: {len(val_ds)} samples, in {len(val_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
     logger.info(title("Training Start"))
 
     train_loop(
@@ -160,22 +144,6 @@ def main() -> None:
     )
     
     tb_writer.close()
-
-    logger.info(title("Training Finished"))
-    
-    # final train. logs to file
-    train_loss, train_metrics_score = evaluate(model, train_dl, criterion, metrics_dict)
-    log_str = f"[After training, TRAINING] val_loss: {train_loss:.4f}"
-    for m, s in pretty_metrics(train_metrics_score).items():
-        log_str += f", val_{m}: {s}"
-    logger.info(log_str)
-    
-    # final val. logs to file
-    val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
-    log_str = f"[After training, VALIDATION] val_loss: {val_loss:.4f}"
-    for m, s in pretty_metrics(val_metrics_score).items():
-        log_str += f", val_{m}: {s}"
-    logger.info(log_str)
     
     torch.save(model.state_dict(), MODEL_WEIGHTS_CHECKPOINTS / f"lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth")
     logger.info(f"Model 'lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth' successfully saved.")

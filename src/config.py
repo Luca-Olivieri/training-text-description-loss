@@ -6,6 +6,7 @@ from typing import Any
 import yaml
 import numpy as np
 import torch
+from datetime import datetime
 
 def load_config(config_filepath: Path) -> dict[str, Any]:
     with open(config_filepath, "r") as file:
@@ -18,6 +19,7 @@ BASE_PATH = Path("/home/olivieri/exp").resolve() # outer-most project path
 CONFIG_PATH =  BASE_PATH / "config"
 
 CONFIG = load_config(CONFIG_PATH / "config.yml")
+CONFIG["exp_name"] += f'_{datetime.now().strftime("%y%m%d_%H%M")}'
 
 # Reproducibility #
 

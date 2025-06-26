@@ -926,11 +926,6 @@ def evaluate(
     metrics_score = metrics.compute()
     
     return loss, metrics_score
-
-def pretty_metrics(
-        metric_collection: tm.MetricCollection
-) -> dict:
-    return {m: f"{s.item():.4f}" for m, s in metric_collection.items()}
     
 def main() -> None:
     pass

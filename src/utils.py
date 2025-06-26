@@ -19,6 +19,7 @@ from tqdm import tqdm
 from typing import Any, TypeVar, Optional
 from PIL import Image
 from PIL.Image import Image as PILImage
+import torchmetrics as tm
 
 from config import *
 from path import PRIVATE_DATASETS_PATH
@@ -384,6 +385,11 @@ def title(
 
     centered_string = pad_symbol * left_padding + text + pad_symbol * right_padding
     return centered_string
+
+def pretty_metrics(
+        metric_collection: tm.MetricCollection
+) -> dict:
+    return {m: f"{s.item():.4f}" for m, s in metric_collection.items()}
 
 def main() -> None:
     pass
