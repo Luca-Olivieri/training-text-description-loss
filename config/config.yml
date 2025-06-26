@@ -1,5 +1,5 @@
-exp_name: "test"
-exp_desc: "This is just a test."
+exp_name: "baseline"
+exp_desc: "baseline training with XEn and fixed lr, fixed center-cropping and no augmentations."
 
 tb_dir: "logs_tb"
 log_dir: "logs"
@@ -11,6 +11,6 @@ log_every: 10
 
 seg:
   image_size: 520
-  train_decoder_only: True
+  train_decoder_only: False
   batch_size: 16
-  num_epochs: 2
+  num_epochs: 50

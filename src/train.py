@@ -21,6 +21,9 @@ def set_trainable_params(
 ) -> None:
     model.backbone.requires_grad_(False) if train_decoder_only else model.backbone.requires_grad_(True)
     model.classifier.requires_grad_(True)
+    
+logger = get_logger(CONFIG["log_dir"], CONFIG["exp_name"])
+tb_writer = get_tb_logger(CONFIG["tb_dir"], CONFIG["exp_name"])
 
 def train_loop(
         model: nn.Module,
@@ -36,18 +39,6 @@ def train_loop(
 
     lr = 1e-4
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-
-    CONFIG["exp_name"] += f'_{datetime.now().strftime("%y%m%d_%H%M")}'
-
-    logger = get_logger(CONFIG["log_dir"], CONFIG["exp_name"])
-    tb_writer = get_tb_logger(CONFIG["tb_dir"], CONFIG["exp_name"])
-
-    logger.info(title(CONFIG['exp_name'], pad_symbol='='))
-    logger.info(CONFIG["exp_desc"]) if CONFIG["exp_desc"] is not None else None
-    logger.info(title("Data Loaders"))
-    logger.info(f"- Training data: {train_dl.size} samples, in {len(train_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
-    logger.info(f"- Vaòlidation data: {val_dl.size} samples, in {len(val_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
-    logger.info(title("Training Start"))
 
     # initial val. logs log to file and TensorBoard
     val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
@@ -106,20 +97,17 @@ def train_loop(
             tb_writer.add_scalar(f'val/{m}', s, epoch)
         logger.info(log_str)
 
-    tb_writer.close()
-
-    logger.info(title("Training Finished"))
-    torch.save(model.state_dict(), MODEL_WEIGHTS_CHECKPOINTS / f"lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth")
-    logger.info(f"Model 'lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth' successfully saved.")
-
 def main() -> None:
     
     train_ds = SegDataset(image_train_UIDs, CONFIG["seg"]["image_size"], CLASS_MAP_VOID)
     val_ds = SegDataset(image_val_UIDs, CONFIG["seg"]["image_size"], CLASS_MAP_VOID)
 
     model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
-    model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-test_250625_1527" + ".pth")))
+    # model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
+    model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-baseline_250626_0527" + ".pth")))
     model.eval()
+
+    set_trainable_params(model, train_decoder_only=CONFIG["seg"]["train_decoder_only"])
     
     preprocess = partial(SemanticSegmentation, resize_size=CONFIG["seg"]["image_size"])() # same as default transforms, but resize to 224 (instead of 520), as original backbone is trained on 224x224 ImageNet pictures.
 
@@ -134,14 +122,12 @@ def main() -> None:
         generator=torch_gen,
         collate_fn=collate_fn,
     )
-    train_dl.size = len(train_ds)
     val_dl = DataLoader(
         val_ds,
         batch_size=CONFIG["seg"]["batch_size"],
         generator=torch_gen,
         collate_fn=collate_fn,
     )
-    val_dl.size = len(val_ds)
 
     metrics_dict = {
         "acc": MulticlassAccuracy(num_classes=NUM_CLASSES_VOID, top_k=1, average="micro", multidim_average="global", ignore_index=21).to(CONFIG["device"]),
@@ -151,6 +137,19 @@ def main() -> None:
     # TODO speed up things
     # TODO check if the pre-processing can in be coded better.
     # TODO try SegmentationModels library
+    # TODO integrate callbacks such as save the best model, etc.
+    # TODO look up for the training protocol usually adopted for this dataset.
+    
+    CONFIG["exp_name"] += f'_{datetime.now().strftime("%y%m%d_%H%M")}'
+
+    logger.info(title(CONFIG['exp_name'], pad_symbol='='))
+    logger.info(CONFIG["exp_desc"]) if CONFIG["exp_desc"] is not None else None
+    logger.info(title("Config"))
+    logger.info(CONFIG)
+    logger.info(title("Data Loaders"))
+    logger.info(f"- Training data: {len(train_ds)} samples, in {len(train_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
+    logger.info(f"- Validation data: {len(val_dl)} samples, in {len(val_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
+    logger.info(title("Training Start"))
 
     train_loop(
         model,
@@ -159,6 +158,27 @@ def main() -> None:
         criterion,
         metrics_dict
     )
+    
+    tb_writer.close()
 
+    logger.info(title("Training Finished"))
+    
+    # final train. logs to file
+    train_loss, train_metrics_score = evaluate(model, train_dl, criterion, metrics_dict)
+    log_str = f"[After training, TRAINING] val_loss: {train_loss:.4f}"
+    for m, s in pretty_metrics(train_metrics_score).items():
+        log_str += f", val_{m}: {s}"
+    logger.info(log_str)
+    
+    # final val. logs to file
+    val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
+    log_str = f"[After training, VALIDATION] val_loss: {val_loss:.4f}"
+    for m, s in pretty_metrics(val_metrics_score).items():
+        log_str += f", val_{m}: {s}"
+    logger.info(log_str)
+    
+    torch.save(model.state_dict(), MODEL_WEIGHTS_CHECKPOINTS / f"lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth")
+    logger.info(f"Model 'lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth' successfully saved.")
+    
 if __name__ == '__main__':
     main()
