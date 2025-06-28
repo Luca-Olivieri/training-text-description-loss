@@ -1,5 +1,5 @@
-exp_name: "baseline"
-exp_desc: "baseline training with XEn and fixed lr, fixed center-cropping and no augmentations."
+exp_name: "aug_1"
+exp_desc: "Baseline training with slight augmentation (RandomCrop, RandomHzFlip(0.5)), fixed lr 1e-4."
 
 tb_dir: "logs_tb"
 log_dir: "logs"
@@ -11,6 +11,6 @@ log_every: 10
 
 seg:
   image_size: 520
-  train_decoder_only: True
+  train_decoder_only: False
   batch_size: 16
   num_epochs: 50

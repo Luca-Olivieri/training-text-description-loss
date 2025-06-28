@@ -17,7 +17,9 @@ import torch
 from torch import Tensor
 from torchvision.io import decode_image
 import torch.nn.functional as F
+import torchvision.transforms.v2 as T
 import torchvision.transforms.functional as TF
+from torchvision import tv_tensors
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import base64
@@ -28,11 +30,11 @@ CLASSES = ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS"
 CLASSES_VOID = CLASSES + ["UNLABELLED"]
 
 # define the class mappings
-CLASS_MAP: dict[int, int] = {i: i for i in range(len(CLASSES))} # default mapping
-CLASS_MAP_VOID: dict[int, int] = {i: i for i in range(len(CLASSES_VOID))} # default mapping
+CLASS_MAP: dict[int, int] = {i: i for i in range(len(CLASSES))} | {255: 0}# default mapping
+CLASS_MAP_VOID: dict[int, int] = CLASS_MAP | {255: 21}
 
-NUM_CLASSES = len(list(CLASS_MAP.values())) # actual number of classes
-NUM_CLASSES_VOID = len(list(CLASS_MAP_VOID.values())) # actual number of classes
+NUM_CLASSES = len(set(CLASS_MAP.values())) # actual number of classes
+NUM_CLASSES_VOID = len(set(CLASS_MAP_VOID.values())) # actual number of classes
 
 def get_image_UIDs(
         path: Path,
@@ -95,7 +97,8 @@ image_train_UIDs = np.array(get_image_UIDs(SPLITS_PATH, split="train"))
 image_val_UIDs = np.array(get_image_UIDs(SPLITS_PATH, split="val"))
 
 def get_image(
-        path: str
+        path: str,
+        resize_size: Optional[int | tuple[int, int]] = None,
 ) -> torch.Tensor:
     """
     Reads a single image from disk and encodes it in a tensor.
@@ -107,6 +110,8 @@ def get_image(
         Image as a torch.Tensor on the global device.
     """
     img = decode_image(path)
+    if resize_size:
+        img = TF.resize(img, resize_size)
     img = img.to(CONFIG["device"])
     return img
 
@@ -142,27 +147,6 @@ def one_hot_encode_masks(
     one_hot_masks = masks == torch.arange(NUM_CLASSES).to(CONFIG["device"])[:, None, None, None]
     one_hot_masks = one_hot_masks.swapaxes(0, 1)
     return one_hot_masks
-
-def resize_image_(
-        img: torch.Tensor,
-        image_size: int | tuple[int, int],
-        mode: str
-) -> torch.Tensor:
-    """
-    Resizes an image tensor to the given size and mode.
-
-    Args:
-        img: Image tensor to resize.
-        image_size: Target size as int or tuple.
-        mode: Interpolation mode.
-
-    Returns:
-        Resized image tensor.
-    """
-    img = (img/255.).unsqueeze(0)
-    img = F.interpolate(img, size=image_size, mode=mode)
-    img = (img.squeeze(0)*255).clamp(0, 255).byte()
-    return img
 
 def resize_image(
         img: torch.Tensor,
@@ -200,9 +184,8 @@ def resize_image(
 
 def resize_mask(
         mask: torch.Tensor,
-        image_size: None | tuple[int, int] | int,
+        resize_size: None | tuple[int, int] | int,
         mode: str,
-        center_crop: bool
 ) -> torch.Tensor:
     """
     Resizes a mask tensor using the specified mode.
@@ -219,16 +202,16 @@ def resize_mask(
     if mode not in ["bilinear", "nearest"]:
         raise AttributeError("Resizing mode must be 'bilinear' or 'nearest'.")
     if mode == "bilinear":
-        one_hot_mask = one_hot_encode_masks(mask.unsqueeze(0)).squeeze(0)
-        one_hot_mask = one_hot_mask.float()
-        resized_mask = resize_image(one_hot_mask, image_size, "bilinear").argmax(dim=0, keepdim=True).byte()
+        one_hot_mask = one_hot_encode_masks(mask.unsqueeze(0)).squeeze(0).float()
+        resized_mask = resize_image(one_hot_mask, resize_size, "bilinear").argmax(dim=0, keepdim=True).byte()
     elif mode == "nearest":
-        resized_mask = resize_image(mask, image_size, "nearest")
+        # resized_mask = resize_image(mask, image_size, "nearest")
+        resized_mask = TF.resize(mask, resize_size, T.InterpolationMode.NEAREST)
     return resized_mask
 
 def get_sc(
         path: Path,
-        image_size: None | int | tuple[int, int] = None,
+        resize_size: None | int | tuple[int, int] = None,
         center_crop: bool = True
 ) -> torch.Tensor:
     """
@@ -243,8 +226,8 @@ def get_sc(
         Processed image tensor.
     """
     sc = get_image(path)
-    if image_size is not None:
-        sc = resize_image(sc, image_size, mode="bilinear")
+    if resize_size is not None:
+        sc = resize_image(sc, resize_size, mode="bilinear")
     if center_crop:
         sc = TF.center_crop(sc, output_size=min(sc.shape[1:]))
     return sc
@@ -264,7 +247,8 @@ def apply_class_map(
         Mask tensor with mapped classes.
     """
     mask_ = mask.cpu()
-    mask_.apply_(lambda x: class_map.get(x, 0)) # class mapping
+    # mask_.apply_(lambda x: class_map.get(x, 0)) # class mapping
+    mask_.apply_(lambda x: class_map[x]) # class mapping
     mask = mask_.to(CONFIG["device"])
     return mask
 
@@ -289,11 +273,9 @@ def _get_mask(
         Processed mask tensor.
     """
     mask = get_image(path)
-    class_map_ = class_map.copy()
-    class_map_[255] = 0 # additionally, map UNLABELLED to BACKGROUND
-    mask = apply_class_map(mask, class_map_)
+    mask = apply_class_map(mask, class_map)
     if image_size is not None:
-        mask = resize_mask(mask, image_size, resize_mode, center_crop=True)
+        mask = resize_mask(mask, image_size, resize_mode)
     if center_crop:
         mask = TF.center_crop(mask, output_size=min(mask.shape[1:]))
     return mask
@@ -301,7 +283,7 @@ def _get_mask(
 def get_gt(
         path: Path,
         class_map: dict,
-        image_size: None | tuple[int, int] | int = None,
+        resize_size: None | tuple[int, int] | int = None,
         resize_mode: str = "nearest",
         center_crop: bool = True
 ) -> torch.Tensor:
@@ -318,7 +300,7 @@ def get_gt(
     Returns:
         Processed ground truth mask tensor.
     """
-    return _get_mask(path, class_map, image_size, resize_mode, center_crop)
+    return _get_mask(path, class_map, resize_size, resize_mode, center_crop)
 
 def get_pr(
         path: str,
@@ -1036,17 +1018,15 @@ class SegDataset(Dataset):
     def __init__(
             self,
             uids: list[int],
-            image_size: int | list[int, int],
+            resize_size: int | list[int, int],
             class_map: dict,
             mask_resize_mode: str = "nearest",
-            center_crop: bool = True
     ) -> None:
         self.scs_paths = [SCS_PATH / (UID + ".jpg") for UID in uids]
         self.gts_paths = [GTS_PATH / (UID + ".png") for UID in uids]
-        self.image_size = image_size
+        self.resize_size = resize_size
         self.class_map = class_map
         self.mask_resize_mode = mask_resize_mode
-        self.center_crop = center_crop
 
     def __len__(self) -> int:
         return len(self.gts_paths)
@@ -1057,12 +1037,12 @@ class SegDataset(Dataset):
     ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor]:
         if isinstance(idx, slice):
             indices = range(*idx.indices(len(self)))
-            scs = torch.stack([get_sc(self.scs_paths[i], self.image_size, self.center_crop) for i in indices])
-            gts = torch.stack([get_gt(self.gts_paths[i], self.class_map, self.image_size, self.mask_resize_mode, self.center_crop) for i in indices])
+            scs = [get_sc(path=self.scs_paths[i], resize_size=self.resize_size, center_crop=False) for i in indices]
+            gts = [get_gt(path=self.gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=False) for i in indices]
             return scs, gts
         else:
-            sc = get_sc(self.scs_paths[idx], self.image_size, self.center_crop)
-            gt = get_gt(self.gts_paths[idx], self.class_map, self.image_size, self.mask_resize_mode, self.center_crop)
+            sc = get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=False)
+            gt = get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=False)
             return sc, gt
         
 def class_pixel_distribution(
@@ -1117,25 +1097,29 @@ def class_pixel_distribution(
         class_pixel_distribution_percentage = (class_pixel_counts.float() / total_pixels) * 100
         return class_pixel_counts, class_pixel_distribution_percentage
     
-def extract_augment_preprocess_batch(
+def crop_augment_preprocess_batch(
         batch: list,
+        crop_module: Callable,
         augment_fn: Callable,
         preprocess_fn: Callable
 ) -> tuple[Tensor, Tensor]:
     # Has to be made into a 'collate_fn' by fixing the parameters other than 'batch'!
     x, y = zip(*batch)
-    x = (torch.stack(x)/255.).float()
-    y = torch.stack(y).long().squeeze(1)
 
     # when the images are sampled in the batch, they are:
     #   1. in Float32 in the range [0, 1],
     #   2. in shape [B, C, H, W],
+    
+    x, y = zip(*[crop_module(x_, tv_tensors.Mask(y_)) for x_, y_ in zip(x, y)])
 
-    if augment_fn is not None:
-        x = augment_fn(x)
+    x = (torch.stack(x)/255.).float()
+    y = torch.stack(y).long().squeeze(1)
 
-    if preprocess_fn is not None:
-        x = preprocess_fn(x) # TODO: this should handle y as well!
+    if augment_fn:
+        x, y = augment_fn(x, tv_tensors.Mask(y))
+
+    if preprocess_fn:
+        x = preprocess_fn(x)
 
     return x, y
 

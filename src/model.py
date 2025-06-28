@@ -1,6 +1,7 @@
 from config import *
 from data import *
 from utils import *
+from metrics import *
 
 import os
 from typing import Any, Generator, AsyncGenerator, Optional
@@ -898,7 +899,7 @@ def evaluate(
         dl: DataLoader,
         criterion: nn.modules.loss._Loss,
         metrics_dict: dict[str, Metric],
-) -> dict[str, float]:
+) -> ...:
     running_loss = 0.0
     running_supcount = 0
 
@@ -910,9 +911,9 @@ def evaluate(
     with torch.no_grad():
         for step, (scs, gts) in enumerate(dl):
             scs = scs.to(CONFIG["device"])
-            gts = gts.to(CONFIG["device"])
+            gts = gts.to(CONFIG["device"]) # [B, H, W]
             logits = model(scs)
-            logits = logits["out"] if isinstance(logits, OrderedDict) else logits
+            logits = logits["out"] if isinstance(logits, OrderedDict) else logits # [B, C, H, W]
 
             batch_loss = criterion(logits, gts)
             running_loss += batch_loss.item() * gts.size(0)
@@ -926,7 +927,7 @@ def evaluate(
     metrics_score = metrics.compute()
     
     return loss, metrics_score
-    
+
 def main() -> None:
     pass
     

@@ -11,7 +11,7 @@ from torchvision.models.mobilenetv3 import mobilenet_v3_large, MobileNet_V3_Larg
 from functools import partial
 from torchvision.transforms._presets import SemanticSegmentation
 from torchmetrics.segmentation import MeanIoU
-from torchmetrics.classification import MulticlassAccuracy
+from torchmetrics.classification import MulticlassAccuracy, MulticlassJaccardIndex
 import torchmetrics as tm
 from datetime import datetime
 
@@ -34,7 +34,7 @@ def train_loop(
 
     train_metrics = tm.MetricCollection(metrics_dict)
 
-    lr = 1e-4
+    lr = 3e-4
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     # initial val. logs log to file and TensorBoard
@@ -50,12 +50,12 @@ def train_loop(
             model.train()
 
             scs = scs.to(CONFIG["device"])
-            gts = gts.to(CONFIG["device"])
+            gts = gts.to(CONFIG["device"]) # shape [N, H, W]
 
             optimizer.zero_grad()
 
-            logits: Tensor = model(scs)
-            logits = logits["out"] if isinstance(logits, OrderedDict) else logits
+            logits = model(scs)
+            logits: torch.Tensor = logits["out"] if isinstance(logits, OrderedDict) else logits # shape [N, C, H, W]
 
             batch_loss = criterion(logits, gts)
             batch_loss.backward()
@@ -93,11 +93,16 @@ def main() -> None:
     model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
     model.eval()
 
-    set_trainable_params(model, train_decoder_only=CONFIG["seg"]["train_decoder_only"])
+    set_trainable_params(model, train_decoder_only=CONFIG['seg']['train_decoder_only'])
     
-    preprocess = partial(SemanticSegmentation, resize_size=CONFIG["seg"]["image_size"])() # same as default transforms, but resize to 224 (instead of 520), as original backbone is trained on 224x224 ImageNet pictures.
+    preprocess = partial(SemanticSegmentation, resize_size=CONFIG['seg']['image_size'])() # same as original one, but with custom resizing
 
-    collate_fn = partial(extract_augment_preprocess_batch, augment_fn=None, preprocess_fn=preprocess)
+    augment_fn = T.Compose([
+        T.RandomHorizontalFlip(p=0.5)
+    ])
+
+    train_collate_fn = partial(crop_augment_preprocess_batch, crop_module=T.RandomCrop(CONFIG['seg']['image_size']), augment_fn=augment_fn, preprocess_fn=preprocess)
+    val_collate_fn = partial(crop_augment_preprocess_batch, crop_module=T.CenterCrop(CONFIG['seg']['image_size']), augment_fn=None, preprocess_fn=preprocess)
 
     criterion = nn.CrossEntropyLoss(ignore_index=21)
 
@@ -106,25 +111,28 @@ def main() -> None:
         batch_size=CONFIG["seg"]["batch_size"],
         shuffle=True,
         generator=torch_gen,
-        collate_fn=collate_fn,
+        collate_fn=train_collate_fn,
     )
     val_dl = DataLoader(
         val_ds,
         batch_size=CONFIG["seg"]["batch_size"],
+        shuffle=False,
         generator=torch_gen,
-        collate_fn=collate_fn,
+        collate_fn=val_collate_fn,
     )
 
     metrics_dict = {
         "acc": MulticlassAccuracy(num_classes=NUM_CLASSES_VOID, top_k=1, average="micro", multidim_average="global", ignore_index=21).to(CONFIG["device"]),
-        "mIoU": MeanIoU(num_classes=NUM_CLASSES, include_background=True, per_class=False, input_format="index").to(CONFIG["device"])
+        "mIoU": MulticlassJaccardIndex(NUM_CLASSES_VOID, average="macro", ignore_index=21).to(CONFIG["device"]),
     }
 
     # TODO speed up things
     # TODO check if the pre-processing can in be coded better.
-    # TODO try SegmentationModels library
     # TODO integrate callbacks such as save the best model, etc.
-    # TODO look up for the training protocol usually adopted for this dataset.
+    # TODO Excluding the VOID during training worsen the segmentation visual quality since the borders can be fucked up, it it correct to exclude it?.
+    # TODO integrate the full images evaluation in 'seg.ipynb'.
+    # TODO why if I set zero_division=torch.nan with average="macro" the result is 'nan'?. With average=None it works as expected.
+    # TODO the logger creates a exp log folder at each evaluation I think, perhaps, moving outside of the global scope of 'logging.py' will fix it.
 
     logger.info(title(CONFIG['exp_name'], pad_symbol='='))
     logger.info(CONFIG["exp_desc"]) if CONFIG["exp_desc"] is not None else None
@@ -135,18 +143,21 @@ def main() -> None:
     logger.info(f"- Validation data: {len(val_ds)} samples, in {len(val_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
     logger.info(title("Training Start"))
 
-    train_loop(
+    try:
+        train_loop(
         model,
         train_dl,
         val_dl,
         criterion,
         metrics_dict
     )
-    
+    except KeyboardInterrupt:
+        logger.info(title("Training Interrupted", pad_symbol='-'))
+
     tb_writer.close()
     
     torch.save(model.state_dict(), MODEL_WEIGHTS_CHECKPOINTS / f"lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth")
     logger.info(f"Model 'lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth' successfully saved.")
-    
+
 if __name__ == '__main__':
     main()

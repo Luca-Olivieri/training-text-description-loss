@@ -199,8 +199,9 @@ def get_color_map_as(format: str):
 
 def apply_colormap(
         mask: torch.Tensor,
-        color_map: dict[int, tuple[int, int, int]]
-) -> Image.Image:
+        color_map: dict[int, tuple[int, int, int]],
+        num_classes: int
+) -> torch.Tensor:
     """Receives a tensor of shape [C, H, W] and returns a PIL Image with the color map applied.
 
     Args:
@@ -211,11 +212,10 @@ def apply_colormap(
         Image with color map applied.
     """
     assert len(mask.shape) == 3, mask.shape
-    mask_all_classes = (mask == torch.arange(NUM_CLASSES).to(CONFIG["device"])[:, None, None, None]).swapaxes(0, 1)
+    mask_all_classes = (mask == torch.arange(num_classes).to(CONFIG["device"])[:, None, None, None]).swapaxes(0, 1)
     if mask.shape[0] == 1:
         mask = mask.repeat(3, 1, 1)
     mask = draw_segmentation_masks(mask, mask_all_classes[0], colors=list(color_map.values()), alpha=1.)
-    mask = to_pil_image(mask)
     return mask
 
 def rgb_to_class(mask_np: np.ndarray) -> np.ndarray:

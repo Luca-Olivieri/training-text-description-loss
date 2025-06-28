@@ -742,8 +742,8 @@ class PromptBuilder():
         """
         prs_path = get_mask_prs_path(self.by_model)
         sc = to_pil_image(get_sc(SCS_PATH / (image_UIDs[idx] + ".jpg"), image_size_))
-        gt = apply_colormap(get_gt(GTS_PATH / (image_UIDs[idx] + ".png"), self.class_map, image_size_), self.color_map)
-        pr = apply_colormap(get_pr(prs_path / f"mask_pr_{idx}.png", self.class_map, image_size_), self.color_map)
+        gt = to_pil_image(apply_colormap(get_gt(GTS_PATH / (image_UIDs[idx] + ".png"), self.class_map, image_size_), self.color_map, NUM_CLASSES))
+        pr = to_pil_image(apply_colormap(get_pr(prs_path / f"mask_pr_{idx}.png", self.class_map, image_size_), self.color_map, NUM_CLASSES))
         assert sc.size == gt.size == pr.size
         return sc, gt, pr
 
