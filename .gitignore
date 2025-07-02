@@ -24,6 +24,9 @@ logs/
 # Data folder
 data
 
+# GitHub Vendors
+src/vendors
+
 # VS Code
 .devcontainer/*
 devcontainer.json
