@@ -1,5 +1,5 @@
-exp_name: "aug_1"
-exp_desc: "Baseline training with slight augmentation (RandomCrop, RandomHzFlip(0.5)), fixed lr 1e-4."
+exp_name: "2st_half"
+exp_desc: "Test if we can split the training in two halfs and resetting the optimizer."
 
 tb_dir: "logs_tb"
 log_dir: "logs"
@@ -13,4 +13,4 @@ seg:
   image_size: 520
   train_decoder_only: False
   batch_size: 16
-  num_epochs: 50
+  num_epochs: 45

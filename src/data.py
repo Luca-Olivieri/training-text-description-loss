@@ -1099,7 +1099,7 @@ def class_pixel_distribution(
     
 def crop_augment_preprocess_batch(
         batch: list,
-        crop_module: Callable,
+        crop_fn: Callable,
         augment_fn: Callable,
         preprocess_fn: Callable
 ) -> tuple[Tensor, Tensor]:
@@ -1110,7 +1110,7 @@ def crop_augment_preprocess_batch(
     #   1. in Float32 in the range [0, 1],
     #   2. in shape [B, C, H, W],
     
-    x, y = zip(*[crop_module(x_, tv_tensors.Mask(y_)) for x_, y_ in zip(x, y)])
+    x, y = zip(*[crop_fn(x_, tv_tensors.Mask(y_)) for x_, y_ in zip(x, y)])
 
     x = (torch.stack(x)/255.).float()
     y = torch.stack(y).long().squeeze(1)

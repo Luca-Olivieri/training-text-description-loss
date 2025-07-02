@@ -34,7 +34,7 @@ def train_loop(
 
     train_metrics = tm.MetricCollection(metrics_dict)
 
-    lr = 3e-4
+    lr = 1e-4
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
     # initial val. logs log to file and TensorBoard
@@ -90,19 +90,34 @@ def main() -> None:
     val_ds = SegDataset(image_val_UIDs, CONFIG['seg']['image_size'], CLASS_MAP_VOID)
 
     model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
-    model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
+    # model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
+    model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-1st_half_250630_0910" + ".pth")))
     model.eval()
 
     set_trainable_params(model, train_decoder_only=CONFIG['seg']['train_decoder_only'])
     
-    preprocess = partial(SemanticSegmentation, resize_size=CONFIG['seg']['image_size'])() # same as original one, but with custom resizing
+    preprocess_fn = partial(SemanticSegmentation, resize_size=CONFIG['seg']['image_size'])() # same as original one, but with custom resizing
 
+    # cropping functions
+    center_crop_fn = T.CenterCrop(CONFIG['seg']['image_size'])
+    random_crop_fn = T.RandomCrop(CONFIG['seg']['image_size'])
+    
+    # augmentations
     augment_fn = T.Compose([
-        T.RandomHorizontalFlip(p=0.5)
+        T.RandomHorizontalFlip(p=0.5),
+        # T.RandomAffine(degrees=0, scale=(0.5, 2)), # Zooms in and out of the image.
+        # T.RandomAffine(degrees=[-30, 30], translate=[0.2, 0.2], scale=(0.5, 2), shear=15), # Full affine transform.
+        # T.RandomPerspective(p=0.5, distortion_scale=0.2) # Shears the image
     ])
 
-    train_collate_fn = partial(crop_augment_preprocess_batch, crop_module=T.RandomCrop(CONFIG['seg']['image_size']), augment_fn=augment_fn, preprocess_fn=preprocess)
-    val_collate_fn = partial(crop_augment_preprocess_batch, crop_module=T.CenterCrop(CONFIG['seg']['image_size']), augment_fn=None, preprocess_fn=preprocess)
+    # train_collate_fn = partial(crop_augment_preprocess_batch, crop_module=T.RandomCrop(CONFIG['seg']['image_size']), augment_fn=augment_fn, preprocess_fn=preprocess)
+    train_collate_fn = partial(
+        crop_augment_preprocess_batch,
+        crop_fn=random_crop_fn,
+        augment_fn=augment_fn,
+        preprocess_fn=preprocess_fn)
+    
+    val_collate_fn = partial(crop_augment_preprocess_batch, crop_fn=T.CenterCrop(CONFIG['seg']['image_size']), augment_fn=None, preprocess_fn=preprocess_fn)
 
     criterion = nn.CrossEntropyLoss(ignore_index=21)
 
