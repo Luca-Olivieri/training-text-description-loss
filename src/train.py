@@ -91,7 +91,7 @@ def main() -> None:
 
     model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
     # model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
-    model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-1st_half_250630_0910" + ".pth")))
+    model.load_state_dict(torch.load(TORCH_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-1st_half_250630_0910" + ".pth")))
     model.eval()
 
     set_trainable_params(model, train_decoder_only=CONFIG['seg']['train_decoder_only'])
@@ -125,14 +125,14 @@ def main() -> None:
         train_ds,
         batch_size=CONFIG["seg"]["batch_size"],
         shuffle=True,
-        generator=torch_gen,
+        generator=TORCH_GEN,
         collate_fn=train_collate_fn,
     )
     val_dl = DataLoader(
         val_ds,
         batch_size=CONFIG["seg"]["batch_size"],
         shuffle=False,
-        generator=torch_gen,
+        generator=TORCH_GEN,
         collate_fn=val_collate_fn,
     )
 
@@ -171,7 +171,7 @@ def main() -> None:
 
     tb_writer.close()
     
-    torch.save(model.state_dict(), MODEL_WEIGHTS_CHECKPOINTS / f"lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth")
+    torch.save(model.state_dict(), TORCH_WEIGHTS_CHECKPOINTS / f"lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth")
     logger.info(f"Model 'lraspp_mobilenet_v3_large-{CONFIG['exp_name']}.pth' successfully saved.")
 
 if __name__ == '__main__':

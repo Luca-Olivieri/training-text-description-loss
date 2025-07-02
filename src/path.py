@@ -9,10 +9,13 @@ SRC_PATH =  BASE_PATH / "src"
 PRIVATE_DATASETS_PATH = BASE_PATH / "data"
 MISC_PATH = BASE_PATH / "misc"
 
-MODEL_WEIGHTS_ROOT = PRIVATE_DATASETS_PATH / "torch_weights"
-MODEL_WEIGHTS_CHECKPOINTS = MODEL_WEIGHTS_ROOT / "checkpoints"
-torch.hub.set_dir(MODEL_WEIGHTS_ROOT) # set local model weights directory
-# os.environ["HF_HOME"] = str(PRIVATE_DATASETS_PATH / "huggingface_hub") # HuggingFace Hub Directory
+# PyTorch Hub
+TORCH_WEIGHTS_ROOT = PRIVATE_DATASETS_PATH / "torch_weights"
+TORCH_WEIGHTS_CHECKPOINTS = TORCH_WEIGHTS_ROOT / "checkpoints"
+torch.hub.set_dir(TORCH_WEIGHTS_ROOT) # set local model weights directory
+
+# HuggingFace Hub
+os.environ["HF_HOME"] = str(PRIVATE_DATASETS_PATH / "huggingface_hub") # HuggingFace Hub Directory
 
 VOC_PATH = PRIVATE_DATASETS_PATH / "VOCdevkit/VOC2012"
 MY_DATA_PATH = BASE_PATH / "my_data"
@@ -205,7 +208,7 @@ def get_eval_prs_path(
     return eval_prs_path
 
 def main() -> None:
-    pass
+    print(os.environ["HF_HOME"])
 
 if __name__ == '__main__':
     main()

@@ -121,7 +121,8 @@ docker_args=(
 	-e log=/home/log.txt \
 	-e HOST_UID=$(id -u) \
 	-e HOST_GID=$(id -g) \
-	--name ${CONTAINER_NAME}
+	-e PYTHONPATH=/home/olivieri/exp/src:$PYTHONPATH \
+	--name ${CONTAINER_NAME} \
 	--network olivieri_net
 )
 

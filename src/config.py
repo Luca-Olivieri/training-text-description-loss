@@ -27,8 +27,8 @@ random.seed(CONFIG["seed"])
 np.random.seed(CONFIG["seed"])
 torch.manual_seed(CONFIG["seed"])
 
-torch_gen = torch.Generator()
-torch_gen.manual_seed(CONFIG["seed"])
+TORCH_GEN = torch.Generator()
+TORCH_GEN.manual_seed(CONFIG["seed"])
 
 # Environmental Variables #
 
