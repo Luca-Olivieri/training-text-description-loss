@@ -25,7 +25,8 @@ logs/
 data
 
 # GitHub Vendors
-src/vendors
+src/vendors/*
+!src/vendors/README.md
 
 # VS Code
 .devcontainer/*
