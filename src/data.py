@@ -232,7 +232,7 @@ def get_sc(
         sc = TF.center_crop(sc, output_size=min(sc.shape[1:]))
     return sc
 
-def apply_class_map(
+def apply_classmap(
         mask: torch.Tensor,
         class_map: dict
 ) -> torch.Tensor:
@@ -273,7 +273,7 @@ def _get_mask(
         Processed mask tensor.
     """
     mask = get_image(path)
-    mask = apply_class_map(mask, class_map)
+    mask = apply_classmap(mask, class_map)
     if image_size is not None:
         mask = resize_mask(mask, image_size, resize_mode)
     if center_crop:
@@ -305,7 +305,7 @@ def get_gt(
 def get_pr(
         path: str,
         class_map: dict,
-        image_size: int | tuple[int, int] | None = None,
+        resize_size: int | tuple[int, int] | None = None,
         resize_mode: str = "nearest",
         center_crop: bool = True
 ) -> torch.Tensor:
@@ -315,14 +315,14 @@ def get_pr(
     Args:
         path: Path to the mask file.
         class_map: Dictionary mapping class indices.
-        image_size: Target size as int, tuple, or None.
+        resize_size: Target size as int, tuple, or None.
         resize_mode: Interpolation mode.
         center_crop: Whether to center crop the mask.
 
     Returns:
         Processed predicted mask tensor.
     """
-    return _get_mask(path, class_map, image_size, resize_mode, center_crop)
+    return _get_mask(path, class_map, resize_size, resize_mode, center_crop)
 
 def get_significant_classes(
         path: str,
