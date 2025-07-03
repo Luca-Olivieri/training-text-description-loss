@@ -49,6 +49,10 @@ class FLAIRAdapter(ImageTextEncoder):
         """
         Encodes image and text and returns the attention maps from the visual projection layer.
         """
+
+        if images.shape[0] != texts.shape[0]:
+            raise AttributeError(f"'images' and 'texts' should contain the same number of elements, but got {images.shape[0]=} and {texts.shape[0]=} instead.")
+
         # get the raw embeddings from the encoders
         global_image_token, local_image_tokens = self.model.encode_image(images) # [B_i, d_i], [B_i, n_i, d_i]
         global_text_token, local_text_tokens = self.model.encode_text(texts) # [B_t, d_t], [B_t, n_t, d_t]
@@ -95,6 +99,12 @@ class FLAIRAdapter(ImageTextEncoder):
 
         return attn_maps
 
+    def count_tokens(
+            self,
+            text: str
+    ) -> int:
+        tokenizer = flair.get_tokenizer('ViT-B-16-FLAIR', context_length=1000)
+        return len(tokenizer.encode(text)) + 2 # 'SoT' and 'EoT' are added.
 
 def main() -> None:
     pass

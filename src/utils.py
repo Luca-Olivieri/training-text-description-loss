@@ -1,9 +1,6 @@
-from IPython.display import display
 
 import torch
 from torchvision.datasets import VOCSegmentation
-from PIL import Image
-from IPython.display import Markdown
 import re
 import ast
 import time
@@ -17,7 +14,6 @@ import pandas as pd
 from abc import ABC
 from tqdm import tqdm
 from typing import Any, TypeVar, Optional
-from PIL import Image
 from PIL.Image import Image as PILImage
 import torchmetrics as tm
 
@@ -152,21 +148,6 @@ def parse_eval_text_to_dict(eval_str: str) -> dict | str:
     except:
         print("Wrong parsing to dict!")
         return eval_str
-
-def display_prompt(full_prompt: str | Prompt) -> None:
-    """Displays a prompt, which can be a string or a list of strings and images, using IPython display utilities.
-
-    Args:
-        full_prompt (str | Prompt): The prompt to display.
-    """
-    if isinstance(full_prompt, str):
-        display(Markdown(full_prompt))
-    else:
-        for prompt in full_prompt:
-            if isinstance(prompt, Image.Image):
-                display(prompt)
-            else:
-                display(Markdown(prompt))
 
 def create_empty_dataarray(dims_to_coords: dict[str, list[Any]]) -> xr.DataArray:
     """Creates an empty xarray DataArray with the specified dimensions and coordinates.
