@@ -1,6 +1,6 @@
 from IPython.display import Markdown, display
 from path import MISC_PATH
-from models.image_text_encoders import ImageTextEncoder
+from models.vl_encoders import VLEncoder
 from utils import batch_list, flatten_list
 
 from PIL import Image, ImageDraw, ImageFont
