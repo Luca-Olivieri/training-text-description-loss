@@ -110,10 +110,10 @@ class VLEncoder(ABC):
         norm_global_text_token = F.normalize(global_text_token, p=2, dim=-1)    # [B_i, B_t, D]
         norm_local_image_tokens = F.normalize(local_image_tokens, p=2, dim=-1)  # [B_i, n_i, D]
 
-        # [B_i, B_t, D] @ [B_i, n_i, D] --> [B_i, B_t, n_i]
-        sim_maps = torch.bmm(norm_global_text_token, norm_local_image_tokens.swapaxes(-1, -2))
+        # [B_t, D] @ [n_i, D] --> [B_t, n_i] (in a B_i batch)
+        sim_maps = torch.bmm(norm_global_text_token, norm_local_image_tokens.swapaxes(-1, -2)) # batched matrix multiplication
         
-        # reshape attention maps
+        # reshape similarity maps
         num_patches_per_axis = int(math.sqrt(image_num_patches))
         sim_maps = sim_maps.view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, n_i, n_i]
         max_sim = sim_maps.max() # max token similarity
