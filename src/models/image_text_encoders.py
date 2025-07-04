@@ -109,7 +109,7 @@ class FLAIRAdapter(ImageTextEncoder):
             images: torch.Tensor,
             texts: torch.Tensor,
             upsample_size: Optional[int | tuple[int]] = None,
-            upsample_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
+            upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
             normalize: bool = False,
             broadcast: bool = False
     ) -> torch.Tensor:
@@ -117,10 +117,10 @@ class FLAIRAdapter(ImageTextEncoder):
         Encodes image and text and returns the attention maps from the visual projection layer.
         """
         # [B_i, B_t, D], [B_i, n_i, D]
-        # 'B_t' might be 1 if 'broadcast' = False
+        # 'B_t' = 1 if 'broadcast' = False
         _, global_text_token, local_image_tokens, _, _, attn_maps_flat = self.encode_and_pool(images, texts, broadcast)
 
-        text_batch_size = global_text_token.shape[0] # B_t
+        text_batch_size = global_text_token.shape[1] # B_t
         image_batch_size, image_num_patches = local_image_tokens.shape[:2] # B_i, n_i
         
         # reshape attention maps
