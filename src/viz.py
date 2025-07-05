@@ -15,19 +15,63 @@ from typing import Optional
 
 from utils import Prompt
 
-def overlay_attn_map(
+def normalize_attn_maps(
+        attn_maps: torch.Tensor,        
+) -> torch.Tensor:
+    norm_dims = list(range(attn_maps.ndim))[-2:] # indices of the last two dimensions (per-image normalization)
+    max_per_image = attn_maps.amax(dim=norm_dims, keepdim=True)
+    min_per_image = attn_maps.amin(dim=norm_dims, keepdim=True)
+    attn_maps = (attn_maps - min_per_image)/(max_per_image - min_per_image)
+    return attn_maps
+
+def normalize_sim_maps(
+        sim_maps: torch.Tensor,        
+) -> torch.Tensor:
+    pos_sim_maps = sim_maps.clamp(min=0)
+    neg_sim_maps = -(sim_maps.clamp(max=0))
+    norm_dims = list(range(sim_maps.ndim))[-2:] # indices of the last two dimensions (per-image normalization)
+
+    abs_max_per_map = sim_maps.abs().amax(dim=norm_dims, keepdim=True)
+
+    if torch.any(pos_sim_maps != 0):
+        pos_sim_maps = pos_sim_maps/abs_max_per_map
+    
+    if torch.any(neg_sim_maps != 0):
+        neg_sim_maps = neg_sim_maps/abs_max_per_map
+        neg_sim_maps = -neg_sim_maps
+
+    sim_maps = pos_sim_maps + neg_sim_maps
+
+    return sim_maps
+
+def overlay_map(
         background: torch.Tensor | Image.Image,
-        overlay: torch.Tensor,
+        map: torch.Tensor,
         alpha: float = 1.0,
-        rgb_fill: Optional[tuple[int, int, int]] = [255, 0, 0],
+        pos_rgb_fill: tuple[int, int, int] = (255, 0, 0),
+        neg_rgb_fill: tuple[int, int, int] = (0, 0, 255),
+        normalize: bool = True
 ) -> Image.Image:
     if isinstance(background, torch.Tensor):
         background_img = to_pil_image(background.cpu()).convert('RGBA')
     else:
         background_img = background.convert('RGBA')
-    rgb_values = (torch.tensor(rgb_fill)*alpha/255.).view(3, 1, 1) # [3, 1, 1]
-    tensor_hw = rgb_values.expand(3, background_img.size[-1], background_img.size[-2]).cpu() # (3, H, W)
-    overlay_tensor = torch.concat([tensor_hw, overlay.cpu()], dim=0) # [4, H, W]
+    
+    pos_mask = (map > 0).cpu() # Create a mask where overlay > 0 is True (positive), else False (negative)
+    mask_expanded = pos_mask.unsqueeze(0) # Unsqueeze the mask to [1, H, W] to allow broadcasting with [3, 1, 1] for RGB values
+
+    # Unsqueeze the RGB fill values to [3, 1, 1]
+    pos_rgb_fill_expanded = (torch.tensor(pos_rgb_fill)*alpha/255.).unsqueeze(1).unsqueeze(2)
+    neg_rgb_fill_expanded = (torch.tensor(neg_rgb_fill)*alpha/255.).unsqueeze(1).unsqueeze(2)
+
+    # Use torch.where to select values based on the mask
+    # This will broadcast mask_expanded to [3, H, W] and then apply the condition
+    output_rgb = torch.where(mask_expanded, pos_rgb_fill_expanded, neg_rgb_fill_expanded).squeeze(0)
+    
+    if normalize:
+        map = normalize_sim_maps(map)
+
+    overlay_tensor = torch.concat([output_rgb.cpu(), map.abs().cpu()], dim=0) # [4, H, W]
     overlay_img = to_pil_image(overlay_tensor).convert('RGBA')
     return Image.alpha_composite(background_img, overlay_img)
 

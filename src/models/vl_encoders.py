@@ -10,7 +10,7 @@ from abc import abstractmethod, ABC
 from open_clip.tokenizer import HFTokenizer, SimpleTokenizer
 import math
 
-from typing import Optional, Literal
+from typing import Optional
 from vendors.flair.src.flair.model import FLAIR
 from enum import Enum
 
@@ -39,19 +39,21 @@ class VLEncoder(ABC):
             self,
             images: torch.Tensor,
             texts: torch.Tensor,
-            mode: MapComputeMode = MapComputeMode.ATTENTION,
+            map_compute_mode: MapComputeMode = MapComputeMode.ATTENTION,
             upsample_size: Optional[int | tuple[int]] = None,
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
-            normalize: bool = False,
             broadcast: bool = False,
     ) -> torch.Tensor:
-        match mode:
+        match map_compute_mode:
             case MapComputeMode.ATTENTION:
-                return self.get_attn_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, normalize=normalize, broadcast=broadcast,)
+                return self.get_attn_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast)
             case MapComputeMode.SIMILARITY:
-                return self.get_sim_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, normalize=normalize, broadcast=broadcast,)
+                return self.get_sim_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast)
             case _:
-                raise ValueError(f"Unknown mode: {mode}. The only supported types are {[c.name for c in MapComputeMode]}.")
+                raise ValueError(f"Unknown mode: {map_compute_mode}. The only supported types are {[c.name for c in MapComputeMode]}.")
+            
+    # TODO define preprocess_text and _image functions
+    # TODO build a VLEncoderOutput for the function encoder_and_pool (rename it encode_and_project)
     
     def get_attn_maps(
             self,
@@ -59,7 +61,6 @@ class VLEncoder(ABC):
             texts: torch.Tensor,
             upsample_size: Optional[int | tuple[int]] = None,
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
-            normalize: bool = False,
             broadcast: bool = False,
     ) -> torch.Tensor:
         """
@@ -75,22 +76,14 @@ class VLEncoder(ABC):
         # reshape attention maps
         num_patches_per_axis = int(math.sqrt(image_num_patches))
         # TODO I think that [cls] token is at last position, find out if it's true
-        attn_maps = attn_maps_flat[:, :, :-1].view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, sqrt(n_i), sqrt(n_i)]
-        max_attn = attn_maps_flat.max() # max token attention
+        attn_maps: torch.Tensor = attn_maps_flat[:, :, :-1].view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, sqrt(n_i), sqrt(n_i)]
+        min_attn, max_attn = attn_maps.min(), attn_maps.max() # max token attention
         
         # upsampling
         if upsample_size:
             attn_maps: torch.Tensor = TF.resize(attn_maps, upsample_size, interpolation=upsample_mode) # [B_i, B_t, H, W]
 
-        # normalize
-        # TODO is this the best way to normalize attentions?
-        if normalize:
-            norm_dims = list(range(attn_maps.ndim))[-2:] # indices of the last two dimensions (per-image normalization)
-            max_per_image = attn_maps.amax(dim=norm_dims, keepdim=True)
-            min_per_image = attn_maps.amin(dim=norm_dims, keepdim=True)
-            attn_maps = (attn_maps - min_per_image)/(max_per_image - min_per_image)
-
-        return attn_maps, max_attn
+        return attn_maps, min_attn, max_attn
     
     def get_sim_maps(
             self,
@@ -98,10 +91,10 @@ class VLEncoder(ABC):
             texts: torch.Tensor,
             upsample_size: Optional[int | tuple[int]] = None,
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
-            normalize: bool = False,
             broadcast: bool = False
     ) -> torch.Tensor:
         # _, [B_i, B_t, D], [B_i, n_i, D], _, _, _
+        # _, global_text_token, local_image_tokens, _, _, _ = self.encode_and_pool(images, texts, broadcast)
         _, global_text_token, local_image_tokens, _, _, _ = self.encode_and_pool(images, texts, broadcast)
         text_batch_size = global_text_token.shape[1] # B_t
         image_batch_size, image_num_patches = local_image_tokens.shape[:2] # B_i, n_i
@@ -116,22 +109,13 @@ class VLEncoder(ABC):
         # reshape similarity maps
         num_patches_per_axis = int(math.sqrt(image_num_patches))
         sim_maps = sim_maps.view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, n_i, n_i]
-        max_sim = sim_maps.max() # max token similarity
+        min_sim, max_sim = sim_maps.min(), sim_maps.max() # max token similarity
         
         # upsampling
         if upsample_size:
             sim_maps: torch.Tensor = TF.resize(sim_maps, upsample_size, interpolation=upsample_mode) # [B_i, B_t, H, W]
-
-        # normalize
-        # TODO is this the best way to normalize similarities?
-        if normalize:
-            sim_maps = sim_maps.clamp(min=0)
-            norm_dims = list(range(sim_maps.ndim))[-2:] # indices of the last two dimensions (per-image normalization)
-            max_per_image = sim_maps.amax(dim=norm_dims, keepdim=True)
-            min_per_image = sim_maps.amin(dim=norm_dims, keepdim=True)
-            sim_maps = (sim_maps - min_per_image)/(max_per_image - min_per_image)
         
-        return sim_maps, max_sim
+        return sim_maps, min_sim, max_sim
     
     @abstractmethod
     def count_tokens(self, *args, **kwargs) -> None:
