@@ -13,8 +13,9 @@ from open_clip.tokenizer import HFTokenizer, SimpleTokenizer
 import math
 from PIL import Image
 from dataclasses import dataclass
+from transformers import AutoImageProcessor, AutoTokenizer, AutoModelForCausalLM
 
-from typing import Optional, Any
+from typing import Optional, Literal
 from vendors.flair.src.flair.model import FLAIR
 from enum import Enum
 
@@ -42,6 +43,9 @@ class VLEncoderOutput:
     global_text_token: torch.Tensor
     local_image_tokens: torch.Tensor
     local_text_tokens: torch.Tensor
+
+@dataclass
+class VLEncoderOutputWithAttn(VLEncoderOutput):
     attn_maps_flat: torch.Tensor
 
 
@@ -55,23 +59,10 @@ class VLEncoder(ABC):
     
     @abstractmethod
     @torch.inference_mode
-    def encode_and_project(
-            self,
-            images: torch.Tensor,
-            texts: torch.Tensor,
-            broadcast: bool = False,
-            *args,
-            **kwargs
-    ) -> VLEncoderOutput:
-        raise NotImplementedError
-    
-    @abstractmethod
-    @torch.inference_mode
     def preprocess_images(
             self,
             images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
             device: str = "cuda", 
-            *args,
             **kwargs
     ) -> torch.Tensor:
         raise NotImplementedError
@@ -82,11 +73,21 @@ class VLEncoder(ABC):
             self,
             texts: list[str],
             device: str = "cuda",
-            *args,
             **kwargs
     ) -> torch.Tensor:
         raise NotImplementedError
 
+    @abstractmethod
+    @torch.inference_mode
+    def encode_and_project(
+            self,
+            images: torch.Tensor,
+            texts: torch.Tensor,
+            broadcast: bool = False,
+            **kwargs
+    ) -> VLEncoderOutput:
+        raise NotImplementedError
+    
     @abstractmethod
     @torch.inference_mode
     def get_logits(
@@ -140,7 +141,6 @@ class VLEncoder(ABC):
         # reshape attention maps
         num_patches_per_axis = int(math.sqrt(image_num_patches))
         # TODO I think that [cls] token is at last position, find out if it's true
-        # TODO maybe it's more convenient to move this method in to 'encode_and_project'
         attn_maps: torch.Tensor = vle_output.attn_maps_flat[:, :, :-1].view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, sqrt(n_i), sqrt(n_i)]
         min_attn, max_attn = attn_maps.min(), attn_maps.max() # max token attention
         
@@ -189,7 +189,7 @@ class VLEncoder(ABC):
         raise NotImplementedError
 
 @dataclass
-class FLAIROutput(VLEncoderOutput):
+class FLAIROutput(VLEncoderOutputWithAttn):
     local_image_features: torch.Tensor = None # [B_i, D]
 
 @VLE_REGISTRY.register("flair")
@@ -199,10 +199,13 @@ class FLAIRAdapter(VLEncoder):
     """
     def __init__(
             self,
-            version: str = 'flair-cc3m-recap.pt',
+            checkpoint: Literal['flair-cc3m-recap',
+                                'flair-cc12m-recap',
+                                'flair-yfcc15m-recap',
+                                'flair-merged30m'] = 'flair-cc3m-recap.pt',
             device: str = 'cuda',
     ) -> None:
-        pretrained = flair.download_weights_from_hf(model_repo='xiaorui638/flair', filename=version)
+        pretrained = flair.download_weights_from_hf(model_repo='xiaorui638/flair', filename=checkpoint)
         model, _, preprocess_fn = flair.create_model_and_transforms('ViT-B-16-FLAIR', pretrained=pretrained)
         model.to(device)
         model.eval()
@@ -210,6 +213,7 @@ class FLAIRAdapter(VLEncoder):
         self.preprocess_fn: T.Compose = preprocess_fn
         self.tokenizer: SimpleTokenizer = flair.get_tokenizer('ViT-B-16-FLAIR')
 
+    @torch.inference_mode
     def preprocess_images(
             self, 
             images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
@@ -220,14 +224,16 @@ class FLAIRAdapter(VLEncoder):
         imgs_tensor = torch.stack([self.preprocess_fn(img) for img in images]).to(device) # [1, 3, H_vle, W_vle]
         return imgs_tensor
     
+    @torch.inference_mode
     def preprocess_texts(
             self, 
             texts: list[str],
             device: str = "cuda"
     ) -> torch.Tensor:
-        texts_tensor = self.tokenizer(texts).to(device) # [1, context_length]
+        texts_tensor = self.tokenizer(texts).to(device) # [B, context_length]
         return texts_tensor
     
+    @torch.inference_mode
     def encode_and_project(
             self,
             images: torch.Tensor,
@@ -275,6 +281,7 @@ class FLAIRAdapter(VLEncoder):
 
         return flair_output
     
+    @torch.inference_mode
     def get_logits(
             self,
             images: torch.Tensor,
@@ -297,6 +304,7 @@ class FLAIRAdapter(VLEncoder):
             text_logits = image_logits.T
         return image_logits
 
+    @torch.inference_mode
     def count_tokens(
             self,
             text: str
@@ -312,8 +320,120 @@ class SimSegAdapter(VLEncoder):
     # too much integration work likely for unimpressive results, I would skip this.
 
 
+@VLE_REGISTRY.register("fg-clip")
+class FG_CLIPAdapter(VLEncoder):
+    """
+    TODO
+    """
+    def __init__(
+            self,
+            checkpoint: Literal['fg-clip-base', 
+                                'fg-clip-large'] = 'fg-clip-base',
+            device: str = 'cuda',
+            long_captions = False
+    ) -> None:
+        model_root = f'qihoo360/{checkpoint}'
+        ckp_2_imgsize = {
+            'fg-clip-base': 224,
+            'fg-clip-large': 336
+        }
+        self.image_size = ckp_2_imgsize[checkpoint]
+        model = AutoModelForCausalLM.from_pretrained(model_root, trust_remote_code=True)
+        model.to(device)
+        model.eval()
+        self.model = model
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_root)
+        self.image_processor = AutoImageProcessor.from_pretrained(model_root, use_fast=True)
+
+        # short or long captions
+        if long_captions:
+            self.walk_short_pos = False
+            self.context_length = 248
+        else:
+            self.walk_short_pos = True
+            self.context_length = 77
+
+    @torch.inference_mode
+    def preprocess_images(
+            self, 
+            images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
+            device: str = "cuda"
+    ) -> torch.Tensor:
+        if isinstance(images, torch.Tensor) or isinstance(images[0], torch.Tensor):
+            images = [to_pil_image(img) for img in images]
+        
+        images = [img.resize((self.image_size, self.image_size)) for img in images]
+        # image = TF.resize(...)
+
+        imgs_tensor = self.image_processor.preprocess(images, return_tensors='pt')['pixel_values'].to(device) # [1, 3, H_vle, W_vle]
+
+        return imgs_tensor
+    
+    @torch.inference_mode
+    def preprocess_texts(
+            self, 
+            texts: list[str],
+            device: str = "cuda"
+    ) -> torch.Tensor:
+        texts_tensor = torch.tensor(self.tokenizer(texts, max_length=self.context_length, padding="max_length", truncation=True).input_ids, dtype=torch.long, device=device) # # [B, context_length]
+        return texts_tensor
+
+    @torch.inference_mode
+    def encode_and_project(
+            self,
+            images: torch.Tensor,
+            texts: torch.Tensor,
+            broadcast: bool = False
+    ) -> FLAIROutput:
+
+        image_feature = self.model.get_image_features(images)
+        dense_image_feature = self.model.get_image_dense_features(images)
+        text_feature = self.model.get_text_features(texts,walk_short_pos=self.walk_short_pos)
+        image_feature = image_feature / image_feature.norm(p=2, dim=-1, keepdim=True) # [B, D]
+        dense_image_feature = dense_image_feature / dense_image_feature.norm(p=2, dim=-1, keepdim=True) # [B, n_i, D]
+        text_feature = text_feature / text_feature.norm(p=2, dim=-1, keepdim=True) # [B, D]
+
+        if broadcast:
+            ...
+        else:
+            if images.shape[0] != texts.shape[0]:
+                raise AttributeError(f"When not broadcasting, 'images' and 'texts' should contain the same number of elements, but got {images.shape[0]=} and {texts.shape[0]=} instead.")
+            ...
+
+        vle_output = VLEncoderOutput(
+            global_image_token=image_feature,
+            global_text_token=text_feature,
+            local_image_tokens=dense_image_feature,
+            local_text_tokens=None
+        )
+
+        return vle_output
+    
+    @torch.inference_mode
+    def get_logits(
+            self,
+            images: torch.Tensor,
+            texts: torch.Tensor,
+            broadcast: bool = False
+    ) -> torch.Tensor:
+        vle_output = self.encode_and_project(images, texts, broadcast)
+        if broadcast:
+            logits_per_image = vle_output.global_image_token @ vle_output.global_text_token.T # [B_i, B_t, D]
+        else:
+            logits_per_image = torch.einsum('bf,bf->b', vle_output.global_image_token, vle_output.global_text_token) # # [B, D]
+        logits_per_image = self.model.logit_scale.exp() * logits_per_image
+        return logits_per_image
+    
+    def count_tokens(self, *args, **kwargs):
+        raise NotImplementedError
+    
+    def get_attn_maps(self, *args, **kwargs) -> None:
+        raise AttributeError("The VLE 'FG-CLIP' does not provide attention maps.")
+
 def main() -> None:
     print(VLE_REGISTRY.registered_objects())
+    model = VLE_REGISTRY.get('fg-clip')
     
 if __name__ == '__main__':
     main()

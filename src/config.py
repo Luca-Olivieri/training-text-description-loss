@@ -21,6 +21,15 @@ CONFIG_PATH =  BASE_PATH / "config"
 CONFIG = load_config(CONFIG_PATH / "config.yml")
 CONFIG["exp_name"] += f'_{datetime.now().strftime("%y%m%d_%H%M")}'
 
+# PyTorch Hub
+TORCH_WEIGHTS_ROOT = Path('/home/olivieri/exp/data/torch_weights')
+TORCH_WEIGHTS_CHECKPOINTS = TORCH_WEIGHTS_ROOT / 'checkpoints'
+torch.hub.set_dir(TORCH_WEIGHTS_ROOT) # set local model weights directory
+
+# HuggingFace Hub
+os.environ["HF_HOME"] = '/home/olivieri/exp/data/huggingface/datasets'
+os.environ["HF_HUB_CACHE"] = '/home/olivieri/exp/data/huggingface/hub'
+
 # Reproducibility #
 
 random.seed(CONFIG["seed"])
@@ -42,8 +51,10 @@ GDRIVE_ANNOT_IMGS_PATH = os.getenv("GDRIVE_ANNOT_IMGS_PATH")
 torch.backends.cudnn.benchmark = True # if True, can speeds up computation at the cost of reproducibility.
 
 def main() -> None:
-    c = load_config(CONFIG_PATH / "config.yml")
-    print(c["seed"])
+    # c = load_config(CONFIG_PATH / "config.yml")
+    # print(c["seed"])
+    print(os.environ['HF_HOME'])
+    print(os.environ['HF_HUB_CACHE'])
 
 if __name__ == '__main__':
     main()
