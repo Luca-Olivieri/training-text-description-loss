@@ -11,6 +11,7 @@ from abc import abstractmethod, ABC
 from open_clip.tokenizer import HFTokenizer, SimpleTokenizer
 import math
 from PIL import Image
+from dataclasses import dataclass
 
 from typing import Optional, Any
 from vendors.flair.src.flair.model import FLAIR
@@ -21,8 +22,23 @@ class MapComputeMode(Enum):
     ATTENTION = 'attention'
 
 
-class VLEncoderOutput(ABC):
-    ...
+@dataclass
+class VLEncoderOutput:
+    """
+    Output of VL encoder containing global and local tokens for both image and text.
+    
+    Args:
+        global_image_token: Global image token [B_i, D]
+        global_text_token: Global text token [B_t, D] or [B_i, B_t, D] when broadcasted
+        local_image_tokens: Local image tokens [B_i, n_i, D]
+        local_text_tokens: Local text tokens [B_t, n_t, D]
+        attn_maps_flat: Flattened attention maps [B_i, B_t, n_i+1]
+    """
+    global_image_token: torch.Tensor
+    global_text_token: torch.Tensor
+    local_image_tokens: torch.Tensor
+    local_text_tokens: torch.Tensor
+    attn_maps_flat: torch.Tensor
 
 
 class VLEncoder(ABC):
@@ -34,21 +50,50 @@ class VLEncoder(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    def encode_and_project(self, *args, **kwargs) -> Any:
+    @torch.inference_mode
+    def encode_and_project(
+            self,
+            images: torch.Tensor,
+            texts: torch.Tensor,
+            broadcast: bool = False,
+            *args,
+            **kwargs
+    ) -> VLEncoderOutput:
         raise NotImplementedError
     
     @abstractmethod
-    def preprocess_texts(self, *args, **kwargs) -> torch.Tensor:
+    @torch.inference_mode
+    def preprocess_images(
+            self,
+            images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
+            device: str = "cuda", 
+            *args,
+            **kwargs
+    ) -> torch.Tensor:
         raise NotImplementedError
     
     @abstractmethod
-    def preprocess_images(self, *args, **kwargs) -> torch.Tensor:
+    @torch.inference_mode
+    def preprocess_texts(
+            self,
+            texts: list[str],
+            device: str = "cuda",
+            *args,
+            **kwargs
+    ) -> torch.Tensor:
         raise NotImplementedError
 
     @abstractmethod
-    def get_logits(self, *args, **kwargs) -> torch.Tensor:
+    @torch.inference_mode
+    def get_logits(
+            self,
+            images: torch.Tensor,
+            texts: torch.Tensor,
+            broadcast: bool = False
+    ) -> torch.Tensor:
         raise NotImplementedError
     
+    @torch.inference_mode
     def get_maps(
             self,
             images: torch.Tensor,
@@ -67,8 +112,9 @@ class VLEncoder(ABC):
                 raise ValueError(f"Unknown mode: {map_compute_mode}. The only supported types are {[c.name for c in MapComputeMode]}.")
             
     # TODO define preprocess_text and _image functions
-    # TODO build a VLEncoderOutput for the function encoder_and_pool
+    # TODO build a VLEncoderOutput for the function encoder_and_project
     
+    @torch.inference_mode
     def get_attn_maps(
             self,
             images: torch.Tensor,
@@ -82,23 +128,26 @@ class VLEncoder(ABC):
         """
         # _, [B_i, B_t, D], [B_i, n_i, D], _, _, [B_i, B_t, n_i+1]
         # 'B_t' = 1 if 'broadcast' = False
-        _, global_text_token, local_image_tokens, _, _, attn_maps_flat = self.encode_and_project(images, texts, broadcast)
+        vle_output = self.encode_and_project(images, texts, broadcast)
 
-        text_batch_size = global_text_token.shape[1] # B_t
-        image_batch_size, image_num_patches = local_image_tokens.shape[:2] # B_i, n_i
+        text_batch_size = vle_output.global_text_token.shape[1] # B_t
+        image_batch_size, image_num_patches = vle_output.local_image_tokens.shape[:2] # B_i, n_i
         
         # reshape attention maps
         num_patches_per_axis = int(math.sqrt(image_num_patches))
         # TODO I think that [cls] token is at last position, find out if it's true
-        attn_maps: torch.Tensor = attn_maps_flat[:, :, :-1].view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, sqrt(n_i), sqrt(n_i)]
+        # TODO maybe it's more convenient to move this method in to 'encode_and_project'
+        attn_maps: torch.Tensor = vle_output.attn_maps_flat[:, :, :-1].view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, sqrt(n_i), sqrt(n_i)]
         min_attn, max_attn = attn_maps.min(), attn_maps.max() # max token attention
         
         # upsampling
         if upsample_size:
             attn_maps: torch.Tensor = TF.resize(attn_maps, upsample_size, interpolation=upsample_mode) # [B_i, B_t, H, W]
 
+        # TODO do not output 'min_attn' and 'max_attn' anymore, make it produce by downstream functions.
         return attn_maps, min_attn, max_attn
     
+    @torch.inference_mode()
     def get_sim_maps(
             self,
             images: torch.Tensor,
@@ -108,14 +157,14 @@ class VLEncoder(ABC):
             broadcast: bool = False
     ) -> torch.Tensor:
         # _, [B_i, B_t, D], [B_i, n_i, D], _, _, _
-        # _, global_text_token, local_image_tokens, _, _, _ = self.encode_and_pool(images, texts, broadcast)
-        _, global_text_token, local_image_tokens, _, _, _ = self.encode_and_project(images, texts, broadcast)
-        text_batch_size = global_text_token.shape[1] # B_t
-        image_batch_size, image_num_patches = local_image_tokens.shape[:2] # B_i, n_i
+        # _, global_text_token, local_image_tokens, _, _, _ = self.encode_and_project(images, texts, broadcast)
+        vle_output = self.encode_and_project(images, texts, broadcast)
+        text_batch_size = vle_output.global_text_token.shape[1] # B_t
+        image_batch_size, image_num_patches = vle_output.local_image_tokens.shape[:2] # B_i, n_i
         
         # normalize token embds for cosine similarity
-        norm_global_text_token = F.normalize(global_text_token, p=2, dim=-1)    # [B_i, B_t, D]
-        norm_local_image_tokens = F.normalize(local_image_tokens, p=2, dim=-1)  # [B_i, n_i, D]
+        norm_global_text_token = F.normalize(vle_output.global_text_token, p=2, dim=-1)    # [B_i, B_t, D]
+        norm_local_image_tokens = F.normalize(vle_output.local_image_tokens, p=2, dim=-1)  # [B_i, n_i, D]
 
         # [B_t, D] @ [n_i, D] --> [B_t, n_i] (in a B_i batch)
         sim_maps = torch.bmm(norm_global_text_token, norm_local_image_tokens.swapaxes(-1, -2)) # batched matrix multiplication
@@ -134,6 +183,10 @@ class VLEncoder(ABC):
     @abstractmethod
     def count_tokens(self, *args, **kwargs) -> None:
         raise NotImplementedError
+
+@dataclass
+class FLAIROutput(VLEncoderOutput):
+    local_image_features: torch.Tensor = None # [B_i, D]
 
 
 class FLAIRAdapter(VLEncoder):
@@ -170,13 +223,13 @@ class FLAIRAdapter(VLEncoder):
     ) -> torch.Tensor:
         texts_tensor = self.tokenizer(texts).to(device) # [1, context_length]
         return texts_tensor
-
+    
     def encode_and_project(
             self,
             images: torch.Tensor,
             texts: torch.Tensor,
             broadcast: bool = False
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> FLAIROutput:
 
         # get the raw embeddings from the encoders
         global_image_token, local_image_tokens = self.model.encode_image(images)    # [B_i, d_i], [B_i, n_i, d_i]
@@ -207,8 +260,16 @@ class FLAIRAdapter(VLEncoder):
             output_attn_weights=True
         ) # [B_i, B_t, D], [B_i, B_t, n_i+1] (the +1 is there for the added 'cls' token)
         
-        # [B_i, D], [B_i, B_t, D], [B_i, n_i, D], [B_t, n_t, D], [B_i, B_t, D], [B_i, B_t, n_i+1]
-        return global_image_token, global_text_token, local_image_tokens, local_text_tokens, local_image_features, attn_maps_flat
+        vle_output = FLAIROutput(
+            global_image_token, # [B_i, D]
+            global_text_token, # [B_i, B_t, D]
+            local_image_tokens, # [B_i, n_i, D]
+            local_text_tokens, # [B_t, n_t, D]
+            attn_maps_flat, # [B_i, B_t, n_i+1]
+            local_image_features, # [B_i, B_t, D]
+        )
+
+        return vle_output
     
     def get_logits(
             self,
@@ -221,9 +282,10 @@ class FLAIRAdapter(VLEncoder):
         else:
             # [B_i, B_t, D], [B_i, n_i, D]
             # 'B_t' might be 1 if 'broadcast' = False
-            _, global_text_token, _, _, local_image_features, _ = self.encode_and_project(images, texts, broadcast)
+            # _, global_text_token, _, _, local_image_features, _ = self.encode_and_project(images, texts, broadcast)
+            vle_output = self.encode_and_project(images, texts, broadcast)
 
-            text_features, image_features = F.normalize(global_text_token, dim=-1), F.normalize(local_image_features, dim=-1)
+            text_features, image_features = F.normalize(vle_output.global_text_token, dim=-1), F.normalize(vle_output.local_image_features, dim=-1)
 
             image_logits = self.model.logit_scale.exp() * torch.einsum('bij,bij->bi', image_features, text_features) # (B, B*K)
             image_logits += self.model.logit_bias
