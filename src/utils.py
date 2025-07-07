@@ -7,7 +7,6 @@ import time
 import functools
 import tracemalloc
 import asyncio
-from typing import Callable, TypeVar, Any, Iterable
 import numpy as np
 import xarray as xr
 import pandas as pd
@@ -21,6 +20,7 @@ from config import *
 from path import PRIVATE_DATASETS_PATH
 
 # Type annotations
+from typing import Callable, TypeVar, Any, Iterable, Self
 from abc import ABC
 Prompt = list[str | PILImage]
 GenericClient = TypeVar
@@ -371,6 +371,67 @@ def pretty_metrics(
         metric_collection: tm.MetricCollection
 ) -> dict:
     return {m: f"{s.item():.4f}" for m, s in metric_collection.items()}
+
+class Registry:
+    """
+    A class to manage and instantiate registered objects.
+    """
+    def __init__(self) -> None:
+        """Initializes the registry."""
+        self._registry = {}
+
+    def register(
+            self,
+            name: str
+    ) -> Callable:
+        """
+        A decorator to register a new object.
+
+        Args:
+            name (str): The name to register the object under.
+        """
+        def decorator(cls: Self):
+            name_lower = name.lower()
+            # if name_lower in self._registry:
+                # print(f"Warning: Model '{name}' is already registered. Overwriting.")
+            self._registry[name_lower] = cls
+            return cls
+        return decorator
+
+    def get(
+            self,
+            name: str,
+            **kwargs
+    ) -> object:
+        """
+        Gets and instantiates an objects from the registry.
+
+        Args:
+            name (str): The name of the object.
+            **kwargs: Arbitrary keyword arguments to pass to the object's constructor.
+
+        Returns:
+            An instance of the requested object.
+
+        Raises:
+            ValueError: If the object name is not found in the registry.
+        """
+        name_lower = name.lower()
+        if name_lower not in self._registry:
+            raise ValueError(
+                f"Error: object '{name}' not found. "
+                f"Available objects: {list(self._registry.keys())}"
+            )
+        
+        # Retrieve the class from the registry
+        model_class = self._registry[name_lower]
+        
+        # Instantiate and return the object
+        return model_class(**kwargs)
+
+    def registered_objects(self) -> list:
+        """Returns a list of registered object names."""
+        return list(self._registry.keys())
 
 def main() -> None:
     pass

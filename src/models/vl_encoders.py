@@ -1,4 +1,5 @@
 from config import CONFIG
+from utils import Registry
 from vendors.flair.src import flair
 
 import torch
@@ -16,6 +17,9 @@ from dataclasses import dataclass
 from typing import Optional, Any
 from vendors.flair.src.flair.model import FLAIR
 from enum import Enum
+
+VLE_REGISTRY = Registry()
+
 
 class MapComputeMode(Enum):
     SIMILARITY = 'similarity'
@@ -188,7 +192,7 @@ class VLEncoder(ABC):
 class FLAIROutput(VLEncoderOutput):
     local_image_features: torch.Tensor = None # [B_i, D]
 
-
+@VLE_REGISTRY.register("flair")
 class FLAIRAdapter(VLEncoder):
     """
     TODO
@@ -260,7 +264,7 @@ class FLAIRAdapter(VLEncoder):
             output_attn_weights=True
         ) # [B_i, B_t, D], [B_i, B_t, n_i+1] (the +1 is there for the added 'cls' token)
         
-        vle_output = FLAIROutput(
+        flair_output = FLAIROutput(
             global_image_token, # [B_i, D]
             global_text_token, # [B_i, B_t, D]
             local_image_tokens, # [B_i, n_i, D]
@@ -269,7 +273,7 @@ class FLAIRAdapter(VLEncoder):
             local_image_features, # [B_i, B_t, D]
         )
 
-        return vle_output
+        return flair_output
     
     def get_logits(
             self,
@@ -283,9 +287,9 @@ class FLAIRAdapter(VLEncoder):
             # [B_i, B_t, D], [B_i, n_i, D]
             # 'B_t' might be 1 if 'broadcast' = False
             # _, global_text_token, _, _, local_image_features, _ = self.encode_and_project(images, texts, broadcast)
-            vle_output = self.encode_and_project(images, texts, broadcast)
+            flair_output = self.encode_and_project(images, texts, broadcast)
 
-            text_features, image_features = F.normalize(vle_output.global_text_token, dim=-1), F.normalize(vle_output.local_image_features, dim=-1)
+            text_features, image_features = F.normalize(flair_output.global_text_token, dim=-1), F.normalize(flair_output.local_image_features, dim=-1)
 
             image_logits = self.model.logit_scale.exp() * torch.einsum('bij,bij->bi', image_features, text_features) # (B, B*K)
             image_logits += self.model.logit_bias
@@ -309,7 +313,7 @@ class SimSegAdapter(VLEncoder):
 
 
 def main() -> None:
-    print()
+    print(VLE_REGISTRY.registered_objects())
     
 if __name__ == '__main__':
     main()
