@@ -517,7 +517,8 @@ def _format_many_from_jsonl(
 def get_one_item(
         path: str,
         idx,
-        return_state: bool
+        return_state: bool,
+        format_to_dict: bool = False
 ) -> dict:
     """
     Gets a single item from a JSONL file by index, optionally merging with state.
@@ -532,7 +533,8 @@ def get_one_item(
     """
     state = read_state(path)
     item = read_one_from_jsonl_by(path, "img_idx", idx)
-    item = _format_one_from_jsonl(item)
+    if format_to_dict:
+        item = _format_one_from_jsonl(item)
     return state | item if return_state else item
 
 def get_many_item(
@@ -561,8 +563,9 @@ def get_many_item(
 
 def get_one_answer_gt(
         by_model,
-        idx,
-        return_state: bool = False
+        img_idx,
+        return_state: bool = False,
+        format_to_dict: bool = False
 ) -> dict:
     """
     Gets the ground truth answer for a single image by model and index.
@@ -575,12 +578,12 @@ def get_one_answer_gt(
     Returns:
         Ground truth answer dictionary.
     """
-    answer_gt = get_one_item(get_answer_gts_path(by_model), idx, return_state)
+    answer_gt = get_one_item(get_answer_gts_path(by_model), img_idx, return_state, format_to_dict)
     return answer_gt
 
 def get_one_sup_set_answer_gt(
         by_model,
-        idx,
+        img_idx,
         return_state: bool = False
 ) -> dict:
     """
@@ -594,15 +597,16 @@ def get_one_sup_set_answer_gt(
     Returns:
         Ground truth answer dictionary.
     """
-    answer_gt = get_one_item(get_sup_set_answer_gts_path(by_model), idx, return_state)
+    answer_gt = get_one_item(get_sup_set_answer_gts_path(by_model), img_idx, return_state)
     return answer_gt
 
 def get_one_answer_pr(
         by_model,
         split_by,
         relative_path,
-        idx,
-        return_state: bool = False
+        img_idx,
+        return_state: bool = False,
+        format_to_dict: bool = False
 ) -> dict:
     """
     Gets the predicted answer for a single image by model, split, and index.
@@ -617,12 +621,13 @@ def get_one_answer_pr(
     Returns:
         Predicted answer dictionary.
     """
-    answer_pr = get_one_item(get_answer_prs_path(by_model, split_by, relative_path), idx, return_state)
+    answer_pr = get_one_item(get_answer_prs_path(by_model, split_by, relative_path), img_idx, return_state, format_to_dict)
     return answer_pr
 
 def get_many_answer_gt(
         by_model,
-        return_state: bool = False
+        return_state: bool = False,
+        format_to_dict: bool = False
 ) -> dict:
     """
     Gets ground truth answers for multiple images by model.
@@ -634,12 +639,13 @@ def get_many_answer_gt(
     Returns:
         Dictionary of ground truth answers.
     """
-    answer_gts = get_many_item(get_answer_gts_path(by_model), return_state)
+    answer_gts = get_many_item(get_answer_gts_path(by_model), return_state, format_to_dict)
     return answer_gts
 
 def get_many_answer_pr(
         path: Path,
-        return_state: bool = False
+        return_state: bool = False,
+        format_to_dict: bool = False
 ) -> dict:
     """
     Gets predicted answers for multiple images from a JSONL file.
@@ -651,7 +657,7 @@ def get_many_answer_pr(
     Returns:
         Dictionary of predicted answers.
     """
-    answer_prs = get_many_item(path, return_state)
+    answer_prs = get_many_item(path, return_state, format_to_dict)
     return answer_prs
 
 def get_one_eval_gt(

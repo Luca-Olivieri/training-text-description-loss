@@ -1126,7 +1126,7 @@ class DataGenPromptBuilder():
             query_idxs: list[int],
             seed_idxs: list[int]
     ) -> None:
-        seeds = [str(get_one_answer_gt(by_model=self.by_model, idx=i, return_state=False)) for i in seed_idxs] 
+        seeds = [str(get_one_answer_gt(by_model=self.by_model, img_idx=i, return_state=False)) for i in seed_idxs] 
 
         data_gen_prompt = self.build_data_gen_prompt(
             prompt_blueprint=self.prompt_blueprint,

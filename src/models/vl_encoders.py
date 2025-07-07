@@ -28,7 +28,15 @@ class VLEncoder(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    def encode_and_pool(self, *args, **kwargs) -> None:
+    def encode_and_project(self, *args, **kwargs) -> None:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def preprocess_texts(self, *args, **kwargs) -> None:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def preprocess_images(self, *args, **kwargs) -> None:
         raise NotImplementedError
 
     @abstractmethod
@@ -68,7 +76,7 @@ class VLEncoder(ABC):
         """
         # _, [B_i, B_t, D], [B_i, n_i, D], _, _, [B_i, B_t, n_i+1]
         # 'B_t' = 1 if 'broadcast' = False
-        _, global_text_token, local_image_tokens, _, _, attn_maps_flat = self.encode_and_pool(images, texts, broadcast)
+        _, global_text_token, local_image_tokens, _, _, attn_maps_flat = self.encode_and_project(images, texts, broadcast)
 
         text_batch_size = global_text_token.shape[1] # B_t
         image_batch_size, image_num_patches = local_image_tokens.shape[:2] # B_i, n_i
@@ -95,7 +103,7 @@ class VLEncoder(ABC):
     ) -> torch.Tensor:
         # _, [B_i, B_t, D], [B_i, n_i, D], _, _, _
         # _, global_text_token, local_image_tokens, _, _, _ = self.encode_and_pool(images, texts, broadcast)
-        _, global_text_token, local_image_tokens, _, _, _ = self.encode_and_pool(images, texts, broadcast)
+        _, global_text_token, local_image_tokens, _, _, _ = self.encode_and_project(images, texts, broadcast)
         text_batch_size = global_text_token.shape[1] # B_t
         image_batch_size, image_num_patches = local_image_tokens.shape[:2] # B_i, n_i
         
@@ -139,7 +147,7 @@ class FLAIRAdapter(VLEncoder):
         self.preprocess_fn: T.Compose = preprocess_fn
         self.tokenizer: SimpleTokenizer = flair.get_tokenizer('ViT-B-16-FLAIR')
 
-    def encode_and_pool(
+    def encode_and_project(
             self,
             images: torch.Tensor,
             texts: torch.Tensor,
@@ -189,7 +197,7 @@ class FLAIRAdapter(VLEncoder):
         else:
             # [B_i, B_t, D], [B_i, n_i, D]
             # 'B_t' might be 1 if 'broadcast' = False
-            _, global_text_token, _, _, local_image_features, _ = self.encode_and_pool(images, texts, broadcast)
+            _, global_text_token, _, _, local_image_features, _ = self.encode_and_project(images, texts, broadcast)
 
             text_features, image_features = F.normalize(global_text_token, dim=-1), F.normalize(local_image_features, dim=-1)
 
