@@ -6,17 +6,23 @@ from torch import nn
 import torchvision.transforms as T
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
+from torchvision.transforms.functional import to_pil_image
 from abc import abstractmethod, ABC
 from open_clip.tokenizer import HFTokenizer, SimpleTokenizer
 import math
+from PIL import Image
 
-from typing import Optional
+from typing import Optional, Any
 from vendors.flair.src.flair.model import FLAIR
 from enum import Enum
 
 class MapComputeMode(Enum):
     SIMILARITY = 'similarity'
     ATTENTION = 'attention'
+
+
+class VLEncoderOutput(ABC):
+    ...
 
 
 class VLEncoder(ABC):
@@ -28,19 +34,19 @@ class VLEncoder(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    def encode_and_project(self, *args, **kwargs) -> None:
+    def encode_and_project(self, *args, **kwargs) -> Any:
         raise NotImplementedError
     
     @abstractmethod
-    def preprocess_texts(self, *args, **kwargs) -> None:
+    def preprocess_texts(self, *args, **kwargs) -> torch.Tensor:
         raise NotImplementedError
     
     @abstractmethod
-    def preprocess_images(self, *args, **kwargs) -> None:
+    def preprocess_images(self, *args, **kwargs) -> torch.Tensor:
         raise NotImplementedError
 
     @abstractmethod
-    def get_logits(self, *args, **kwargs) -> None:
+    def get_logits(self, *args, **kwargs) -> torch.Tensor:
         raise NotImplementedError
     
     def get_maps(
@@ -61,7 +67,7 @@ class VLEncoder(ABC):
                 raise ValueError(f"Unknown mode: {map_compute_mode}. The only supported types are {[c.name for c in MapComputeMode]}.")
             
     # TODO define preprocess_text and _image functions
-    # TODO build a VLEncoderOutput for the function encoder_and_pool (rename it encode_and_project)
+    # TODO build a VLEncoderOutput for the function encoder_and_pool
     
     def get_attn_maps(
             self,
@@ -146,6 +152,24 @@ class FLAIRAdapter(VLEncoder):
         self.model: FLAIR = model
         self.preprocess_fn: T.Compose = preprocess_fn
         self.tokenizer: SimpleTokenizer = flair.get_tokenizer('ViT-B-16-FLAIR')
+
+    def preprocess_images(
+            self, 
+            images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
+            device: str = "cuda"
+    ) -> torch.Tensor:
+        if isinstance(images, torch.Tensor) or isinstance(images[0], torch.Tensor):
+            images = [to_pil_image(img) for img in images]
+        imgs_tensor = torch.stack([self.preprocess_fn(img) for img in images]).to(device) # [1, 3, H_vle, W_vle]
+        return imgs_tensor
+    
+    def preprocess_texts(
+            self, 
+            texts: list[str],
+            device: str = "cuda"
+    ) -> torch.Tensor:
+        texts_tensor = self.tokenizer(texts).to(device) # [1, context_length]
+        return texts_tensor
 
     def encode_and_project(
             self,
