@@ -34,19 +34,20 @@ class VLEncoderOutput:
     
     Args:
         global_image_token: Global image token [B_i, D]
-        global_text_token: Global text token [B_t, D] or [B_i, B_t, D] when broadcasted
+        global_text_token: Global text token [B_t, 1, D] or [B_i, B_t, D] when broadcasted
         local_image_tokens: Local image tokens [B_i, n_i, D]
         local_text_tokens: Local text tokens [B_t, n_t, D]
-        attn_maps_flat: Flattened attention maps [B_i, B_t, n_i+1]
+        
     """
-    global_image_token: torch.Tensor
-    global_text_token: torch.Tensor
-    local_image_tokens: torch.Tensor
-    local_text_tokens: torch.Tensor
+    global_image_token: torch.Tensor    # [B_i, D]
+    global_text_token: torch.Tensor     # [B_i, B_t, D]
+    local_image_tokens: torch.Tensor    # [B_i, n_i, D]
+    local_text_tokens: torch.Tensor     # [B_t, n_t, D]
+
 
 @dataclass
 class VLEncoderOutputWithAttn(VLEncoderOutput):
-    attn_maps_flat: torch.Tensor
+    attn_maps_flat: torch.Tensor # [B_i, B_t, n_i+1]
 
 
 class VLEncoder(ABC):
@@ -90,7 +91,7 @@ class VLEncoder(ABC):
     
     @abstractmethod
     @torch.inference_mode
-    def get_logits(
+    def get_similarity(
             self,
             images: torch.Tensor,
             texts: torch.Tensor,
@@ -103,7 +104,7 @@ class VLEncoder(ABC):
             self,
             images: torch.Tensor,
             texts: torch.Tensor,
-            map_compute_mode: MapComputeMode = MapComputeMode.ATTENTION,
+            map_compute_mode: MapComputeMode = MapComputeMode.SIMILARITY,
             upsample_size: Optional[int | tuple[int]] = None,
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
             broadcast: bool = False,
@@ -115,9 +116,6 @@ class VLEncoder(ABC):
                 return self.get_sim_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast)
             case _:
                 raise ValueError(f"Unknown mode: {map_compute_mode}. The only supported types are {[c.name for c in MapComputeMode]}.")
-            
-    # TODO define preprocess_text and _image functions
-    # TODO build a VLEncoderOutput for the function encoder_and_project
     
     @torch.inference_mode
     def get_attn_maps(
@@ -190,7 +188,7 @@ class VLEncoder(ABC):
 
 @dataclass
 class FLAIROutput(VLEncoderOutputWithAttn):
-    local_image_features: torch.Tensor = None # [B_i, D]
+    local_image_features: torch.Tensor = None # [B_i, B_t, D]
 
 @VLE_REGISTRY.register("flair")
 class FLAIRAdapter(VLEncoder):
@@ -199,10 +197,10 @@ class FLAIRAdapter(VLEncoder):
     """
     def __init__(
             self,
-            checkpoint: Literal['flair-cc3m-recap',
-                                'flair-cc12m-recap',
-                                'flair-yfcc15m-recap',
-                                'flair-merged30m'] = 'flair-cc3m-recap.pt',
+            checkpoint: Literal['flair-cc3m-recap.pt',
+                                'flair-cc12m-recap.pt',
+                                'flair-yfcc15m-recap.pt',
+                                'flair-merged30m.pt'] = 'flair-cc3m-recap.pt',
             device: str = 'cuda',
     ) -> None:
         pretrained = flair.download_weights_from_hf(model_repo='xiaorui638/flair', filename=checkpoint)
@@ -212,6 +210,8 @@ class FLAIRAdapter(VLEncoder):
         self.model: FLAIR = model
         self.preprocess_fn: T.Compose = preprocess_fn
         self.tokenizer: SimpleTokenizer = flair.get_tokenizer('ViT-B-16-FLAIR')
+
+        self.context_length = self.tokenizer.context_length
 
     @torch.inference_mode
     def preprocess_images(
@@ -282,27 +282,23 @@ class FLAIRAdapter(VLEncoder):
         return flair_output
     
     @torch.inference_mode
-    def get_logits(
+    def get_similarity(
             self,
             images: torch.Tensor,
             texts: torch.Tensor,
             broadcast: bool = False
     ) -> torch.Tensor:
         if broadcast:
-            image_logits, text_logits = self.model.get_logits(images, texts)
+            flair_output = self.encode_and_project(images, texts, broadcast=True)
+            image_features, text_features = F.normalize(flair_output.global_image_token, dim=-1), F.normalize(flair_output.global_text_token, dim=-1)
+            text_features = text_features.squeeze(1)
+            sim = torch.einsum('bf,bif->bi', image_features, text_features)
         else:
-            # [B_i, B_t, D], [B_i, n_i, D]
-            # 'B_t' might be 1 if 'broadcast' = False
-            # _, global_text_token, _, _, local_image_features, _ = self.encode_and_project(images, texts, broadcast)
-            flair_output = self.encode_and_project(images, texts, broadcast)
-
-            text_features, image_features = F.normalize(flair_output.global_text_token, dim=-1), F.normalize(flair_output.local_image_features, dim=-1)
-
-            image_logits = self.model.logit_scale.exp() * torch.einsum('bij,bij->bi', image_features, text_features) # (B, B*K)
-            image_logits += self.model.logit_bias
-
-            text_logits = image_logits.T
-        return image_logits
+            flair_output = self.encode_and_project(images, texts, broadcast=False)
+            image_features, text_features = F.normalize(flair_output.global_image_token, dim=-1), F.normalize(flair_output.global_text_token, dim=-1)
+            text_features = text_features.squeeze(1)
+            sim = torch.einsum('bf,bf->b', image_features, text_features)
+        return sim
 
     @torch.inference_mode
     def count_tokens(
@@ -330,7 +326,7 @@ class FG_CLIPAdapter(VLEncoder):
             checkpoint: Literal['fg-clip-base', 
                                 'fg-clip-large'] = 'fg-clip-base',
             device: str = 'cuda',
-            long_captions = False
+            long_captions = True
     ) -> None:
         model_root = f'qihoo360/{checkpoint}'
         ckp_2_imgsize = {
@@ -342,10 +338,7 @@ class FG_CLIPAdapter(VLEncoder):
         model.to(device)
         model.eval()
         self.model = model
-
-        self.tokenizer = AutoTokenizer.from_pretrained(model_root)
-        self.image_processor = AutoImageProcessor.from_pretrained(model_root, use_fast=True)
-
+        
         # short or long captions
         if long_captions:
             self.walk_short_pos = False
@@ -353,6 +346,10 @@ class FG_CLIPAdapter(VLEncoder):
         else:
             self.walk_short_pos = True
             self.context_length = 77
+
+        self.tokenizer = AutoTokenizer.from_pretrained(model_root, use_fast=True, model_max_length=self.context_length)
+        self.image_processor = AutoImageProcessor.from_pretrained(model_root, use_fast=True)
+
 
     @torch.inference_mode
     def preprocess_images(
@@ -390,16 +387,19 @@ class FG_CLIPAdapter(VLEncoder):
         image_feature = self.model.get_image_features(images)
         dense_image_feature = self.model.get_image_dense_features(images)
         text_feature = self.model.get_text_features(texts,walk_short_pos=self.walk_short_pos)
-        image_feature = image_feature / image_feature.norm(p=2, dim=-1, keepdim=True) # [B, D]
+        image_feature = image_feature / image_feature.norm(p=2, dim=-1, keepdim=True) # [B_i, D]
         dense_image_feature = dense_image_feature / dense_image_feature.norm(p=2, dim=-1, keepdim=True) # [B, n_i, D]
-        text_feature = text_feature / text_feature.norm(p=2, dim=-1, keepdim=True) # [B, D]
+        text_feature = text_feature / text_feature.norm(p=2, dim=-1, keepdim=True) # [B_i, D]
+
+        image_batch_size = image_feature.shape[0] # B_i
 
         if broadcast:
-            ...
+            # adapt text token for broadcasting
+            text_feature = text_feature.unsqueeze(0).expand(image_batch_size, -1, -1) # [B_i, B_t, D]
         else:
             if images.shape[0] != texts.shape[0]:
                 raise AttributeError(f"When not broadcasting, 'images' and 'texts' should contain the same number of elements, but got {images.shape[0]=} and {texts.shape[0]=} instead.")
-            ...
+            text_feature = text_feature.unsqueeze(1)
 
         vle_output = VLEncoderOutput(
             global_image_token=image_feature,
@@ -411,7 +411,7 @@ class FG_CLIPAdapter(VLEncoder):
         return vle_output
     
     @torch.inference_mode
-    def get_logits(
+    def get_similarity(
             self,
             images: torch.Tensor,
             texts: torch.Tensor,
@@ -419,14 +419,18 @@ class FG_CLIPAdapter(VLEncoder):
     ) -> torch.Tensor:
         vle_output = self.encode_and_project(images, texts, broadcast)
         if broadcast:
-            logits_per_image = vle_output.global_image_token @ vle_output.global_text_token.T # [B_i, B_t, D]
+            sim = vle_output.global_image_token @ vle_output.global_text_token.mT # [B_i, B_t, D]
         else:
-            logits_per_image = torch.einsum('bf,bf->b', vle_output.global_image_token, vle_output.global_text_token) # # [B, D]
-        logits_per_image = self.model.logit_scale.exp() * logits_per_image
-        return logits_per_image
+            text_feature = vle_output.global_text_token.squeeze(1)
+            sim = torch.einsum('bf,bf->b', vle_output.global_image_token, text_feature) # # [B, D]
+        return sim
     
-    def count_tokens(self, *args, **kwargs):
-        raise NotImplementedError
+    @torch.inference_mode
+    def count_tokens(
+            self,
+            text: str
+    ) -> int:
+        return len(self.tokenizer.encode(text)) # 'SoT' and 'EoT' are added.
     
     def get_attn_maps(self, *args, **kwargs) -> None:
         raise AttributeError("The VLE 'FG-CLIP' does not provide attention maps.")
