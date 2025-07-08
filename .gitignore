@@ -28,6 +28,9 @@ data
 src/vendors/*
 !src/vendors/README.md
 
+# HTML files for viz
+*_viz.html
+
 # VS Code
 .devcontainer/*
 devcontainer.json

@@ -2,6 +2,7 @@ from IPython.display import Markdown, display
 from path import MISC_PATH
 from models.vl_encoders import VLEncoder
 from utils import batch_list, flatten_list
+from data import image_to_base64
 
 from PIL import Image, ImageDraw, ImageFont
 import torch
@@ -10,6 +11,9 @@ import torchvision.transforms.v2.functional as TF
 from torch.utils.data import DataLoader
 import seaborn as sns
 import matplotlib.pyplot as plt
+import base64
+import os
+from io import BytesIO
 
 from typing import Optional
 
@@ -73,7 +77,7 @@ def overlay_map(
 
     overlay_tensor = torch.concat([output_rgb.cpu(), map.abs().cpu()], dim=0) # [4, H, W]
     overlay_img = to_pil_image(overlay_tensor).convert('RGBA')
-    return Image.alpha_composite(background_img, overlay_img)
+    return Image.alpha_composite(background_img, overlay_img).convert('RGB')
 
 def format_image_with_caption(
         image: Image.Image,
@@ -110,7 +114,6 @@ def display_token_length_distr(
     plt.title("Distribution of Token Lengths")
     plt.show()
 
-
 def display_prompt(full_prompt: str | Prompt) -> None:
     """Displays a prompt, which can be a string or a list of strings and images, using IPython display utilities.
 
@@ -125,3 +128,173 @@ def display_prompt(full_prompt: str | Prompt) -> None:
                 display(prompt)
             else:
                 display(Markdown(prompt))
+    
+def write_html_multi_row_image_caption(
+        rows: dict[str: list[Image.Image]],
+        captions: list[str]
+) -> None:
+    row_labels = list(rows.keys())
+    column_data = [list(x) for x in list(zip(*list(rows.values())))]
+
+    generated_html = create_multi_row_gallery(row_labels, column_data, captions)
+
+    try:
+        with open("sim_viz.html", "w") as file:
+            file.write(generated_html)
+        print("Successfully created index.html. Open it in your browser to see the result.")
+    except IOError as e:
+        print(f"Error writing to file: {e}")
+
+def get_image_base64_data(image):
+    """
+    Converts a PIL Image object to Base64 encoded string.
+    """
+    if image is None:
+        print("Warning: Image is None. Skipping.")
+        return None, None
+
+    try:
+        from io import BytesIO
+        
+        # Convert image to RGB if it's not already (handles RGBA, L, etc.)
+        if image.mode != 'RGB':
+            image = image.convert('RGB')
+        
+        # Save image to BytesIO buffer as PNG
+        buffer = BytesIO()
+        image.save(buffer, format='PNG')
+        buffer.seek(0)
+        
+        # Encode to base64
+        encoded_string = base64.b64encode(buffer.getvalue()).decode('utf-8')
+        return f"data:image/png;base64,{encoded_string}", "image/png"
+    except Exception as e:
+        print(f"Error encoding image to base64: {e}")
+        return None, None
+
+def create_multi_row_gallery(
+        row_labels: list[str],
+        column_data: list[list[Image.Image]],
+        captions: list[str]
+) -> str:
+    """
+    Generates HTML for a multi-row image gallery where each caption has a
+    column of images above it, all scrolling horizontally together.
+
+    Args:
+        row_labels (list): A list of strings for the row headers.
+        column_data (list of lists): A list where each inner list contains
+                                     PIL Image objects for one vertical column.
+        captions (list): A list of captions, one for each column.
+
+    Returns:
+        str: The complete HTML content as a string.
+    """
+    # --- Data Validation ---
+    num_columns = len(column_data)
+    num_rows = len(row_labels)
+    if num_columns != len(captions):
+        print("Error: The number of columns in COLUMN_IMAGE_PATHS must match the number of CAPTION_TEXTS.")
+        return "Error page: data mismatch."
+    for i, col in enumerate(column_data):
+        if len(col) != num_rows:
+            print(f"Error: Column {i+1} has {len(col)} images, but there are {num_rows} row labels. These must match.")
+            return "Error page: data mismatch."
+
+    # --- Grid Generation ---
+    grid_items_html = []
+
+    # Generate image rows
+    for row_idx, label_text in enumerate(row_labels):
+        # Add the sticky row label for this row (Grid Item 1 in the row)
+        grid_items_html.append(f"""
+        <div class="sticky left-0 bg-gray-100 p-4 flex items-center justify-end">
+            <span class="font-bold text-gray-600 text-right">{label_text}</span>
+        </div>""")
+
+        # Add all images for this row across the columns
+        for col_idx in range(num_columns):
+            image = column_data[col_idx][row_idx]
+            base64_src, _ = get_image_base64_data(image)
+            if base64_src:
+                grid_items_html.append(f"""
+                <div class="bg-white shadow-lg rounded-lg overflow-hidden flex items-center justify-center p-2">
+                    <img src="{base64_src}" alt="Image for {captions[col_idx]}" class="max-w-full max-h-48 object-contain">
+                </div>""")
+            else:
+                grid_items_html.append('<div class="bg-gray-200 shadow-lg rounded-lg flex items-center justify-center"><span class="text-xs text-gray-500">Image not found</span></div>')
+
+    # Generate caption row
+    # Add a spacer for the label column (Grid Item 1 in the row)
+    grid_items_html.append('<div class="sticky left-0 bg-gray-100"></div>')
+
+    for caption_text in captions:
+        grid_items_html.append(f"""
+        <figcaption class="pt-2 text-gray-700 text-sm leading-relaxed">
+            {caption_text}
+        </figcaption>""")
+
+    # --- HTML and CSS Generation ---
+    html_content = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Row Image Gallery</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        body {{
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* bg-gray-100 */
+        }}
+        /* The main scrollable container */
+        .horizontal-scroll-container {{
+            -ms-overflow-style: auto; /* IE and Edge */
+            scrollbar-width: thin;   /* Firefox */
+        }}
+        .horizontal-scroll-container::-webkit-scrollbar {{
+            height: 12px;
+        }}
+        .horizontal-scroll-container::-webkit-scrollbar-track {{
+            background: #e5e7eb; /* bg-gray-200 */
+        }}
+        .horizontal-scroll-container::-webkit-scrollbar-thumb {{
+            background-color: #9ca3af; /* bg-gray-400 */
+            border-radius: 10px;
+            border: 3px solid #f3f4f6; /* bg-gray-100 */
+        }}
+        .horizontal-scroll-container::-webkit-scrollbar-thumb:hover {{
+            background: #6b7280; /* bg-gray-500 */
+        }}
+        /* Define the grid layout */
+        .gallery-grid {{
+            display: inline-grid;
+            grid-auto-flow: row;
+            /* {num_rows + 1} rows: N image rows + 1 caption row */
+            grid-template-rows: repeat({num_rows}, auto) auto;
+            /* {num_columns + 1} columns: 1 label column + M data columns */
+            grid-template-columns: 10rem repeat({num_columns}, 20rem);
+            gap: 1rem; /* Defines the visual separator space */
+        }}
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center justify-center p-4 sm:p-8">
+
+    <div class="w-full max-w-screen-xl mx-auto">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-8">Multi-Row Comparison Gallery</h1>
+        
+        <!-- The horizontally scrolling container -->
+        <div class="horizontal-scroll-container overflow-x-auto pb-4">
+            <!-- The grid that holds all content and ensures alignment -->
+            <div class="gallery-grid">
+                {''.join(grid_items_html)}
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
+"""
+    return html_content
