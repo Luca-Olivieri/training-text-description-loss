@@ -10,9 +10,10 @@ from pathlib import Path
 import json
 import pformat as pf
 from copy import deepcopy
-from typing import Self
+from typing import Self, Any, List
 from torchvision.transforms.functional import to_pil_image
 from collections import OrderedDict
+import re
 
 ### Methods ###
 
@@ -195,6 +196,116 @@ def map_placeholders(
             result.append(part)
     
     return result
+
+def map_list_placeholders(
+    texts: List[str],
+    placeholder: str,
+    objects_list: List[Any]
+) -> List[List[str | Any]]:
+    """
+    Substitutes placeholders across a list of text strings with objects from a list.
+
+    The function iterates through each string, replacing placeholders with objects
+    in the order they appear. It first verifies that the total number of placeholders
+    across all strings matches the number of objects provided.
+
+    Args:
+        texts (List[str]): The input list of text strings containing placeholders.
+        placeholder (str): The symbol representing the placeholder (e.g., '[img]').
+        objects_list (List[Any]): A list of objects to insert into the strings.
+
+    Returns:
+        A list of lists. Each inner list contains the interleaved text segments
+        and inserted objects for the corresponding original string.
+
+    Raises:
+        AttributeError: If the total number of placeholders in all strings
+                        does not match the number of objects in objects_list.
+    """
+    # 1. Count total placeholders across all strings before processing
+    total_placeholder_count = sum(text.count(placeholder) for text in texts)
+
+    # 2. Raise an error if the count of placeholders does not match the object count
+    if total_placeholder_count != len(objects_list):
+        raise AttributeError(
+            f"The input list contains {total_placeholder_count} placeholders, "
+            f"but {len(objects_list)} objects were provided."
+        )
+
+    # If there are no placeholders, return each original string inside its own list
+    # for a consistent output format.
+    if not total_placeholder_count:
+        return [[text] for text in texts]
+
+    final_result = []
+    object_iterator = iter(objects_list)
+    escaped_placeholder = re.escape(placeholder)
+
+    # 3. Iterate through each string to perform the substitution
+    for text in texts:
+        if placeholder not in text:
+            final_result.append([text])
+            continue
+
+        parts = re.split(f"({escaped_placeholder})", text)
+        
+        # Filter out empty strings that can result from splitting
+        parts = [part for part in parts if part]
+
+        current_string_result = []
+        for part in parts:
+            if part == placeholder:
+                # Replace placeholder with the next object from the iterator
+                current_string_result.append(next(object_iterator))
+            else:
+                current_string_result.append(part)
+        
+        final_result.append(current_string_result)
+
+    return final_result
+
+def substitute_list_placeholders(
+    texts: List[str],
+    substitutions: dict[str, str]
+) -> List[str]:
+    """
+    Substitutes multiple placeholders in a list of strings using a dictionary.
+
+    This function iterates through each string in the input list and replaces
+    any placeholders (defined as keys in the substitutions dictionary) with their
+    corresponding values. The process is optimized for speed by compiling a
+    single regular expression from all placeholder keys.
+
+    Args:
+        texts (List[str]): The input list of text strings that may contain
+                           placeholders.
+        substitutions (Dict[str, str]): A dictionary where keys are the
+                                        placeholders to find and values are the
+                                        strings to replace them with.
+
+    Returns:
+        A new list of strings with all specified placeholders substituted.
+        If the substitutions dictionary is empty, it returns a copy of the
+        original list.
+    """
+    if not substitutions:
+        return texts.copy()
+
+    # 1. Create a single regular expression from the dictionary keys.
+    #    The keys are escaped to ensure they are treated as literal strings.
+    #    For example, '[user]' becomes '\\[user\\]'.
+    #    This is much faster than iterating and calling str.replace() multiple times.
+    placeholder_regex = re.compile(
+        "|".join(map(re.escape, substitutions.keys()))
+    )
+
+    # 2. Iterate through each text and use the compiled regex to substitute.
+    #    A lambda function looks up the matched placeholder in the dictionary
+    #    to find its corresponding replacement value.
+    return [
+        placeholder_regex.sub(lambda match: substitutions[match.group(0)], text)
+        for text in texts
+    ]
 
 ### Prompt Modules ###
 
@@ -820,9 +931,9 @@ class PromptBuilder():
         img_prompts.append(f"Output:")
         if with_answer_gt is True:
             if self.split_by == "non-splitted":
-                answer_gt = get_one_answer_gt(self.by_model, img_idx)[img_idx]
+                answer_gt = get_one_answer_gt(self.by_model, img_idx, format_to_dict=True)[img_idx]
             elif self.split_by == "class-splitted":
-                answer_gt = get_one_sup_set_answer_gt(self.by_model, img_idx)[img_idx]
+                answer_gt = get_one_sup_set_answer_gt(self.by_model, img_idx, format_to_dict=True)[img_idx]
             img_prompts.append(answer_gt) # add target answer if specified
         return flatten_list(img_prompts)
 
@@ -1065,6 +1176,64 @@ class PromptBuilder():
             pos_class = int(pos_class)
             pos_class_2_eval_prompt[pos_class] = [pf.pformat(self.build_eval_prompt(query_idx, answer_pr)[0], pos_class=CLASSES[pos_class])]
         return pos_class_2_eval_prompt
+
+class FastPromptBuilder:
+    def __init__(
+            self,
+            seed: int,
+            prompt_blueprint: OrderedDict[str, str],
+            by_model: str,
+            sup_set_img_idxs: list[int],
+            str_formats: dict[str, str],
+            jsonl_save_path: Path
+    ) -> None:
+        """
+        Initializea GenParams with optional generation parameters.
+
+        Args:
+            seed: Random seed for generation.
+            shuffle_seeds: Whether to shuffle the examples.
+        """
+        self.seed = seed
+        self.prompt_blueprint = prompt_blueprint
+        self.by_model = by_model
+        self.str_formats = str_formats
+        self.sup_set_img_idxs = sup_set_img_idxs
+        self.jsonl_save_path = jsonl_save_path
+
+    def build_cs_prompt(
+            self,
+            sup_set_imgs: list[tuple[Image.Image, Image.Image]],
+            query_img: tuple[Image.Image]
+    ) -> Prompt:
+        
+        def populate_sup_set(
+            sup_set_module: str,
+            sup_set_imgs: list[tuple[Image.Image, Image.Image]],
+        ) -> Prompt:
+            expanded_sup_set_module = sup_set_module*len(sup_set_imgs) # replace the placeholder for each support set example.
+            # expanded_sup_set_module = [map_placeholders(expanded_sup_set_module, placeholder="[img]", objects_list=sup_set_imgs[]) for piece in expanded_sup_set_module]
+            formatted_sup_set_module = map_list_placeholders(expanded_sup_set_module, placeholder="[img]", objects_list=flatten_list(sup_set_imgs))
+            formatted_sup_set_module = map_list_placeholders(expanded_sup_set_module, placeholder="[sup_set_count]", objects_list=[str(n) for n in range(1, len(sup_set_imgs)+1)])
+            return formatted_sup_set_module
+        
+        prompt_corpus = read_json(get_data_gen_prompts_path() / "fast_cs_prompt.json")
+        prompt = [prompt_corpus[mod][var] for mod, var in self.prompt_blueprint.items()]
+        
+        if len(sup_set_imgs) != 0:
+            seeds_module_idx = list(self.prompt_blueprint.keys()).index("support_set_item")
+            prompt[seeds_module_idx] = populate_sup_set(prompt[seeds_module_idx], sup_set_imgs)
+
+        if self.str_formats:
+            prompt = substitute_list_placeholders(prompt, self.str_formats)
+
+        
+
+        # instruct_module_idx = list(prompt_blueprint.keys()).index("instruct")
+        # query_module_idx = list(prompt_blueprint.keys()).index("query")
+        # prompt[instruct_module_idx] = prompt[instruct_module_idx].format(score_level_range=self.score_level_range)
+        # prompt[query_module_idx] = prompt[query_module_idx].format(num_outputs=num_outputs)
+        return flatten_list(prompt)
     
 class DataGenPromptBuilder():
     def __init__(
@@ -1095,6 +1264,31 @@ class DataGenPromptBuilder():
         self.num_outputs = num_outputs
         self.rotate_prompts = rotate_prompts
         self.jsonl_save_path = jsonl_save_path
+
+    def build_cs_prompt(
+            self,
+            prompt_blueprint: OrderedDict[str, str],
+            sup_set_imgs: list[tuple[Image.Image, Image.Image]],
+            query_img: tuple[Image.Image]
+    ) -> Prompt:
+        
+        def populate_sup_set(
+            sup_set_module: str,
+            sup_set_imgs: list[tuple[Image.Image, Image.Image]],
+        ) -> Prompt:
+            sup_set_module = sup_set_module*len(sup_set_imgs) # replace the placeholder for each seed.
+            sup_set_module = map_placeholders(sup_set_module, placeholder="[seed]", objects_list=sup_set_imgs)
+            return sup_set_module
+        
+        prompt_corpus = read_json(get_data_gen_prompts_path() / "syn_data_gen.json")
+        prompt = [prompt_corpus[mod][var] for mod, var in prompt_blueprint.items()]
+        seeds_module_idx = list(prompt_blueprint.keys()).index("seeds")
+        instruct_module_idx = list(prompt_blueprint.keys()).index("instruct")
+        query_module_idx = list(prompt_blueprint.keys()).index("query")
+        prompt[seeds_module_idx] = populate_sup_set(prompt[seeds_module_idx], seeds)
+        prompt[instruct_module_idx] = prompt[instruct_module_idx].format(score_level_range=self.score_level_range)
+        prompt[query_module_idx] = prompt[query_module_idx].format(num_outputs=num_outputs)
+        return flatten_list(prompt)
 
     def build_data_gen_prompt(
             self,
