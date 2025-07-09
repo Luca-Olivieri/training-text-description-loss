@@ -1,4 +1,3 @@
-
 import torch
 from torchvision.datasets import VOCSegmentation
 import re
@@ -433,8 +432,45 @@ class Registry:
         """Returns a list of registered object names."""
         return list(self._registry.keys())
 
+def map_tensor(
+        input_tensor: torch.Tensor,
+        mapping_dict: dict[int, int]
+) -> torch.Tensor:
+    # Find the maximum key in your dictionary to determine the size of the lookup tensor
+    max_key = max(mapping_dict.keys()) if mapping_dict else 0
+    max_val = max(mapping_dict.values()) if mapping_dict else 0 # For setting default value dtype
+
+    # Create a lookup tensor
+    # Initialize with a default value for unmapped elements (e.g., original value, -1, or 0)
+    # Make sure the dtype is appropriate for your mapped values.
+    lookup_tensor = torch.full((max_key + 1,), 0, dtype=input_tensor.dtype, device=input_tensor.device) # Or original_tensor.dtype
+
+    # Populate the lookup tensor
+    for key, value in mapping_dict.items():
+        lookup_tensor[key] = value
+
+    # If you have values in your original tensor that are not in the mapping_dict,
+    # you might want to handle them. For example, keep their original value.
+    # First, create a tensor that would contain the original values as a fallback.
+    # Then use torch.where to apply the mapping.
+
+    # Apply the mapping
+    mapped_tensor = lookup_tensor[input_tensor.long()].to(input_tensor.dtype)
+
+    # Handle values not present in the mapping_dict (if lookup_tensor was initialized with a distinct default)
+    # For example, if -1 indicates an unmapped value and you want to keep the original.
+    # mapped_tensor = torch.where(mapped_tensor == -1, original_tensor, mapped_tensor)
+    return mapped_tensor
+
 def main() -> None:
-    pass
+    original_tensor_cuda = torch.randint(0, 200, (1, 520, 520), dtype=torch.long, device='cuda')
+
+    from data import CLASS_MAP
+
+    # Your mapping dictionary
+    mapping_dict = CLASS_MAP
+
+    map_tensor(original_tensor_cuda, mapping_dict)
 
 if __name__ == "__main__":
     main()

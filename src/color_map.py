@@ -1,4 +1,5 @@
 from config import *
+from utils import map_tensor
 
 import numpy as np
 import webcolors
@@ -6,8 +7,6 @@ from PIL import Image
 import matplotlib.pyplot as plt
 from data import CLASSES, NUM_CLASSES
 import io
-
-from config import *
 
 import torch
 from torchvision.utils import draw_segmentation_masks
@@ -178,7 +177,6 @@ def get_color_map_as_patches(patch_size: tuple[int, int] = (32, 32)) -> tuple:
         color_patches.append(patch)
     return tuple(color_patches)
 
-
 def get_color_map_as(format: str):
     """Gets the color map in a specified format.
 
@@ -198,6 +196,71 @@ def get_color_map_as(format: str):
     return fn()
 
 def apply_colormap(
+    input_tensor: torch.Tensor,
+    color_map: dict[int, tuple[int, int, int]]
+) -> torch.Tensor:
+    """
+    Applies a color map to an integer tensor to produce a 3-channel color image tensor.
+
+    Any integer class label in the input_tensor that is not a key in the color_map
+    will be mapped to black (0, 0, 0) by default.
+
+    This function is highly optimized for CUDA and uses a lookup table for fast,
+    vectorized mapping.
+
+    Args:
+        input_tensor (torch.Tensor): A tensor of integer class labels with shape
+                                     [B, 1, H, W].
+        color_map (Dict[int, Tuple[int, int, int]]): A dictionary mapping each
+                                                     class label (int) to an
+                                                     RGB color tuple (e.g., (255, 0, 0)).
+
+    Returns:
+        torch.Tensor: The resulting color image tensor with shape [B, 3, H, W] and
+                      dtype=torch.uint8.
+    """
+    # 1. --- Input Validation and Setup ---
+    if not isinstance(input_tensor, torch.Tensor):
+        raise TypeError(f"input_tensor must be a torch.Tensor, got {type(input_tensor)}")
+    if input_tensor.dim() != 4 or input_tensor.shape[1] != 1:
+        raise ValueError(f"input_tensor must have shape [B, 1, H, W], got {input_tensor.shape}")
+    
+    device = input_tensor.device
+
+    # 2. --- Create the Lookup Table (LUT) ---
+    # Determine the size of the LUT. It must be large enough to handle all
+    # keys in the color_map AND all values in the input_tensor to avoid
+    # an out-of-bounds indexing error.
+    max_key = max(color_map.keys()) if color_map else -1
+    max_val_in_tensor = input_tensor.max().item()
+    lut_size = max(max_key, max_val_in_tensor) + 1
+    
+    # Create the LUT on the same device as the input tensor, initialized to the
+    # default color (black).
+    # The default color for any unmapped index will be (0, 0, 0).
+    default_color = torch.tensor([0, 0, 0], dtype=torch.uint8, device=device)
+    lut = default_color.repeat(lut_size, 1)
+
+    # Populate the LUT from the dictionary.
+    if color_map:
+        keys = torch.tensor(list(color_map.keys()), device=device, dtype=torch.long)
+        values = torch.tensor(list(color_map.values()), dtype=torch.uint8, device=device)
+        lut.scatter_(0, keys.unsqueeze(1).repeat(1, 3), values)
+
+    # 3. --- Perform the Mapping ---
+    # Squeeze the channel dimension (C=1) and ensure indices are long.
+    indices = input_tensor.squeeze(1).long()
+    
+    # Use advanced indexing to map indices to colors.
+    # This is the core, highly parallelized operation.
+    colored_tensor = lut[indices]
+
+    # 4. --- Reshape to Standard Image Format [B, C, H, W] ---
+    output_tensor = colored_tensor.permute(0, 3, 1, 2)
+
+    return output_tensor.contiguous()
+    
+def apply_colormap_(
         mask: torch.Tensor,
         color_map: dict[int, tuple[int, int, int]],
         num_classes: int

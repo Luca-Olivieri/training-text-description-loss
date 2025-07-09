@@ -98,7 +98,6 @@ image_val_UIDs = np.array(get_image_UIDs(SPLITS_PATH, split="val"))
 
 def get_image(
         path: str,
-        resize_size: Optional[int | tuple[int, int]] = None,
 ) -> torch.Tensor:
     """
     Reads a single image from disk and encodes it in a tensor.
@@ -110,8 +109,6 @@ def get_image(
         Image as a torch.Tensor on the global device.
     """
     img = decode_image(path)
-    if resize_size:
-        img = TF.resize(img, resize_size)
     img = img.to(CONFIG["device"])
     return img
 
@@ -148,67 +145,6 @@ def one_hot_encode_masks(
     one_hot_masks = one_hot_masks.swapaxes(0, 1)
     return one_hot_masks
 
-def resize_image(
-        img: torch.Tensor,
-        image_size: int | tuple[int, int],
-        mode: str
-) -> torch.Tensor:
-    """
-    Resizes an image tensor to the given size and mode, preserving aspect ratio if needed.
-
-    Args:
-        img: Image tensor to resize.
-        image_size: Target size as int or tuple.
-        mode: Interpolation mode.
-
-    Returns:
-        Resized image tensor.
-    """
-    img = (img / 255.).unsqueeze(0)  # shape (1, C, H, W)
-    
-    if isinstance(image_size, int): # 'image_size' is of type int
-        _, _, h, w = img.shape
-        if h < w:
-            new_h = image_size
-            new_w = int(w * image_size / h)
-        else:
-            new_w = image_size
-            new_h = int(h * image_size / w)
-        size = (new_h, new_w)
-    else:
-        size = image_size  # 'image_size' is of type tuple[int, int]
-        
-    img = F.interpolate(img, size=size, mode=mode, align_corners=False if mode in ['linear', 'bilinear', 'bicubic', 'trilinear'] else None)
-    img = (img.squeeze(0) * 255).clamp(0, 255).byte()
-    return img
-
-def resize_mask(
-        mask: torch.Tensor,
-        resize_size: None | tuple[int, int] | int,
-        mode: str,
-) -> torch.Tensor:
-    """
-    Resizes a mask tensor using the specified mode.
-
-    Args:
-        mask: Mask tensor to resize.
-        image_size: Target size as int, tuple, or None.
-        mode: Interpolation mode ('bilinear' or 'nearest').
-        center_crop: Whether to center crop after resizing.
-
-    Returns:
-        Resized mask tensor.
-    """
-    if mode not in ["bilinear", "nearest"]:
-        raise AttributeError("Resizing mode must be 'bilinear' or 'nearest'.")
-    if mode == "bilinear":
-        one_hot_mask = one_hot_encode_masks(mask.unsqueeze(0)).squeeze(0).float()
-        resized_mask = resize_image(one_hot_mask, resize_size, "bilinear").argmax(dim=0, keepdim=True).byte()
-    elif mode == "nearest":
-        # resized_mask = resize_image(mask, image_size, "nearest")
-        resized_mask = TF.resize(mask, resize_size, T.InterpolationMode.NEAREST)
-    return resized_mask
-
 def get_sc(
         path: Path,
         resize_size: None | int | tuple[int, int] = None,
@@ -227,7 +163,7 @@ def get_sc(
     """
     sc = get_image(path)
     if resize_size is not None:
-        sc = resize_image(sc, resize_size, mode="bilinear")
+        sc = TF.resize(sc, resize_size, TF.InterpolationMode.BILINEAR)
     if center_crop:
         sc = TF.center_crop(sc, output_size=min(sc.shape[1:]))
     return sc
@@ -246,17 +182,15 @@ def apply_classmap(
     Returns:
         Mask tensor with mapped classes.
     """
-    mask_ = mask.cpu()
-    # mask_.apply_(lambda x: class_map.get(x, 0)) # class mapping
-    mask_.apply_(lambda x: class_map[x]) # class mapping
-    mask = mask_.to(CONFIG["device"])
+    # mask_ = mask.cpu()
+    # mask_.apply_(lambda x: class_map[x]) # class mapping # TODO this is too slow
+    mask = map_tensor(mask, class_map)
     return mask
 
-def _get_mask(
+def get_mask(
         path: str,
         class_map: dict,
-        image_size: int | tuple[int, int] | None,
-        resize_mode: str,
+        resize_size: int | tuple[int, int] | None,
         center_crop: bool
 ) -> torch.Tensor:
     """
@@ -272,10 +206,12 @@ def _get_mask(
     Returns:
         Processed mask tensor.
     """
-    mask = get_image(path)
-    mask = apply_classmap(mask, class_map)
-    if image_size is not None:
-        mask = resize_mask(mask, image_size, resize_mode)
+    mask = decode_image(path).to(CONFIG["device"])
+    mask = mask[:1, :, :]
+    if class_map:
+        mask = apply_classmap(mask, class_map)
+    if resize_size:
+        mask = TF.resize(mask, resize_size, T.InterpolationMode.NEAREST)
     if center_crop:
         mask = TF.center_crop(mask, output_size=min(mask.shape[1:]))
     return mask
@@ -284,7 +220,6 @@ def get_gt(
         path: Path,
         class_map: dict,
         resize_size: None | tuple[int, int] | int = None,
-        resize_mode: str = "nearest",
         center_crop: bool = True
 ) -> torch.Tensor:
     """
@@ -300,13 +235,12 @@ def get_gt(
     Returns:
         Processed ground truth mask tensor.
     """
-    return _get_mask(path, class_map, resize_size, resize_mode, center_crop)
+    return get_mask(path, class_map, resize_size, center_crop)
 
 def get_pr(
         path: str,
         class_map: dict,
         resize_size: int | tuple[int, int] | None = None,
-        resize_mode: str = "nearest",
         center_crop: bool = True
 ) -> torch.Tensor:
     """
@@ -322,7 +256,7 @@ def get_pr(
     Returns:
         Processed predicted mask tensor.
     """
-    return _get_mask(path, class_map, resize_size, resize_mode, center_crop)
+    return get_mask(path, class_map, resize_size, center_crop)
 
 def get_significant_classes(
         path: str,
@@ -340,7 +274,7 @@ def get_significant_classes(
     Returns:
         List of significant class indices.
     """
-    mask = _get_mask(path, class_map, image_size, resize_mode="nearest", center_crop=True)
+    mask = get_mask(path, class_map, image_size, center_crop=True)
     significant_classes = mask.unique().tolist() # classes that actually appear in 'gt'
     significant_classes.remove(0)
     return significant_classes
@@ -584,6 +518,7 @@ def get_one_answer_gt(
 def get_one_sup_set_answer_gt(
         by_model,
         img_idx,
+        format_to_dict: bool,
         return_state: bool = False
 ) -> dict:
     """
@@ -597,7 +532,7 @@ def get_one_sup_set_answer_gt(
     Returns:
         Ground truth answer dictionary.
     """
-    answer_gt = get_one_item(get_sup_set_answer_gts_path(by_model), img_idx, return_state)
+    answer_gt = get_one_item(get_sup_set_answer_gts_path(by_model), img_idx, return_state, format_to_dict=format_to_dict)
     return answer_gt
 
 def get_one_answer_pr(

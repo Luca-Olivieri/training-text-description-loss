@@ -1262,9 +1262,9 @@ class FastPromptBuilder:
     ) -> Prompt:
         sup_set_uids = image_UIDs[sup_set_img_idxs]
         gts_paths = [GTS_PATH / (UID + ".png") for UID in sup_set_uids]
-        gts = [get_gt(path=p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in gts_paths]
-        gts_img = [to_pil_image(apply_colormap(gt, COLOR_MAP_DICT, NUM_CLASSES)) for gt in gts]
-        prs_img = [to_pil_image(apply_colormap(gt, COLOR_MAP_DICT, NUM_CLASSES)) for gt in gts]
+        gts = torch.stack([get_gt(path=p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in gts_paths])
+        gts_img = [to_pil_image(col_gt) for col_gt in apply_colormap(gts, COLOR_MAP_DICT)]
+        prs_img = [to_pil_image(col_pr) for col_pr in apply_colormap(gts, COLOR_MAP_DICT)]
 
         sup_set_imgs = list(zip(gts_img, prs_img))
         sup_set_answers = [get_one_answer_gt(self.by_model, sup_set_img_idx, return_state=False, format_to_dict=False)['content'] for sup_set_img_idx in self.sup_set_img_idxs]
@@ -1274,10 +1274,35 @@ class FastPromptBuilder:
         return base_prompt
 
     def get_significant_classes(
-            imgs_tensor: torch.Tensor,
+            self,
+            input_tensor: torch.Tensor,
+            batched: bool = False,
     ) -> torch.Tensor:
-        imgs_tensor.unique()
+        if batched:
+            return [img_t.unique().tolist() for img_t in input_tensor]
+        else:
+            return input_tensor.unique().tolist()
     
+    def expand_head_to_cs(
+            self,
+            query_gt: torch.Tensor,
+            query_pr: torch.Tensor,
+    ) -> list[Prompt]:
+        gt_sign_classes = self.get_significant_classes(query_gt)
+        pr_sign_classes = self.get_significant_classes(query_pr)
+        sign_classes = list(set(gt_sign_classes + pr_sign_classes))
+        sign_classes.remove(0)
+
+        concat_masks = torch.stack([query_gt, query_pr], dim=0)
+
+        splitted_masks = torch.stack([apply_colormap(concat_masks, {pos_c: (255, 255, 255)}) for pos_c in sign_classes], dim=0)
+
+        splitted_gt_masks = splitted_masks[:, 0, ...]
+        splitted_pr_masks = splitted_masks[:, 1, ...]
+
+        # return splitted_gt_masks, splitted_pr_masks, sign_classes
+        return {pos_c: [to_pil_image(splitted_gt_masks[i]), to_pil_image(splitted_pr_masks[i])] for i, pos_c in enumerate(sign_classes)}
+
     def build_cs_inference_prompts(
             self,
             query_idxs: list[int]
@@ -1289,24 +1314,22 @@ class FastPromptBuilder:
         ) -> Prompt:
             return map_list_placeholders(query_module, placeholder="[img]", objects_list=flatten_list(query_imgs))
         
-        # TODO most of the time is spent retrieving images, optimize it with async.
-
-        
         query_uids = image_UIDs[query_idxs]
         gts_paths = [GTS_PATH / (UID + ".png") for UID in query_uids]
         prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in query_idxs]
-        start = time.time()
-        gts = [get_gt(path=p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in gts_paths]
-        prs = [get_pr(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in prs_paths] # tensors (3, H, W)
-        print(time.time() - start)
-        gts_img = [to_pil_image(apply_colormap(gt, COLOR_MAP_DICT, NUM_CLASSES)) for gt in gts]
-        prs_img = [to_pil_image(apply_colormap(pr, COLOR_MAP_DICT, NUM_CLASSES)) for pr in prs]
+        gts = torch.stack([get_gt(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in gts_paths])
+        prs = torch.stack([get_pr(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in prs_paths]) # tensors (3, H, W)
 
-        
-        query_imgs = list(zip(gts_img, prs_img))
+        splitted_elements_dict = [self.expand_head_to_cs(gt, pr) for gt, pr in zip(gts, prs)]
+
+        gts_imgs_flat = flatten_list([[gt for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict])
+        prs_imgs_flat = flatten_list([[pr for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict])
+        ps_c_imgs_flat = flatten_list([[pos_c for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict])
+
+        query_imgs = list(zip(gts_imgs_flat, prs_imgs_flat))
 
         prompts = [flatten_list(self.base_prompt + populate_query(deepcopy(self.head_prompt), q_imgs)) for q_imgs in query_imgs]
-        prompts = [[pf.pformat(piece, pos_class="HELLO") if isinstance(piece, str) else piece for piece in prompt] for prompt in prompts]
+        prompts = [[pf.pformat(piece, pos_class=CLASSES[pos_c]) if isinstance(piece, str) else piece for piece in prompt] for pos_c, prompt in zip(ps_c_imgs_flat, prompts)]
 
         return prompts
 
