@@ -197,17 +197,27 @@ def map_placeholders(
     
     return result
 
+import re
+from typing import List, Any, Union
+
+# A more specific type hint for the items in the final list
+Interleaved = Union[str, Any]
+
 def map_list_placeholders(
     texts: List[str],
     placeholder: str,
     objects_list: List[Any]
-) -> List[List[str | Any]]:
+) -> List[List[Interleaved]]:
     """
-    Substitutes placeholders across a list of text strings with objects from a list.
+    Substitutes placeholders in a list of strings with objects from a list.
 
-    The function iterates through each string, replacing placeholders with objects
+    This function iterates through each string, replacing placeholders with objects
     in the order they appear. It first verifies that the total number of placeholders
     across all strings matches the number of objects provided.
+
+    The key difference in this version is its handling of object types:
+    - If an object is a string, it is merged directly into the surrounding text.
+    - If an object is not a string, it is inserted as a separate element in the list.
 
     Args:
         texts (List[str]): The input list of text strings containing placeholders.
@@ -216,53 +226,65 @@ def map_list_placeholders(
 
     Returns:
         A list of lists. Each inner list contains the interleaved text segments
-        and inserted objects for the corresponding original string.
+        and inserted objects. For example:
+        - `map_list_placeholders(["A [P] C"], "[P]", ["B"])` -> `[['A B C']]`
+        - `map_list_placeholders(["A [P] C"], "[P]", [ImageObject])` -> `[['A ', ImageObject, ' C']]`
 
     Raises:
-        AttributeError: If the total number of placeholders in all strings
-                        does not match the number of objects in objects_list.
+        ValueError: If the total number of placeholders in all strings
+                    does not match the number of objects in objects_list.
     """
-    # 1. Count total placeholders across all strings before processing
+    # 1. Count total placeholders and validate against the number of objects.
     total_placeholder_count = sum(text.count(placeholder) for text in texts)
-
-    # 2. Raise an error if the count of placeholders does not match the object count
     if total_placeholder_count != len(objects_list):
-        raise AttributeError(
+        raise ValueError(
             f"The input list contains {total_placeholder_count} placeholders, "
             f"but {len(objects_list)} objects were provided."
         )
 
-    # If there are no placeholders, return each original string inside its own list
-    # for a consistent output format.
+    # If there are no placeholders, return each original string inside its own list.
     if not total_placeholder_count:
         return [[text] for text in texts]
 
-    final_result = []
+    final_result: List[List[Interleaved]] = []
     object_iterator = iter(objects_list)
     escaped_placeholder = re.escape(placeholder)
 
-    # 3. Iterate through each string to perform the substitution
+    # 2. Iterate through each string to perform the substitution.
     for text in texts:
+        # If the placeholder isn't in this specific text, wrap it in a list and continue.
         if placeholder not in text:
-            final_result.append([text])
+            final_result.append([text] if text else [])
             continue
 
+        # Step 1: Split the text by the placeholder, but keep the placeholder as a delimiter.
+        # e.g., "A [P] C" -> ['A ', '[P]', ' C']
+        # This handles placeholders at the start/end correctly, e.g., "[P]C" -> ['', '[P]', 'C']
         parts = re.split(f"({escaped_placeholder})", text)
-        
-        # Filter out empty strings that can result from splitting
-        parts = [part for part in parts if part]
 
-        current_string_result = []
+        # Step 2: Substitute placeholders with their corresponding objects.
+        substituted_parts: List[Interleaved] = []
         for part in parts:
             if part == placeholder:
-                # Replace placeholder with the next object from the iterator
-                current_string_result.append(next(object_iterator))
-            else:
-                current_string_result.append(part)
-        
-        final_result.append(current_string_result)
+                # This is a placeholder; get the next object for substitution.
+                substituted_parts.append(next(object_iterator))
+            elif part: # Only append non-empty text parts.
+                substituted_parts.append(part)
 
-    return final_result
+        # Step 3: Merge adjacent string parts.
+        processed_parts: List[Interleaved] = []
+        for item in substituted_parts:
+            # If the current item is a string and the last processed part was also a string,
+            # merge them together.
+            if isinstance(item, str) and processed_parts and isinstance(processed_parts[-1], str):
+                processed_parts[-1] += item
+            else:
+                # Otherwise, append the item (text or object) as a new element.
+                processed_parts.append(item)
+        
+        final_result.append(processed_parts)
+
+    return flatten_list(final_result)
 
 def substitute_list_placeholders(
     texts: List[str],
@@ -1185,7 +1207,8 @@ class FastPromptBuilder:
             by_model: str,
             sup_set_img_idxs: list[int],
             str_formats: dict[str, str],
-            jsonl_save_path: Path
+            prs_mask_paths: Optional[Path],
+            jsonl_save_path: Optional[Path]
     ) -> None:
         """
         Initializea GenParams with optional generation parameters.
@@ -1198,43 +1221,96 @@ class FastPromptBuilder:
         self.prompt_blueprint = prompt_blueprint
         self.by_model = by_model
         self.str_formats = str_formats
+        self.prs_mask_paths = prs_mask_paths
         self.sup_set_img_idxs = sup_set_img_idxs
         self.jsonl_save_path = jsonl_save_path
+        self.base_prompt = self.build_cs_base_prompt(self.sup_set_img_idxs)[:-1]
+        self.head_prompt = self.build_cs_base_prompt(self.sup_set_img_idxs)[-1]
 
-    def build_cs_prompt(
+    def build_base_prompt_(
             self,
             sup_set_imgs: list[tuple[Image.Image, Image.Image]],
-            query_img: tuple[Image.Image]
+            sup_set_answers: list[str]
     ) -> Prompt:
         
         def populate_sup_set(
             sup_set_module: str,
             sup_set_imgs: list[tuple[Image.Image, Image.Image]],
+            sup_set_answers: list[str]
         ) -> Prompt:
             expanded_sup_set_module = sup_set_module*len(sup_set_imgs) # replace the placeholder for each support set example.
-            # expanded_sup_set_module = [map_placeholders(expanded_sup_set_module, placeholder="[img]", objects_list=sup_set_imgs[]) for piece in expanded_sup_set_module]
-            formatted_sup_set_module = map_list_placeholders(expanded_sup_set_module, placeholder="[img]", objects_list=flatten_list(sup_set_imgs))
-            formatted_sup_set_module = map_list_placeholders(expanded_sup_set_module, placeholder="[sup_set_count]", objects_list=[str(n) for n in range(1, len(sup_set_imgs)+1)])
-            return formatted_sup_set_module
+            expanded_sup_set_module = map_list_placeholders(expanded_sup_set_module, placeholder="[sup_set_count]", objects_list=[str(n+1) for n in range(len(sup_set_imgs))])
+            expanded_sup_set_module = map_list_placeholders(expanded_sup_set_module, placeholder="[answer_gt]", objects_list=sup_set_answers)
+            expanded_sup_set_module = map_list_placeholders(expanded_sup_set_module, placeholder="[img]", objects_list=flatten_list(sup_set_imgs))
+            return expanded_sup_set_module
         
         prompt_corpus = read_json(get_data_gen_prompts_path() / "fast_cs_prompt.json")
         prompt = [prompt_corpus[mod][var] for mod, var in self.prompt_blueprint.items()]
         
         if len(sup_set_imgs) != 0:
-            seeds_module_idx = list(self.prompt_blueprint.keys()).index("support_set_item")
-            prompt[seeds_module_idx] = populate_sup_set(prompt[seeds_module_idx], sup_set_imgs)
+            sup_set_module_idx = list(self.prompt_blueprint.keys()).index("support_set_item")
+            prompt[sup_set_module_idx] = populate_sup_set(prompt[sup_set_module_idx], sup_set_imgs, sup_set_answers)
 
         if self.str_formats:
             prompt = substitute_list_placeholders(prompt, self.str_formats)
+        
+        return prompt
+
+    def build_cs_base_prompt(
+            self,
+            sup_set_img_idxs: list[int],
+    ) -> Prompt:
+        sup_set_uids = image_UIDs[sup_set_img_idxs]
+        gts_paths = [GTS_PATH / (UID + ".png") for UID in sup_set_uids]
+        gts = [get_gt(path=p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in gts_paths]
+        gts_img = [to_pil_image(apply_colormap(gt, COLOR_MAP_DICT, NUM_CLASSES)) for gt in gts]
+        prs_img = [to_pil_image(apply_colormap(gt, COLOR_MAP_DICT, NUM_CLASSES)) for gt in gts]
+
+        sup_set_imgs = list(zip(gts_img, prs_img))
+        sup_set_answers = [get_one_answer_gt(self.by_model, sup_set_img_idx, return_state=False, format_to_dict=False)['content'] for sup_set_img_idx in self.sup_set_img_idxs]
+
+        base_prompt = self.build_base_prompt_(sup_set_imgs, sup_set_answers)
+
+        return base_prompt
+
+    def get_significant_classes(
+            imgs_tensor: torch.Tensor,
+    ) -> torch.Tensor:
+        imgs_tensor.unique()
+    
+    def build_cs_inference_prompts(
+            self,
+            query_idxs: list[int]
+    ) -> list[Prompt]:
+        
+        def populate_query(
+            query_module: str,
+            query_imgs: list[tuple[Image.Image, Image.Image]],
+        ) -> Prompt:
+            return map_list_placeholders(query_module, placeholder="[img]", objects_list=flatten_list(query_imgs))
+        
+        # TODO most of the time is spent retrieving images, optimize it with async.
 
         
+        query_uids = image_UIDs[query_idxs]
+        gts_paths = [GTS_PATH / (UID + ".png") for UID in query_uids]
+        prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in query_idxs]
+        start = time.time()
+        gts = [get_gt(path=p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in gts_paths]
+        prs = [get_pr(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in prs_paths] # tensors (3, H, W)
+        print(time.time() - start)
+        gts_img = [to_pil_image(apply_colormap(gt, COLOR_MAP_DICT, NUM_CLASSES)) for gt in gts]
+        prs_img = [to_pil_image(apply_colormap(pr, COLOR_MAP_DICT, NUM_CLASSES)) for pr in prs]
 
-        # instruct_module_idx = list(prompt_blueprint.keys()).index("instruct")
-        # query_module_idx = list(prompt_blueprint.keys()).index("query")
-        # prompt[instruct_module_idx] = prompt[instruct_module_idx].format(score_level_range=self.score_level_range)
-        # prompt[query_module_idx] = prompt[query_module_idx].format(num_outputs=num_outputs)
-        return flatten_list(prompt)
-    
+        
+        query_imgs = list(zip(gts_img, prs_img))
+
+        prompts = [flatten_list(self.base_prompt + populate_query(deepcopy(self.head_prompt), q_imgs)) for q_imgs in query_imgs]
+        prompts = [[pf.pformat(piece, pos_class="HELLO") if isinstance(piece, str) else piece for piece in prompt] for prompt in prompts]
+
+        return prompts
+
+
 class DataGenPromptBuilder():
     def __init__(
             self,
