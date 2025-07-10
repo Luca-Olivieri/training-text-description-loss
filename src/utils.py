@@ -46,6 +46,48 @@ def flatten_list(nested_list: list[Any]) -> list[list[Any]]:
         else: result.append(item)
     return result
 
+def flatten_to_depth(
+    nested_list: list[Any] | tuple[Any],
+    depth: float = float('inf')
+) -> list[Any]:
+    """
+    Flattens a nested list or tuple to a specified depth.
+
+    By default, it flattens the list completely.
+
+    Args:
+        nested_list (list[Any] | tuple[Any]): The nested list or tuple to flatten.
+        depth (float): The maximum number of levels to flatten.
+                       - `float('inf')` (default): Flattens completely.
+                       - `1`: Flattens only the first level.
+                       - `0`: Returns a shallow copy of the list (no flattening).
+
+    Returns:
+        list[Any]: The flattened list.
+
+    Examples:
+        >>> data = [[[1, 2], [3, 4]], [5, [6, 7]]]
+        >>> flatten(data)  # Default: full flattening
+        [1, 2, 3, 4, 5, 6, 7]
+        >>> flatten(data, depth=1)
+        [[1, 2], [3, 4], 5, [6, 7]]
+        >>> flatten(data, depth=2)
+        [1, 2, 3, 4, 5, [6, 7]]
+        >>> flatten(data, depth=0)
+        [[[1, 2], [3, 4]], [5, [6, 7]]]
+    """
+    result = []
+    for item in nested_list:
+        # Check if the item is a list/tuple and we still have depth to flatten
+        if isinstance(item, (list, tuple)) and depth > 0:
+            # Recurse, but with one less level of depth allowed
+            result.extend(flatten_to_depth(item, depth - 1))
+        else:
+            # Append the item as is, either because it's not a list/tuple
+            # or because we've reached our desired depth
+            result.append(item)
+    return result
+
 def batch_list(
         list_,
         batch_size

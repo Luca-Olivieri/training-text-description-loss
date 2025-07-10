@@ -43,7 +43,7 @@ TORCH_GEN.manual_seed(CONFIG["seed"])
 
 load_dotenv(str(CONFIG_PATH / ".env"), override=True)
 
-GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY_2")
+GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY_3")
 GDRIVE_ANNOT_IMGS_PATH = os.getenv("GDRIVE_ANNOT_IMGS_PATH")
 
 # PyTorch

@@ -36,31 +36,47 @@ CLASS_MAP_VOID: dict[int, int] = CLASS_MAP | {255: 21}
 NUM_CLASSES = len(set(CLASS_MAP.values())) # actual number of classes
 NUM_CLASSES_VOID = len(set(CLASS_MAP_VOID.values())) # actual number of classes
 
-def get_image_UIDs(
-        path: Path,
-        split="trainval"
-) -> list[int]:
-    """
-    Lists the UIDs of the images stored into a certain path and by split.
+class MyDataset(Dataset):
+    vlm_image_size: int | tuple[int, int] = None
+    seg_image_size: int | tuple[int, int] = None
 
-    Args:
-        path: root directory of the images.
-        split: split type ('non-splitted' or 'class-splitted').
-    
-    Returns:
-        List of image UIDs.
+    def get_image_uids(self) -> list[int]:
+        ...
 
-    Returns a list of image UIDs read in the "splits.txt" file for a specified split.
+class SegDataset(Dataset):
     """
-    image_UIDs = []
-    with open(path / f"{split}.txt", "r") as f:
-        for line in f:
-            image_id = line.strip()  # Remove any leading/trailing whitespace
-            image_UIDs.append(image_id)
-    to_shuffle = image_UIDs[23:]
-    random.shuffle(to_shuffle)
-    image_UIDs[23:] = to_shuffle
-    return image_UIDs
+    TODO
+    """
+    def __init__(
+            self,
+            uids: list[int],
+            resize_size: int | list[int, int],
+            class_map: dict,
+            mask_resize_mode: str = "nearest",
+    ) -> None:
+        self.scs_paths = [SCS_PATH / (UID + ".jpg") for UID in uids]
+        self.gts_paths = [GTS_PATH / (UID + ".png") for UID in uids]
+        self.resize_size = resize_size
+        self.class_map = class_map
+        self.mask_resize_mode = mask_resize_mode
+
+    def __len__(self) -> int:
+        return len(self.gts_paths)
+
+    def __getitem__(
+            self,
+            idx: int
+    ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor]:
+        if isinstance(idx, slice):
+            indices = range(*idx.indices(len(self)))
+            scs = [get_sc(path=self.scs_paths[i], resize_size=self.resize_size, center_crop=False) for i in indices]
+            gts = [get_gt(path=self.gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=False) for i in indices]
+            return scs, gts
+        else:
+            sc = get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=False)
+            gt = get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=False)
+            return sc, gt
+
 
 def get_image_UIDs(
         path: Path,
@@ -952,39 +968,6 @@ def flatten_class_splitted_answers(
         b += len(new_answers)
     return flat_answers
 
-class SegDataset(Dataset):
-    """
-    TODO
-    """
-    def __init__(
-            self,
-            uids: list[int],
-            resize_size: int | list[int, int],
-            class_map: dict,
-            mask_resize_mode: str = "nearest",
-    ) -> None:
-        self.scs_paths = [SCS_PATH / (UID + ".jpg") for UID in uids]
-        self.gts_paths = [GTS_PATH / (UID + ".png") for UID in uids]
-        self.resize_size = resize_size
-        self.class_map = class_map
-        self.mask_resize_mode = mask_resize_mode
-
-    def __len__(self) -> int:
-        return len(self.gts_paths)
-
-    def __getitem__(
-            self,
-            idx: int
-    ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor]:
-        if isinstance(idx, slice):
-            indices = range(*idx.indices(len(self)))
-            scs = [get_sc(path=self.scs_paths[i], resize_size=self.resize_size, center_crop=False) for i in indices]
-            gts = [get_gt(path=self.gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=False) for i in indices]
-            return scs, gts
-        else:
-            sc = get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=False)
-            gt = get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=False)
-            return sc, gt
         
 def class_pixel_distribution(
         dl: DataLoader,
@@ -1065,15 +1048,7 @@ def crop_augment_preprocess_batch(
     return x, y
 
 def main() -> None:
-    texts = ["Call an Uber for me", "Play the music to us", "Play the piano with me"]
-    embds = [torch.tensor([0., 1., 2.]), torch.tensor([0, -1., -2.])] * 2000
-    print(distinct_k(texts, 4))
-    print(ent_k(texts, 4))
-    print(embd_diversity(embds).item())
-    print(vendi_score(embds))
-    # gts_text = [d["content"] for d in get_many_answer_gt(by_model="LRASPP_MobileNet_V3", return_state=False)]
-    # print(distinct_k(gts_text, 4))
-    # print(ent_k(gts_text, 4))
+    print(type(image_UIDs))
 
 if __name__ == "__main__":
     main()

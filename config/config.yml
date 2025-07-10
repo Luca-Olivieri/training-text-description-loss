@@ -14,3 +14,9 @@ seg:
   train_decoder_only: False
   batch_size: 16
   num_epochs: 45
+
+vlm:
+  image_size: 224
+  alpha: 0.6
+  sup_set_img_idxs: [16]
+  temperature: 0.1

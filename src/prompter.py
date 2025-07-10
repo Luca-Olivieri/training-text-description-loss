@@ -1140,7 +1140,7 @@ class PromptBuilder():
         Returns:
             Evaluation prompt.
         """
-        answer_gt = get_one_answer_gt(self.by_model, query_idx)[query_idx]
+        answer_gt = get_one_answer_gt(self.by_model, query_idx)['content']
         prompt = [self.modules_dict["eval"](answer_gt, answer_pr)]
         return prompt
     
@@ -1205,9 +1205,12 @@ class FastPromptBuilder:
             seed: int,
             prompt_blueprint: OrderedDict[str, str],
             by_model: str,
+            alpha: float,
+            class_map: dict[int, int],
+            color_map: dict[int, tuple[int, int, int]],
+            image_size: int | tuple[int, int],
             sup_set_img_idxs: list[int],
             str_formats: dict[str, str],
-            alpha: float,
             prs_mask_paths: Optional[Path],
             jsonl_save_path: Optional[Path]
     ) -> None:
@@ -1221,9 +1224,12 @@ class FastPromptBuilder:
         self.seed = seed
         self.prompt_blueprint = prompt_blueprint
         self.by_model = by_model
-        self.str_formats = str_formats
         self.alpha = alpha
+        self.class_map = class_map
+        self.color_map = color_map
+        self.image_size = image_size
         self.prs_mask_paths = prs_mask_paths
+        self.str_formats = str_formats
         self.sup_set_img_idxs = sup_set_img_idxs
         self.jsonl_save_path = jsonl_save_path
         
@@ -1280,9 +1286,9 @@ class FastPromptBuilder:
         gts_paths = [GTS_PATH / (UID + ".png") for UID in sup_set_uids]
         prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in sup_set_img_idxs]
         scs_paths = [SCS_PATH / (UID + ".jpg") for UID in sup_set_uids]
-        gts = torch.stack([get_gt(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in gts_paths])
-        prs = torch.stack([get_pr(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in prs_paths]) # tensors (3, H, W)
-        scs = torch.stack([get_sc(p, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in scs_paths])
+        gts = torch.stack([get_gt(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in gts_paths])
+        prs = torch.stack([get_pr(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in prs_paths]) # tensors (3, H, W)
+        scs = torch.stack([get_sc(p, resize_size=self.image_size, center_crop=True) for p in scs_paths])
 
         gts = apply_colormap(gts, color_map)
         prs = apply_colormap(prs, color_map)
@@ -1344,30 +1350,49 @@ class FastPromptBuilder:
         
         def populate_query(
             query_module: str,
-            query_imgs: list[tuple[Image.Image, Image.Image, Image.Image]],
+            query_gt: Image.Image,
+            query_pr: Image.Image,
         ) -> Prompt:
-            return map_list_placeholders(query_module, placeholder="[img]", objects_list=flatten_list(query_imgs))
+            return map_list_placeholders(query_module, placeholder="[img]", objects_list=[query_gt, query_pr])
         
         query_uids = image_UIDs[query_idxs]
         gts_paths = [GTS_PATH / (UID + ".png") for UID in query_uids]
         prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in query_idxs]
         scs_paths = [SCS_PATH / (UID + ".jpg") for UID in query_uids]
-        gts = torch.stack([get_gt(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in gts_paths])
-        prs = torch.stack([get_pr(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in prs_paths]) # tensors (3, H, W)
-        scs = torch.stack([get_sc(p, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in scs_paths])
+        gts = torch.stack([get_gt(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in gts_paths])
+        prs = torch.stack([get_pr(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in prs_paths]) # tensors (3, H, W)
+        scs = torch.stack([get_sc(p, resize_size=self.image_size, center_crop=True) for p in scs_paths])
 
         splitted_elements_dict = [self.expand_head_to_cs(gt, pr, sc, self.alpha) for gt, pr, sc in zip(gts, prs, scs)]
 
-        gts_imgs_flat = flatten_list([[gt for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict])
-        prs_imgs_flat = flatten_list([[pr for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict])
-        ps_c_imgs_flat = flatten_list([[pos_c for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict])
+        cs_gts_imgs_list = [[gt for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict]
+        cs_prs_imgs_list = [[pr for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict]
+        cs_pos_c_list = [[pos_c for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict]
 
-        query_imgs = list(zip(gts_imgs_flat, prs_imgs_flat))
+        zipped_gts_prs_list = list(zip(cs_gts_imgs_list, cs_prs_imgs_list, cs_pos_c_list))
 
-        prompts = [flatten_list(self.base_prompt + populate_query(deepcopy(self.head_prompt), q_imgs)) for q_imgs in query_imgs]
-        prompts = [[pf.pformat(piece, pos_class=CLASSES[pos_c]) if isinstance(piece, str) else piece for piece in prompt] for pos_c, prompt in zip(ps_c_imgs_flat, prompts)]
+        cs_prompts_list = [{pos_c: flatten_list(self.base_prompt + populate_query(deepcopy(self.head_prompt), gt_img, pr_img)) for gt_img, pr_img, pos_c in zip(cs_gts, cs_prs, cs_pos_c)} for cs_gts, cs_prs, cs_pos_c in zipped_gts_prs_list]
+        cs_prompts_list = [{pos_c: [pf.pformat(piece, pos_class=CLASSES[pos_c]) if isinstance(piece, str) else piece for piece in prompt] for pos_c, prompt in cs_prompts.items()} for cs_prompts in cs_prompts_list]
+        
+        return cs_prompts_list
+    
+    def get_state(self) -> dict:
+        """
+        Returns the current state of the prompter as a dictionary.
+        """
+        def to_dict(obj: Any) -> dict | str:
+            if hasattr(obj, "__to_dict__"):
+                return obj.__to_dict__()
+            else:
+                return obj.__repr__()
+        
+        state = {}
+        for attr, value in vars(self).items():
+                state[attr] = value
 
-        return prompts
+        formatted_json = json.dumps(state, default=to_dict)
+        state = json.loads(formatted_json)
+        return state
 
 
 class DataGenPromptBuilder():
