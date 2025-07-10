@@ -462,6 +462,42 @@ def map_tensor(
     # mapped_tensor = torch.where(mapped_tensor == -1, original_tensor, mapped_tensor)
     return mapped_tensor
 
+def is_list_of_tensors(item_to_check: Any) -> bool:
+    """
+    Checks if an item is a list containing only PyTorch tensors.
+
+    This function is optimized for speed by first checking if the item is a list
+    and then using a short-circuiting generator expression with `all()`.
+
+    Args:
+        item_to_check: The item to be checked.
+
+    Returns:
+        True if the item is a list and all its elements are torch.Tensor.
+        False otherwise.
+    """
+    # 1. Quick type check: If it's not a list, it can't be a list of tensors.
+    #    This is a fast first-pass filter.
+    if not isinstance(item_to_check, list):
+        return False
+
+    # 2. Use `all()` with a generator expression.
+    #    - `all()` is fast and short-circuits: it stops and returns False
+    #      as soon as it finds the first non-tensor element.
+    #    - `torch.is_tensor()` is the canonical way to check for a tensor.
+    return all(torch.is_tensor(x) for x in item_to_check)
+
+def blend_tensors(tensor1: torch.Tensor, tensor2: torch.Tensor, alpha: float) -> torch.Tensor:
+    """
+    Blends two tensors using torch.lerp for a potentially more optimized approach.
+    
+    torch.lerp(start, end, weight) is equivalent to: start + weight * (end - start)
+    which is algebraically the same as: start * (1 - weight) + end * weight
+    """
+    blended_tensor = torch.lerp(tensor1.float(), tensor2.float(), alpha)
+    out_tensor = torch.clamp(blended_tensor, 0, 255).to(torch.uint8)
+    return out_tensor
+
 def main() -> None:
     original_tensor_cuda = torch.randint(0, 200, (1, 520, 520), dtype=torch.long, device='cuda')
 

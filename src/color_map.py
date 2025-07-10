@@ -1,5 +1,5 @@
 from config import *
-from utils import map_tensor
+from utils import map_tensor, is_list_of_tensors
 
 import numpy as np
 import webcolors
@@ -196,7 +196,7 @@ def get_color_map_as(format: str):
     return fn()
 
 def apply_colormap(
-    input_tensor: torch.Tensor,
+    input_tensor: torch.Tensor | list[torch.Tensor],
     color_map: dict[int, tuple[int, int, int]]
 ) -> torch.Tensor:
     """
@@ -219,9 +219,12 @@ def apply_colormap(
         torch.Tensor: The resulting color image tensor with shape [B, 3, H, W] and
                       dtype=torch.uint8.
     """
+    if is_list_of_tensors(input_tensor):
+        input_tensor = torch.stack(input_tensor, dim=0)
+
     # 1. --- Input Validation and Setup ---
     if not isinstance(input_tensor, torch.Tensor):
-        raise TypeError(f"input_tensor must be a torch.Tensor, got {type(input_tensor)}")
+        raise TypeError(f"input_tensor must be a either be torch.Tensor or a list of torch.Tensor, got {type(input_tensor)}")
     if input_tensor.dim() != 4 or input_tensor.shape[1] != 1:
         raise ValueError(f"input_tensor must have shape [B, 1, H, W], got {input_tensor.shape}")
     

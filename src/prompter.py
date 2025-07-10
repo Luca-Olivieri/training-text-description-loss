@@ -860,7 +860,7 @@ class PromptBuilder():
     def read_sc_gt_pr(
             self,
             idx: int,
-            image_size_: int | tuple[int, int]
+            resize_size: int | tuple[int, int]
     ) -> tuple[Image.Image, Image.Image, Image.Image]:
         """
         Reads the scene, ground truth and prediction masks from disk and formats them in RGB format ready to be visualised.
@@ -874,9 +874,9 @@ class PromptBuilder():
             Tuple of scene, ground truth, and prediction PIL Image objects.
         """
         prs_path = get_mask_prs_path(self.by_model)
-        sc = to_pil_image(get_sc(SCS_PATH / (image_UIDs[idx] + ".jpg"), image_size_))
-        gt = to_pil_image(apply_colormap(get_gt(GTS_PATH / (image_UIDs[idx] + ".png"), self.class_map, image_size_), self.color_map, NUM_CLASSES))
-        pr = to_pil_image(apply_colormap(get_pr(prs_path / f"mask_pr_{idx}.png", self.class_map, image_size_), self.color_map, NUM_CLASSES))
+        sc = to_pil_image(get_sc(SCS_PATH / (image_UIDs[idx] + ".jpg"), resize_size))
+        gt = to_pil_image(apply_colormap([get_gt(GTS_PATH / (image_UIDs[idx] + ".png"), self.class_map, resize_size)], self.color_map).squeeze(0))
+        pr = to_pil_image(apply_colormap([get_pr(prs_path / f"mask_pr_{idx}.png", self.class_map, resize_size)], self.color_map).squeeze(0))
         assert sc.size == gt.size == pr.size
         return sc, gt, pr
 
@@ -1207,6 +1207,7 @@ class FastPromptBuilder:
             by_model: str,
             sup_set_img_idxs: list[int],
             str_formats: dict[str, str],
+            alpha: float,
             prs_mask_paths: Optional[Path],
             jsonl_save_path: Optional[Path]
     ) -> None:
@@ -1221,11 +1222,14 @@ class FastPromptBuilder:
         self.prompt_blueprint = prompt_blueprint
         self.by_model = by_model
         self.str_formats = str_formats
+        self.alpha = alpha
         self.prs_mask_paths = prs_mask_paths
         self.sup_set_img_idxs = sup_set_img_idxs
         self.jsonl_save_path = jsonl_save_path
-        self.base_prompt = self.build_cs_base_prompt(self.sup_set_img_idxs)[:-1]
-        self.head_prompt = self.build_cs_base_prompt(self.sup_set_img_idxs)[-1]
+        
+        base_head_prompt = self.build_cs_base_prompt(self.sup_set_img_idxs, alpha)
+        self.base_prompt = base_head_prompt[:-1]
+        self.head_prompt = base_head_prompt[-1]
 
     def build_base_prompt_(
             self,
@@ -1238,7 +1242,7 @@ class FastPromptBuilder:
             sup_set_imgs: list[tuple[Image.Image, Image.Image]],
             sup_set_answers: list[str]
         ) -> Prompt:
-            expanded_sup_set_module = sup_set_module*len(sup_set_imgs) # replace the placeholder for each support set example.
+            expanded_sup_set_module = sup_set_module*len(sup_set_imgs) # replicate the placeholder for each support set example.
             expanded_sup_set_module = map_list_placeholders(expanded_sup_set_module, placeholder="[sup_set_count]", objects_list=[str(n+1) for n in range(len(sup_set_imgs))])
             expanded_sup_set_module = map_list_placeholders(expanded_sup_set_module, placeholder="[answer_gt]", objects_list=sup_set_answers)
             expanded_sup_set_module = map_list_placeholders(expanded_sup_set_module, placeholder="[img]", objects_list=flatten_list(sup_set_imgs))
@@ -1259,15 +1263,40 @@ class FastPromptBuilder:
     def build_cs_base_prompt(
             self,
             sup_set_img_idxs: list[int],
+            alpha: Optional[float]
     ) -> Prompt:
+        img_idx_to_class_ = {
+            2: 20,
+            16: 1,
+            18: 13,
+        }
+
+        # WARNING: this implementation sets the the same color map for all the pos. classes (the values of the dict above).
+        # This way, the color mapping can be computed in parallel (faster) and the code is simpler.
+        # This method works only if the sup sets have disjointed classes. Ideally, each support example would have its own color map.
+        color_map = {pos_c: (255, 255, 255) for pos_c in img_idx_to_class_.values()}
+
         sup_set_uids = image_UIDs[sup_set_img_idxs]
         gts_paths = [GTS_PATH / (UID + ".png") for UID in sup_set_uids]
-        gts = torch.stack([get_gt(path=p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in gts_paths])
-        gts_img = [to_pil_image(col_gt) for col_gt in apply_colormap(gts, COLOR_MAP_DICT)]
-        prs_img = [to_pil_image(col_pr) for col_pr in apply_colormap(gts, COLOR_MAP_DICT)]
+        prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in sup_set_img_idxs]
+        scs_paths = [SCS_PATH / (UID + ".jpg") for UID in sup_set_uids]
+        gts = torch.stack([get_gt(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in gts_paths])
+        prs = torch.stack([get_pr(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in prs_paths]) # tensors (3, H, W)
+        scs = torch.stack([get_sc(p, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in scs_paths])
+
+        gts = apply_colormap(gts, color_map)
+        prs = apply_colormap(prs, color_map)
+        
+        if alpha:
+            alpha_tensor = torch.full(gts.size(), alpha, device=gts.device)
+            gts = blend_tensors(scs, gts, alpha_tensor)
+            prs = blend_tensors(scs, prs, alpha_tensor)
+
+        gts_img = [to_pil_image(col_gt) for col_gt in gts]
+        prs_img = [to_pil_image(col_pr) for col_pr in prs]
 
         sup_set_imgs = list(zip(gts_img, prs_img))
-        sup_set_answers = [get_one_answer_gt(self.by_model, sup_set_img_idx, return_state=False, format_to_dict=False)['content'] for sup_set_img_idx in self.sup_set_img_idxs]
+        sup_set_answers = [get_one_sup_set_answer_gt(self.by_model, sup_set_img_idx, return_state=False, format_to_dict=False)['content'] for sup_set_img_idx in self.sup_set_img_idxs]
 
         base_prompt = self.build_base_prompt_(sup_set_imgs, sup_set_answers)
 
@@ -1287,6 +1316,8 @@ class FastPromptBuilder:
             self,
             query_gt: torch.Tensor,
             query_pr: torch.Tensor,
+            query_sc: Optional[torch.Tensor],
+            alpha: Optional[float]
     ) -> list[Prompt]:
         gt_sign_classes = self.get_significant_classes(query_gt)
         pr_sign_classes = self.get_significant_classes(query_pr)
@@ -1296,6 +1327,9 @@ class FastPromptBuilder:
         concat_masks = torch.stack([query_gt, query_pr], dim=0)
 
         splitted_masks = torch.stack([apply_colormap(concat_masks, {pos_c: (255, 255, 255)}) for pos_c in sign_classes], dim=0)
+        
+        if alpha:
+            splitted_masks = blend_tensors(query_sc, splitted_masks, alpha)
 
         splitted_gt_masks = splitted_masks[:, 0, ...]
         splitted_pr_masks = splitted_masks[:, 1, ...]
@@ -1310,17 +1344,19 @@ class FastPromptBuilder:
         
         def populate_query(
             query_module: str,
-            query_imgs: list[tuple[Image.Image, Image.Image]],
+            query_imgs: list[tuple[Image.Image, Image.Image, Image.Image]],
         ) -> Prompt:
             return map_list_placeholders(query_module, placeholder="[img]", objects_list=flatten_list(query_imgs))
         
         query_uids = image_UIDs[query_idxs]
         gts_paths = [GTS_PATH / (UID + ".png") for UID in query_uids]
         prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in query_idxs]
+        scs_paths = [SCS_PATH / (UID + ".jpg") for UID in query_uids]
         gts = torch.stack([get_gt(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in gts_paths])
         prs = torch.stack([get_pr(p, class_map=CLASS_MAP, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in prs_paths]) # tensors (3, H, W)
+        scs = torch.stack([get_sc(p, resize_size=CONFIG['seg']['image_size'], center_crop=True) for p in scs_paths])
 
-        splitted_elements_dict = [self.expand_head_to_cs(gt, pr) for gt, pr in zip(gts, prs)]
+        splitted_elements_dict = [self.expand_head_to_cs(gt, pr, sc, self.alpha) for gt, pr, sc in zip(gts, prs, scs)]
 
         gts_imgs_flat = flatten_list([[gt for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict])
         prs_imgs_flat = flatten_list([[pr for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict])
