@@ -1,7 +1,6 @@
 from config import *
 
 from pathlib import Path
-import torch
 
 ### Constant Paths ###
 

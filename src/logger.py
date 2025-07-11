@@ -4,7 +4,6 @@ from utils import pretty_metrics
 from pathlib import Path
 import logging
 import os
-import tensorboard as tb
 from torch.utils.tensorboard import SummaryWriter
 import torchmetrics as tm
 from typing import Literal, Optional

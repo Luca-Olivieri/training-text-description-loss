@@ -1,16 +1,15 @@
 from config import *
-from utils import map_tensor, is_list_of_tensors
+from utils import is_list_of_tensors
 
 import numpy as np
 import webcolors
 from PIL import Image
 import matplotlib.pyplot as plt
-from data import CLASSES, NUM_CLASSES
+from data import CLASSES
 import io
 
 import torch
 from torchvision.utils import draw_segmentation_masks
-from torchvision.transforms.functional import to_pil_image
 
 def create_pascal_label_colormap() -> np.ndarray[int]:
   """Creates a label colormap used in PASCAL VOC segmentation benchmark.

@@ -1,5 +1,5 @@
 from config import *
-from model import GenParams, OllamaMLLM
+from models.vl_models import GenParams, OllamaMLLM
 from prompter import FastPromptBuilder
 from data import CLASS_MAP, append_many_to_jsonl, get_image_UIDs, image_UIDs, SegDataset, crop_augment_preprocess_batch
 from color_map import COLOR_MAP_DICT

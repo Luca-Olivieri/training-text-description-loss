@@ -1,19 +1,20 @@
 from config import *
-from data import *
-from utils import *
-from color_map import apply_colormap, COLOR_MAP_VOID_DICT
-from model import *
-from logger import *
+from data import SegDataset, image_train_UIDs, image_val_UIDs, CLASS_MAP_VOID, crop_augment_preprocess_batch, NUM_CLASSES_VOID
+from utils import get_compute_capability, title
+from models.vl_models import evaluate
+from logger import log_segnet_scores, logger, tb_writer
 
-from torchvision.models import segmentation as segmodels
-from torchvision.models.segmentation import lraspp_mobilenet_v3_large, LRASPP_MobileNet_V3_Large_Weights
-from torchvision.models.mobilenetv3 import mobilenet_v3_large, MobileNet_V3_Large_Weights, MobileNetV3
 from functools import partial
+from collections import OrderedDict
+from torch import nn
+from torch.utils.data import DataLoader
+from torchvision.models import segmentation as segmodels
+import torchvision.transforms as T
 from torchvision.transforms._presets import SemanticSegmentation
-from torchmetrics.segmentation import MeanIoU
 from torchmetrics.classification import MulticlassAccuracy, MulticlassJaccardIndex
 import torchmetrics as tm
-from datetime import datetime
+
+from typing import Callable
 
 def set_trainable_params(
         model: nn.Module,

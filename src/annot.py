@@ -3,8 +3,9 @@ This module provides utilities for interacting with Google Drive and Google Docs
 It includes functions for uploading images, inserting content into Google Docs, and extracting table data from documents.
 """
 
-from config import GDRIVE_ANNOT_IMGS_PATH
-from data import get_many_answer_gt, get_many_answer_pr, get_one_answer_pr
+from config import *
+
+from data import get_one_answer_pr
 from path import config_path, LOCAL_ANNOT_IMGS_PATH
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -17,11 +18,11 @@ import time
 ImageMediaMetadata = TypeVar
 
 from prompter import PromptBuilder
-from config import *
 
-SCOPES = ["https://www.googleapis.com/auth/documents",
-          "https://www.googleapis.com/auth/drive.file", # Allows uploading files
-          'https://www.googleapis.com/auth/drive'
+SCOPES = [
+    "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/drive.file",  # Allows uploading files
+    'https://www.googleapis.com/auth/drive'
 ]
 
 SERVICE_ACCOUNT_FILE = 'gen-lang-client-0021813944-33af2e4f8465.json'

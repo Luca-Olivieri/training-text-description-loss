@@ -59,7 +59,7 @@ class VLEncoder(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    @torch.inference_mode
+    @torch.inference_mode()
     def preprocess_images(
             self,
             images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
@@ -69,7 +69,7 @@ class VLEncoder(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    @torch.inference_mode
+    @torch.inference_mode()
     def preprocess_texts(
             self,
             texts: list[str],
@@ -79,7 +79,7 @@ class VLEncoder(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    @torch.inference_mode
+    @torch.inference_mode()
     def encode_and_project(
             self,
             images: torch.Tensor,
@@ -90,7 +90,7 @@ class VLEncoder(ABC):
         raise NotImplementedError
     
     @abstractmethod
-    @torch.inference_mode
+    @torch.inference_mode()
     def get_similarity(
             self,
             images: torch.Tensor,
@@ -99,7 +99,7 @@ class VLEncoder(ABC):
     ) -> torch.Tensor:
         raise NotImplementedError
     
-    @torch.inference_mode
+    @torch.inference_mode()
     def get_maps(
             self,
             images: torch.Tensor,
@@ -117,7 +117,7 @@ class VLEncoder(ABC):
             case _:
                 raise ValueError(f"Unknown mode: {map_compute_mode}. The only supported types are {[c.name for c in MapComputeMode]}.")
     
-    @torch.inference_mode
+    @torch.inference_mode()
     def get_attn_maps(
             self,
             images: torch.Tensor,
@@ -149,7 +149,7 @@ class VLEncoder(ABC):
         # TODO do not output 'min_attn' and 'max_attn' anymore, make it produce by downstream functions.
         return attn_maps, min_attn, max_attn
     
-    @torch.inference_mode()
+    @torch.inference_mode()()
     def get_sim_maps(
             self,
             images: torch.Tensor,
@@ -213,7 +213,7 @@ class FLAIRAdapter(VLEncoder):
 
         self.context_length = self.tokenizer.context_length
 
-    @torch.inference_mode
+    @torch.inference_mode()
     def preprocess_images(
             self, 
             images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
@@ -224,7 +224,7 @@ class FLAIRAdapter(VLEncoder):
         imgs_tensor = torch.stack([self.preprocess_fn(img) for img in images]).to(device) # [1, 3, H_vle, W_vle]
         return imgs_tensor
     
-    @torch.inference_mode
+    @torch.inference_mode()
     def preprocess_texts(
             self, 
             texts: list[str],
@@ -233,7 +233,7 @@ class FLAIRAdapter(VLEncoder):
         texts_tensor = self.tokenizer(texts).to(device) # [B, context_length]
         return texts_tensor
     
-    @torch.inference_mode
+    @torch.inference_mode()
     def encode_and_project(
             self,
             images: torch.Tensor,
@@ -281,7 +281,7 @@ class FLAIRAdapter(VLEncoder):
 
         return flair_output
     
-    @torch.inference_mode
+    @torch.inference_mode()
     def get_similarity(
             self,
             images: torch.Tensor,
@@ -300,7 +300,7 @@ class FLAIRAdapter(VLEncoder):
             sim = torch.einsum('bf,bf->b', image_features, text_features)
         return sim
 
-    @torch.inference_mode
+    @torch.inference_mode()
     def count_tokens(
             self,
             text: str
@@ -351,7 +351,7 @@ class FG_CLIPAdapter(VLEncoder):
         self.image_processor = AutoImageProcessor.from_pretrained(model_root, use_fast=True)
 
 
-    @torch.inference_mode
+    @torch.inference_mode()
     def preprocess_images(
             self, 
             images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
@@ -367,7 +367,7 @@ class FG_CLIPAdapter(VLEncoder):
 
         return imgs_tensor
     
-    @torch.inference_mode
+    @torch.inference_mode()
     def preprocess_texts(
             self, 
             texts: list[str],
@@ -376,7 +376,7 @@ class FG_CLIPAdapter(VLEncoder):
         texts_tensor = torch.tensor(self.tokenizer(texts, max_length=self.context_length, padding="max_length", truncation=True).input_ids, dtype=torch.long, device=device) # # [B, context_length]
         return texts_tensor
 
-    @torch.inference_mode
+    @torch.inference_mode()
     def encode_and_project(
             self,
             images: torch.Tensor,
@@ -410,7 +410,7 @@ class FG_CLIPAdapter(VLEncoder):
 
         return vle_output
     
-    @torch.inference_mode
+    @torch.inference_mode()
     def get_similarity(
             self,
             images: torch.Tensor,
@@ -425,7 +425,7 @@ class FG_CLIPAdapter(VLEncoder):
             sim = torch.einsum('bf,bf->b', vle_output.global_image_token, text_feature) # # [B, D]
         return sim
     
-    @torch.inference_mode
+    @torch.inference_mode()
     def count_tokens(
             self,
             text: str
@@ -437,7 +437,8 @@ class FG_CLIPAdapter(VLEncoder):
 
 def main() -> None:
     print(VLE_REGISTRY.registered_objects())
-    model = VLE_REGISTRY.get('fg-clip')
+    model: VLEncoder = VLE_REGISTRY.get('flair')
+    model.get_similarity()
     
 if __name__ == '__main__':
     main()

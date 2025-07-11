@@ -1,3 +1,6 @@
+from config import *
+from path import PRIVATE_DATASETS_PATH
+
 import torch
 from torchvision.datasets import VOCSegmentation
 import re
@@ -11,19 +14,13 @@ import xarray as xr
 import pandas as pd
 from abc import ABC
 from tqdm import tqdm
-from typing import Any, TypeVar, Optional
-from PIL.Image import Image as PILImage
+from typing import Any, TypeVar
 import torchmetrics as tm
 
-from config import *
-from path import PRIVATE_DATASETS_PATH
-
-# Type annotations
 from typing import Callable, TypeVar, Any, Iterable, Self
 from abc import ABC
-Prompt = list[str | PILImage]
+
 GenericClient = TypeVar
-GenericResponse = TypeVar
 
 def download_VOC2012() -> None:
     """Downloads the VOC2012 dataset using torchvision's VOCSegmentation utility."""

@@ -1,3 +1,7 @@
+from config import *
+from path import get_answer_gts_path, SCS_PATH, GTS_PATH, get_sup_set_answer_gts_path, get_answer_prs_path, SPLITS_PATH, get_eval_gts_path, get_eval_prs_path
+from utils import map_tensor, extract_uppercase_words, flatten_list
+
 import json
 import random
 from glob import glob
@@ -8,15 +12,10 @@ import numpy as np
 import xarray as xr
 import pandas as pd
 
-from path import *
-from utils import *
-from config import *
-
 import math
 import torch
 from torch import Tensor
 from torchvision.io import decode_image
-import torch.nn.functional as F
 import torchvision.transforms.v2 as T
 import torchvision.transforms.functional as TF
 from torchvision import tv_tensors
@@ -24,15 +23,14 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import base64
 import nltk
-from nltk import ngrams
 
-from typing import Literal
+from typing import Literal, Callable
 
 CLASSES = ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR"]
 CLASSES_VOID = CLASSES + ["UNLABELLED"]
 
 # define the class mappings
-CLASS_MAP: dict[int, int] = {i: i for i in range(len(CLASSES))} | {255: 0}# default mapping
+CLASS_MAP: dict[int, int] = {i: i for i in range(len(CLASSES))} | {255: 0} # default mapping
 CLASS_MAP_VOID: dict[int, int] = CLASS_MAP | {255: 21}
 
 NUM_CLASSES = len(set(CLASS_MAP.values())) # actual number of classes

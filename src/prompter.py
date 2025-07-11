@@ -1,21 +1,24 @@
 from config import *
-from color_map import *
-from utils import *
-from data import *
-from path import *
-from model import GenParams, MLLM
+from color_map import pil_to_class_array, get_color_map_as, apply_colormap
+from utils import blend_tensors, flatten_list
+from data import read_txt, get_sc, get_gt, get_pr, image_UIDs, get_one_answer_gt, get_one_sup_set_answer_gt, CLASSES, get_significant_classes, read_json
+from path import get_prompts_path, get_mask_prs_path, SCS_PATH, GTS_PATH, get_data_gen_prompts_path, LOCAL_ANNOT_IMGS_PATH, MISC_PATH
 
 from PIL import Image, ImageFont, ImageDraw, ImageOps
 from pathlib import Path
 import json
 import pformat as pf
 from copy import deepcopy
-from typing import Self, Any, List
 from torchvision.transforms.functional import to_pil_image
+import torchvision.transforms.functional as TF
 from collections import OrderedDict
 import re
 
-### Methods ###
+from typing import Self, Any, List, Optional
+
+# TODO check if it's better to use 'transforms.v2' instead of plain 'transforms'
+
+Prompt = list[str | Image.Image]
 
 def _concat_images_fn(
         images: list[Image.Image],
@@ -1412,136 +1415,6 @@ class FastPromptBuilder:
         formatted_json = json.dumps(state, default=to_dict)
         state = json.loads(formatted_json)
         return state
-
-
-class DataGenPromptBuilder():
-    def __init__(
-            self,
-            seed: int,
-            prompt_blueprint: OrderedDict[str, str],
-            by_model: str,
-            seed_idxs: list[int],
-            score_level_range: tuple[int, int],
-            num_seeds: int,
-            num_outputs: int,
-            rotate_prompts: bool,
-            jsonl_save_path: Path
-    ) -> None:
-        """
-        Initializea GenParams with optional generation parameters.
-
-        Args:
-            seed: Random seed for generation.
-            shuffle_seeds: Whether to shuffle the examples.
-        """
-        self.seed = seed
-        self.prompt_blueprint = prompt_blueprint
-        self.by_model = by_model
-        self.seed_idxs = seed_idxs
-        self.score_level_range = score_level_range
-        self.num_seeds = num_seeds
-        self.num_outputs = num_outputs
-        self.rotate_prompts = rotate_prompts
-        self.jsonl_save_path = jsonl_save_path
-
-    def build_cs_prompt(
-            self,
-            prompt_blueprint: OrderedDict[str, str],
-            sup_set_imgs: list[tuple[Image.Image, Image.Image]],
-            query_img: tuple[Image.Image]
-    ) -> Prompt:
-        
-        def populate_sup_set(
-            sup_set_module: str,
-            sup_set_imgs: list[tuple[Image.Image, Image.Image]],
-        ) -> Prompt:
-            sup_set_module = sup_set_module*len(sup_set_imgs) # replace the placeholder for each seed.
-            sup_set_module = map_placeholders(sup_set_module, placeholder="[seed]", objects_list=sup_set_imgs)
-            return sup_set_module
-        
-        prompt_corpus = read_json(get_data_gen_prompts_path() / "syn_data_gen.json")
-        prompt = [prompt_corpus[mod][var] for mod, var in prompt_blueprint.items()]
-        seeds_module_idx = list(prompt_blueprint.keys()).index("seeds")
-        instruct_module_idx = list(prompt_blueprint.keys()).index("instruct")
-        query_module_idx = list(prompt_blueprint.keys()).index("query")
-        prompt[seeds_module_idx] = populate_sup_set(prompt[seeds_module_idx], seeds)
-        prompt[instruct_module_idx] = prompt[instruct_module_idx].format(score_level_range=self.score_level_range)
-        prompt[query_module_idx] = prompt[query_module_idx].format(num_outputs=num_outputs)
-        return flatten_list(prompt)
-
-    def build_data_gen_prompt(
-            self,
-            prompt_blueprint: OrderedDict[str, str],
-            seeds: list[str],
-            num_outputs: int,
-    ) -> Prompt:
-        def populate_seeds(
-            seeds_module: str,
-            seeds: list[str],
-        ) -> list[str]:
-            seeds_module = seeds_module*len(seeds) # replace the placeholder for each seed.
-            seeds_module = map_placeholders(seeds_module, placeholder="[seed]", objects_list=seeds)
-            return seeds_module
-        prompt_corpus = read_json(get_data_gen_prompts_path() / "syn_data_gen.json")
-        prompt = [prompt_corpus[mod][var] for mod, var in prompt_blueprint.items()]
-        seeds_module_idx = list(prompt_blueprint.keys()).index("seeds")
-        instruct_module_idx = list(prompt_blueprint.keys()).index("instruct")
-        query_module_idx = list(prompt_blueprint.keys()).index("query")
-        prompt[seeds_module_idx] = populate_seeds(prompt[seeds_module_idx], seeds)
-        prompt[instruct_module_idx] = prompt[instruct_module_idx].format(score_level_range=self.score_level_range)
-        prompt[query_module_idx] = prompt[query_module_idx].format(num_outputs=num_outputs)
-        return flatten_list(prompt)
-    
-    async def generate_one_sample(
-            self,
-            model: MLLM,
-            gen_params: GenParams,
-            query_idxs: list[int],
-            seed_idxs: list[int]
-    ) -> None:
-        seeds = [str(get_one_answer_gt(by_model=self.by_model, img_idx=i, return_state=False)) for i in seed_idxs] 
-
-        data_gen_prompt = self.build_data_gen_prompt(
-            prompt_blueprint=self.prompt_blueprint,
-            seeds=seeds,
-            num_outputs=self.num_outputs
-        )
-
-        syn_sample = await model.predict_one(
-            query_prompt=data_gen_prompt,
-            query_idx=query_idxs,
-            gen_params=gen_params,
-            system_prompt=None,
-            only_text=True,
-            parse_to_dict=True,
-        )
-
-        print(syn_sample)
-
-        # TODO: syn_sample contains a batch of 'num_outputs' answers. Flatten it before saving it (and handle 'query_idxs' accordingly).
-        
-    def generate_many_samples(
-            self,
-            model: MLLM,
-            gen_params: GenParams,
-            num_samples: int,
-            seed_idxs: list[int],
-    ) -> None:
-        
-        if num_samples % self.num_outputs != 0:
-            raise AttributeError(f"The number of generated samples ({num_samples}) must be divisible by the number of outputs per request ({self.num_outputs}).")
-        
-        num_steps = int(num_samples // self.num_outputs)
-        
-        for step in range(num_steps):
-            request_query_idxs = [i + self.num_outputs*step for i in range(self.num_outputs)]
-            request_seed_idxs = random.sample(seed_idxs, self.num_seeds)
-            self.generate_one_sample(
-                model=model,
-                gen_params=gen_params,
-                query_idxs=request_query_idxs,
-                seed_idxs=request_seed_idxs
-            )
     
 def save_formatted_images(
         promptBuilder: PromptBuilder,
@@ -1560,29 +1433,7 @@ def save_formatted_images(
         formatted_image.save(LOCAL_ANNOT_IMGS_PATH / f"annot_image_{img_idx}.png")
 
 def main() -> None:
-    promptBuilder = PromptBuilder(
-        by_model            = "LRASPP_MobileNet_V3",
-        alpha               = 0.6,
-        image_size          = 224,
-        array_size          = (32, 32),
-        class_map           = CLASS_MAP, # imported from 'class_map.py'
-        color_map           = COLOR_MAP_DICT,
-        split_by            = "class-splitted"
-    )
-    out = promptBuilder.build_data_gen_prompt(
-        prompt_blueprint={
-            "role": "0_baseline",
-            "instruct": "0_baseline",
-            "output_format": "0_baseline",
-            "seeds_intro": "0_baseline",
-            "seeds": "0_baseline",
-            "query": "0_baseline",
-        },
-        seeds=["EXAMPLE_1", "EXAMPLE_2"],
-        score_level_range=[1, 5],
-        num_outputs=5,
-        shuffle_seeds=True)
-    print(out)
+    ...
 
 if __name__ == '__main__':
     main()
