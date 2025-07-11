@@ -1330,17 +1330,16 @@ class FastPromptBuilder:
         pr_sign_classes = self.get_significant_classes(query_pr)
         sign_classes = list(set(gt_sign_classes + pr_sign_classes))
 
-        # TODO The background, should I keep it only if it's the only one or remove it altogether?
-        if len(sign_classes) > 0:
+        # Remove the BACKGROUND class only if it is not the only one.
+        # Cropping can leave out all meaningful classes: in this case, the BACKGROUND class is considered positive
+        # and both masks are completely white.
+        if sign_classes != [0]:
             sign_classes.remove(0)
-            ...
-        else:
-            return None
 
         concat_masks = torch.stack([query_gt, query_pr], dim=0)
 
         splitted_masks = torch.stack([apply_colormap(concat_masks, {pos_c: (255, 255, 255)}) for pos_c in sign_classes], dim=0)
-        
+
         if alpha:
             splitted_masks = blend_tensors(query_sc, splitted_masks, alpha)
 
@@ -1369,7 +1368,7 @@ class FastPromptBuilder:
         prs_tensor = TF.resize(prs_tensor, self.image_size, TF.InterpolationMode.NEAREST)
         scs_tensor = TF.resize(scs_tensor, self.image_size, TF.InterpolationMode.BILINEAR)
 
-        splitted_elements_dict = [cs_prompt for gt, pr, sc in zip(gts_tensor, prs_tensor, scs_tensor) if (cs_prompt := self.expand_head_to_cs(gt, pr, sc, self.alpha)) != None]
+        splitted_elements_dict = [self.expand_head_to_cs(gt, pr, sc, self.alpha) for gt, pr, sc in zip(gts_tensor, prs_tensor, scs_tensor)]
 
         cs_gts_imgs_list = [[gt for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict]
         cs_prs_imgs_list = [[pr for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict]
