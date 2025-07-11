@@ -1212,7 +1212,6 @@ class FastPromptBuilder:
             sup_set_img_idxs: list[int],
             str_formats: dict[str, str],
             prs_mask_paths: Optional[Path],
-            jsonl_save_path: Optional[Path]
     ) -> None:
         """
         Initializea GenParams with optional generation parameters.
@@ -1231,7 +1230,6 @@ class FastPromptBuilder:
         self.prs_mask_paths = prs_mask_paths
         self.str_formats = str_formats
         self.sup_set_img_idxs = sup_set_img_idxs
-        self.jsonl_save_path = jsonl_save_path
         
         base_head_prompt = self.build_cs_base_prompt(self.sup_set_img_idxs, alpha)
         self.base_prompt = base_head_prompt[:-1]
@@ -1328,7 +1326,13 @@ class FastPromptBuilder:
         gt_sign_classes = self.get_significant_classes(query_gt)
         pr_sign_classes = self.get_significant_classes(query_pr)
         sign_classes = list(set(gt_sign_classes + pr_sign_classes))
-        sign_classes.remove(0)
+
+        # TODO The background, should I keep it only if it's the only one or remove it altogether?
+        if len(sign_classes) > 0:
+            sign_classes.remove(0)
+            ...
+        else:
+            return None
 
         concat_masks = torch.stack([query_gt, query_pr], dim=0)
 
@@ -1342,28 +1346,27 @@ class FastPromptBuilder:
 
         # return splitted_gt_masks, splitted_pr_masks, sign_classes
         return {pos_c: [to_pil_image(splitted_gt_masks[i]), to_pil_image(splitted_pr_masks[i])] for i, pos_c in enumerate(sign_classes)}
-
-    def build_cs_inference_prompts(
+    
+    def populate_query(
             self,
-            query_idxs: list[int]
-    ) -> list[Prompt]:
-        
-        def populate_query(
             query_module: str,
             query_gt: Image.Image,
             query_pr: Image.Image,
-        ) -> Prompt:
-            return map_list_placeholders(query_module, placeholder="[img]", objects_list=[query_gt, query_pr])
+    ) -> Prompt:
+        return map_list_placeholders(query_module, placeholder="[img]", objects_list=[query_gt, query_pr])
+    
+    def build_cs_inference_prompts(
+            self,
+            gts_tensor: torch.Tensor,
+            prs_tensor: torch.Tensor,
+            scs_tensor: torch.Tensor,
+    ) -> list[Prompt]:
         
-        query_uids = image_UIDs[query_idxs]
-        gts_paths = [GTS_PATH / (UID + ".png") for UID in query_uids]
-        prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in query_idxs]
-        scs_paths = [SCS_PATH / (UID + ".jpg") for UID in query_uids]
-        gts = torch.stack([get_gt(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in gts_paths])
-        prs = torch.stack([get_pr(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in prs_paths]) # tensors (3, H, W)
-        scs = torch.stack([get_sc(p, resize_size=self.image_size, center_crop=True) for p in scs_paths])
+        gts_tensor = TF.resize(gts_tensor, self.image_size, TF.InterpolationMode.NEAREST)
+        prs_tensor = TF.resize(prs_tensor, self.image_size, TF.InterpolationMode.NEAREST)
+        scs_tensor = TF.resize(scs_tensor, self.image_size, TF.InterpolationMode.BILINEAR)
 
-        splitted_elements_dict = [self.expand_head_to_cs(gt, pr, sc, self.alpha) for gt, pr, sc in zip(gts, prs, scs)]
+        splitted_elements_dict = [cs_prompt for gt, pr, sc in zip(gts_tensor, prs_tensor, scs_tensor) if (cs_prompt := self.expand_head_to_cs(gt, pr, sc, self.alpha)) != None]
 
         cs_gts_imgs_list = [[gt for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict]
         cs_prs_imgs_list = [[pr for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict]
@@ -1371,9 +1374,25 @@ class FastPromptBuilder:
 
         zipped_gts_prs_list = list(zip(cs_gts_imgs_list, cs_prs_imgs_list, cs_pos_c_list))
 
-        cs_prompts_list = [{pos_c: flatten_list(self.base_prompt + populate_query(deepcopy(self.head_prompt), gt_img, pr_img)) for gt_img, pr_img, pos_c in zip(cs_gts, cs_prs, cs_pos_c)} for cs_gts, cs_prs, cs_pos_c in zipped_gts_prs_list]
+        cs_prompts_list = [{pos_c: flatten_list(self.base_prompt + self.populate_query(deepcopy(self.head_prompt), gt_img, pr_img)) for gt_img, pr_img, pos_c in zip(cs_gts, cs_prs, cs_pos_c)} for cs_gts, cs_prs, cs_pos_c in zipped_gts_prs_list]
         cs_prompts_list = [{pos_c: [pf.pformat(piece, pos_class=CLASSES[pos_c]) if isinstance(piece, str) else piece for piece in prompt] for pos_c, prompt in cs_prompts.items()} for cs_prompts in cs_prompts_list]
         
+        return cs_prompts_list
+    
+    def build_cs_inference_prompts_from_disk(
+            self,
+            query_idxs: list[int]
+    ) -> list[Prompt]:
+        query_uids = image_UIDs[query_idxs]
+        gts_paths = [GTS_PATH / (UID + ".png") for UID in query_uids]
+        prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in query_idxs]
+        scs_paths = [SCS_PATH / (UID + ".jpg") for UID in query_uids]
+        gts = torch.stack([get_gt(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in gts_paths])
+        prs = torch.stack([get_pr(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in prs_paths]) # tensors (3, H, W)
+        scs = torch.stack([get_sc(p, resize_size=self.image_size, center_crop=True) for p in scs_paths])
+        
+        cs_prompts_list =  self.build_cs_inference_prompts(gts, prs, scs)
+
         return cs_prompts_list
     
     def get_state(self) -> dict:

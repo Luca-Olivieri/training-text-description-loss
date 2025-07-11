@@ -26,6 +26,8 @@ import base64
 import nltk
 from nltk import ngrams
 
+from typing import Literal
+
 CLASSES = ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR"]
 CLASSES_VOID = CLASSES + ["UNLABELLED"]
 
@@ -80,14 +82,19 @@ class SegDataset(Dataset):
 
 def get_image_UIDs(
         path: Path,
-        split="trainval"
+        split: Literal[
+            'trainval',
+            'train'
+            'val'
+            ] = "trainval",
+        shuffle: bool = True
 ) -> list[int]:
     """
     Lists the UIDs of the images stored into a certain path and by split.
 
     Args:
         path: root directory of the images.
-        split: split type ('non-splitted' or 'class-splitted').
+        split: split type ('train' or 'class-splitted').
     
     Returns:
         List of image UIDs.
@@ -99,13 +106,14 @@ def get_image_UIDs(
         for line in f:
             image_id = line.strip()  # Remove any leading/trailing whitespace
             image_UIDs.append(image_id)
-    match split:
-        case "trainval":
-            to_shuffle = image_UIDs[23:]
-            random.shuffle(to_shuffle)
-            image_UIDs[23:] = to_shuffle
-        case _:
-            random.shuffle(image_UIDs)
+    if shuffle:
+        match split:
+            case "trainval":
+                to_shuffle = image_UIDs[23:]
+                random.shuffle(to_shuffle)
+                image_UIDs[23:] = to_shuffle
+            case _:
+                random.shuffle(image_UIDs)
     return image_UIDs
 
 image_UIDs = np.array(get_image_UIDs(SPLITS_PATH, split="trainval"))

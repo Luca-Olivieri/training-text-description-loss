@@ -425,7 +425,8 @@ class MLLM(ABC):
             parse_to_dict: bool = False,
             splits_in_parallel: bool = True,
             batch_size: Optional[int] = None,
-            cooldown_period: float = 0.0
+            cooldown_period: float = 0.0,
+            use_tqdm: bool = True
     ) -> list[dict]:
         """
         Predicts for many class-splitted prompts, optionally in batches.
@@ -445,13 +446,17 @@ class MLLM(ABC):
         Returns:
             List of dictionaries with image index and class-split content.
         """
+
+        my_tqdm_ = my_tqdm
+        if not use_tqdm:
+            my_tqdm_ = enumerate
         
         epoch_answer_list = []
 
         if batch_size is not None:
             zipped_query_batches = batch_class_splitted_list(zip(query_idxs, class_splitted_query_prompts), batch_size)
 
-            for step, batch in my_tqdm(zipped_query_batches):
+            for step, batch in my_tqdm_(zipped_query_batches):
 
                 if step not in [0, len(zipped_query_batches)]:
                     time.sleep(cooldown_period)
@@ -472,7 +477,7 @@ class MLLM(ABC):
 
                 epoch_answer_list.extend(answer_pr_batch)
         else:
-            for _, (img_idx, q_p_class_splitted) in my_tqdm(zip(query_idxs, class_splitted_query_prompts)):  
+            for _, (img_idx, q_p_class_splitted) in my_tqdm_(zip(query_idxs, class_splitted_query_prompts)):  
 
                 answer_pr = await self.predict_one_class_splitted(
                     q_p_class_splitted,

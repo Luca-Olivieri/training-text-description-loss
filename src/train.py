@@ -125,14 +125,14 @@ def main() -> None:
         train_ds,
         batch_size=CONFIG["seg"]["batch_size"],
         shuffle=True,
-        generator=TORCH_GEN,
+        generator=TORCH_GEN.clone_state(),
         collate_fn=train_collate_fn,
     )
     val_dl = DataLoader(
         val_ds,
         batch_size=CONFIG["seg"]["batch_size"],
         shuffle=False,
-        generator=TORCH_GEN,
+        generator=TORCH_GEN.clone_state(),
         collate_fn=val_collate_fn,
     )
 
