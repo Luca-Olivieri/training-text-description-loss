@@ -7,6 +7,7 @@ import yaml
 import numpy as np
 import torch
 from datetime import datetime
+from PIL import Image
 
 def load_config(config_filepath: Path) -> dict[str, Any]:
     with open(config_filepath, "r") as file:
@@ -45,6 +46,11 @@ load_dotenv(str(CONFIG_PATH / ".env"), override=True)
 
 GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY_3")
 GDRIVE_ANNOT_IMGS_PATH = os.getenv("GDRIVE_ANNOT_IMGS_PATH")
+
+# Custom Representations
+
+# BEWARE! this are applied everywhere in the code.
+Image.Image.__repr__ = lambda obj: f"<PIL.Image.Image image mode={obj.mode} size={obj.size}>"
 
 # PyTorch
 

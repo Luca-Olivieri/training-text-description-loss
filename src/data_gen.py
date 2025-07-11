@@ -66,7 +66,9 @@ async def main() -> None:
     # train_ds = SegDataset(train_image_UIDs_, CONFIG['seg']['image_size'], CLASS_MAP)
     # val_ds = SegDataset(val_image_UIDs_, CONFIG['seg']['image_size'], CLASS_MAP)
 
-    ds = SegDataset(train_image_UIDs_, CONFIG['seg']['image_size'], CLASS_MAP)
+    offset = 384
+
+    ds = SegDataset(train_image_UIDs_[offset:], CONFIG['seg']['image_size'], CLASS_MAP)
 
     segnet = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
     segnet.load_state_dict(torch.load(TORCH_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-full-pt" + ".pth")))
@@ -118,7 +120,7 @@ async def main() -> None:
             
             cs_prompts = fast_prompt_builder.build_cs_inference_prompts(gts.unsqueeze(1), prs, scs_img)
 
-            epoch_idxs = (dl.batch_size*step + i for i in range(dl.batch_size))
+            epoch_idxs = [offset + dl.batch_size*step + i for i in range(dl.batch_size)]
 
             await vlm.predict_many_class_splitted(
                 cs_prompts,
