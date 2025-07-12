@@ -18,7 +18,7 @@ import asyncio
 
 async def main() -> None:
 
-    var_name = 'train_no_aug'
+    var_name = 'val_no_aug'
 
     answer_path = Path('/home/olivieri/exp/data/data_gen/VOC2012') / f"{var_name}.jsonl"
 
@@ -66,9 +66,11 @@ async def main() -> None:
     # train_ds = SegDataset(train_image_UIDs_, CONFIG['seg']['image_size'], CLASS_MAP)
     # val_ds = SegDataset(val_image_UIDs_, CONFIG['seg']['image_size'], CLASS_MAP)
 
-    offset = 384
+    offset = 0
 
-    ds = SegDataset(train_image_UIDs_[offset:], CONFIG['seg']['image_size'], CLASS_MAP)
+    ds = SegDataset(val_image_UIDs_[offset:], CONFIG['seg']['image_size'], CLASS_MAP)
+
+    print(len(ds))
 
     segnet = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
     segnet.load_state_dict(torch.load(TORCH_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-full-pt" + ".pth")))

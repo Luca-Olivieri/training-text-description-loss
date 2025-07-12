@@ -23,8 +23,9 @@ from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 import base64
 import nltk
+from pathlib import Path
 
-from typing import Literal, Callable
+from typing import Literal, Callable, Optional
 
 CLASSES = ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR"]
 CLASSES_VOID = CLASSES + ["UNLABELLED"]
@@ -76,6 +77,149 @@ class SegDataset(Dataset):
             sc = get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=False)
             gt = get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=False)
             return sc, gt
+
+# TODO create a wrapper Dataset class that iterates on both SegDataset and JSONLDataset (each batch is composed by a batch of both datasets).
+
+
+class JSONLDataset(Dataset):
+    """
+    An efficient PyTorch Dataset for lazy-loading and parsing large JSONL (JSON Lines) files.
+
+    This class avoids loading the entire file into memory. Instead, it creates an
+    index of the byte offsets for each line during initialization. When an item
+    is requested, it seeks directly to the corresponding line's position in the
+    file and reads only that line.
+
+    This makes it highly memory-efficient and fast for random access, which is
+    essential for use with PyTorch's DataLoader, especially with `shuffle=True`.
+
+    It also supports slicing (e.g., `dataset[10:20]`).
+
+    Args:
+        file_path (Path): The path to the JSONL file.
+        transform (Optional[Callable]): An optional function to be applied to the
+            data object after it is loaded and parsed.
+    """
+    def __init__(
+            self,
+            file_path: Path,
+            transform: Optional[Callable] = None
+    ):
+        super().__init__()
+        self.file_path = file_path
+        self.transform = transform
+        self._file = None  # File handle will be opened lazily by each worker
+        self.state_line = None
+
+        # Create an index of byte offsets for each line
+        self.line_offsets = self._build_index()
+
+    def _build_index(self) -> list[int]:
+        """
+        Scans the file once to create an index of the starting byte offset
+        for each line. If the first line is a state object, it's stored
+        and not included in the data indices.
+        """
+        line_offsets = []
+        # Open in binary mode to correctly handle byte offsets
+        with open(self.file_path, 'rb') as f:
+            # Check first line for state
+            first_line_offset = f.tell()
+            first_line = f.readline()
+
+            if not first_line:
+                return []
+
+            try:
+                # Need to decode for json.loads
+                state_candidate = json.loads(first_line.decode('utf-8'))
+                if is_state(state_candidate):
+                    self.state_line = state_candidate
+                    # State found, start indexing from the next line
+                    offset = f.tell()
+                else:
+                    # No state, first line is data
+                    line_offsets.append(first_line_offset)
+                    offset = f.tell()
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                # If it's not valid JSON or can't be decoded, treat as data
+                line_offsets.append(first_line_offset)
+                offset = f.tell()
+
+            while True:
+                line = f.readline()
+                if not line:
+                    break
+                line_offsets.append(offset)
+                offset = f.tell()
+        return line_offsets
+
+    def __len__(self) -> int:
+        """Returns the total number of lines in the file."""
+        return len(self.line_offsets)
+
+    def _get_single_item(
+            self,
+            idx: int
+    ) -> dict[str, Any]:
+        """
+        Retrieves, parses, and optionally transforms a single item by its index.
+        This is the core logic for data retrieval.
+        """
+        # Handle negative indices
+        if idx < 0:
+            idx += len(self)
+        if not 0 <= idx < len(self):
+            raise IndexError(f"Index {idx} is out of range for a dataset of size {len(self)}.")
+
+        # Lazily open the file handle in each worker process
+        if self._file is None:
+            # We open in text mode here for json.loads, which expects strings.
+            # The offsets were calculated in binary mode for accuracy.
+            self._file = open(self.file_path, 'r', encoding='utf-8')
+
+        # Seek to the pre-calculated byte offset
+        offset = self.line_offsets[idx]
+        self._file.seek(offset)
+
+        # Read the line and parse the JSON
+        line = self._file.readline()
+        data = json.loads(line)
+
+        # Apply transformation if it exists
+        if self.transform:
+            data = self.transform(data)
+
+        return data
+
+    def __getitem__(
+            self,
+            idx: int | slice
+    ) -> dict[str, Any] | list[dict[str, Any]]:
+        """
+        Supports both integer indexing and slicing.
+        - If idx is an integer, returns a single data item.
+        - If idx is a slice, returns a list of data items.
+        """
+        if isinstance(idx, int):
+            return self._get_single_item(idx)
+        elif isinstance(idx, slice):
+            # Resolve slice indices
+            start, stop, step = idx.indices(len(self))
+            return [self._get_single_item(i) for i in range(start, stop, step)]
+        else:
+            raise TypeError(f"Invalid index type: {type(idx)}. Must be int or slice.")
+
+    def __del__(self) -> None:
+        """Ensures the file handle is closed when the dataset object is garbage collected."""
+        if self._file:
+            self.close()
+
+    def close(self) -> None:
+        """Closes the file handle."""
+        if self._file:
+            self._file.close()
+            self._file = None
 
 
 def get_image_UIDs(
@@ -1054,7 +1198,9 @@ def crop_augment_preprocess_batch(
     return x, y
 
 def main() -> None:
-    print(type(image_UIDs))
+    jsonl_ds = JSONLDataset(Path("/home/olivieri/exp/data/data_gen/VOC2012/flat/train_no_aug_flat.jsonl"))
+    print(jsonl_ds)
+    print(len(jsonl_ds))
 
 if __name__ == "__main__":
     main()

@@ -6,6 +6,7 @@ from path import MISC_PATH
 
 from PIL import Image, ImageDraw, ImageFont
 import torch
+from torch import nn
 from torchvision.transforms.functional import to_pil_image
 import seaborn as sns
 import matplotlib.pyplot as plt
@@ -290,3 +291,15 @@ def create_multi_row_gallery(
 </html>
 """
     return html_content
+
+def print_layer_numel(
+        module: nn.Module,
+        print_only_total: bool = False,
+        only_trainable: bool = False
+) -> None:
+    s = 0
+    for name, params in module.named_parameters():
+        if (only_trainable and params.requires_grad) or not only_trainable:
+            print(f"{name:<30}: {params.numel():,}") if print_only_total else None
+            s += params.numel()
+    print(f"Total: {s:,}")

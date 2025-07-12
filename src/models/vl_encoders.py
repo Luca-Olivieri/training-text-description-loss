@@ -1,6 +1,5 @@
 from config import CONFIG
 from utils import Registry
-from vendors.flair.src import flair
 
 import torch
 from torch import nn
@@ -9,10 +8,16 @@ import torchvision.transforms.functional as TF
 import torch.nn.functional as F
 from torchvision.transforms.functional import to_pil_image
 from abc import abstractmethod, ABC
-from open_clip.tokenizer import HFTokenizer, SimpleTokenizer
 import math
 from PIL import Image
 from dataclasses import dataclass
+
+# FLAIR
+from vendors.flair.src import flair
+from open_clip.tokenizer import HFTokenizer, SimpleTokenizer
+from vendors.flair.src.flair.loss import FlairLoss
+
+# FG-CLIP
 from transformers import AutoImageProcessor, AutoTokenizer, AutoModelForCausalLM
 
 from typing import Optional, Literal
@@ -149,7 +154,7 @@ class VLEncoder(ABC):
         # TODO do not output 'min_attn' and 'max_attn' anymore, make it produce by downstream functions.
         return attn_maps, min_attn, max_attn
     
-    @torch.inference_mode()()
+    @torch.inference_mode()
     def get_sim_maps(
             self,
             images: torch.Tensor,
@@ -182,6 +187,12 @@ class VLEncoder(ABC):
         
         return sim_maps, min_sim, max_sim
     
+    def set_vision_trainable_params(self, *arg, **kwargs) -> None:
+        raise NotImplementedError
+    
+    def create_loss(self, *args, **kwargs) -> nn.Module:
+        raise NotImplementedError
+    
     @abstractmethod
     def count_tokens(self, *args, **kwargs) -> None:
         raise NotImplementedError
@@ -203,9 +214,10 @@ class FLAIRAdapter(VLEncoder):
                                 'flair-merged30m.pt'] = 'flair-cc3m-recap.pt',
             device: str = 'cuda',
     ) -> None:
+        self.device = device
         pretrained = flair.download_weights_from_hf(model_repo='xiaorui638/flair', filename=checkpoint)
-        model, _, preprocess_fn = flair.create_model_and_transforms('ViT-B-16-FLAIR', pretrained=pretrained)
-        model.to(device)
+        model, _, preprocess_fn = flair.create_model_and_transforms('ViT-B-16-FLAIR', pretrained=pretrained, device=self.device)
+        model.requires_grad_(False)
         model.eval()
         self.model: FLAIR = model
         self.preprocess_fn: T.Compose = preprocess_fn
@@ -232,6 +244,8 @@ class FLAIRAdapter(VLEncoder):
     ) -> torch.Tensor:
         texts_tensor = self.tokenizer(texts).to(device) # [B, context_length]
         return texts_tensor
+    
+    # TODO encode_image should be wrapped in order to account for adapters.
     
     @torch.inference_mode()
     def encode_and_project(
@@ -299,13 +313,39 @@ class FLAIRAdapter(VLEncoder):
             text_features = text_features.squeeze(1)
             sim = torch.einsum('bf,bf->b', image_features, text_features)
         return sim
+    
+    def set_vision_trainable_params(
+            self,
+            trainable_module: Optional[Literal['adapter',
+                                               'visual_proj']]
+    ) -> None:
+        match trainable_module:
+            case None:
+                self.model.requires_grad_(False)
+            case 'visual_proj':
+                self.model.visual_proj.requires_grad_(True)
+    
+    def create_loss(
+            self,
+            add_mps_loss: bool,
+            rank: int,
+            world_size: int,
+            num_caps_per_img: int = 1
+    ) -> FlairLoss:
+        flair_loss = FlairLoss(
+            rank=rank,
+            world_size=world_size,
+            num_cap_per_img=num_caps_per_img,
+            added_mps_loss=add_mps_loss
+        )
+        return flair_loss
 
     @torch.inference_mode()
     def count_tokens(
             self,
             text: str
     ) -> int:
-        tokenizer = flair.get_tokenizer('ViT-B-16-FLAIR', context_length=1000)
+        tokenizer = flair.get_tokenizer('ViT-B-16-FLAIR', context_length=1000) # I do not expect to use text longer than 1000 tokens. If so, increase it to working upper bound.
         return len(tokenizer.encode(text)) + 2 # 'SoT' and 'EoT' are added.
 
 
@@ -436,9 +476,12 @@ class FG_CLIPAdapter(VLEncoder):
         raise AttributeError("The VLE 'FG-CLIP' does not provide attention maps.")
 
 def main() -> None:
+    
+    from typing import cast
     print(VLE_REGISTRY.registered_objects())
     model: VLEncoder = VLE_REGISTRY.get('flair')
-    model.get_similarity()
+    model = cast(FLAIRAdapter, model)
+    print(model.create_loss(add_mps_loss=True, rank=0, world_size=1, num_caps_per_img=1))
     
 if __name__ == '__main__':
     main()

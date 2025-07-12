@@ -8,6 +8,13 @@ from torchmetrics.metric import Metric
 
 from config import *
 
+def set_trainable_params(
+        model: nn.Module,
+        train_decoder_only: bool
+) -> None:
+    model.backbone.requires_grad_(False) if train_decoder_only else model.backbone.requires_grad_(True)
+    model.classifier.requires_grad_(True)
+
 # used only to validate the correctness of the TorchMetrics metrics
 def my_accuracy(
         logits: torch.Tensor,
