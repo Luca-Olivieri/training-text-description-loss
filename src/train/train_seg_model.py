@@ -1,7 +1,7 @@
 from config import *
 from data import SegDataset, image_train_UIDs, image_val_UIDs, CLASS_MAP_VOID, crop_augment_preprocess_batch, NUM_CLASSES_VOID
 from utils import get_compute_capability, title
-from models.vl_models import evaluate
+from models.seg_models import evaluate, set_trainable_params
 from logger import log_segnet_scores, logger, tb_writer
 
 from functools import partial
@@ -15,13 +15,6 @@ from torchmetrics.classification import MulticlassAccuracy, MulticlassJaccardInd
 import torchmetrics as tm
 
 from typing import Callable
-
-def set_trainable_params(
-        model: nn.Module,
-        train_decoder_only: bool
-) -> None:
-    model.backbone.requires_grad_(False) if train_decoder_only else model.backbone.requires_grad_(True)
-    model.classifier.requires_grad_(True)
 
 def train_loop(
         model: nn.Module,
