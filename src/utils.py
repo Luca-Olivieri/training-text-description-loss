@@ -16,6 +16,7 @@ from abc import ABC
 from tqdm import tqdm
 from typing import Any, TypeVar
 import torchmetrics as tm
+import json
 
 from typing import Callable, TypeVar, Any, Iterable, Self
 from abc import ABC
@@ -43,7 +44,7 @@ def flatten_list(nested_list: list[Any]) -> list[list[Any]]:
         else: result.append(item)
     return result
 
-def flatten_to_depth(
+def flatten_list_to_depth(
     nested_list: list[Any] | tuple[Any],
     depth: float = float('inf')
 ) -> list[Any]:
@@ -78,12 +79,92 @@ def flatten_to_depth(
         # Check if the item is a list/tuple and we still have depth to flatten
         if isinstance(item, (list, tuple)) and depth > 0:
             # Recurse, but with one less level of depth allowed
-            result.extend(flatten_to_depth(item, depth - 1))
+            result.extend(flatten_list_to_depth(item, depth - 1))
         else:
             # Append the item as is, either because it's not a list/tuple
             # or because we've reached our desired depth
             result.append(item)
     return result
+
+def flatten_cs_jsonl(
+        input_path: Path,
+        output_path: Path
+) -> None:
+    """
+    Reads a JSONL file, flattens its records, and writes to a new JSONL file.
+
+    - The first line of the input is copied directly to the output.
+    - Each subsequent line is flattened from:
+      {"img_idx": int, "content": {str_key: str_val, ...}}
+    - To multiple lines of:
+      {"img_idx": int, "pos_class": int, "content": str_val}
+    """
+    print(f"--- Processing '{input_path}' and writing to '{output_path}' ---")
+    
+    try:
+        with open(input_path, 'r') as infile, open(output_path, 'w') as outfile:
+            # 1. Read the first line (state) and copy it as is.
+            first_line = infile.readline()
+            if not first_line:
+                print("Warning: Input file is empty.")
+                return
+
+            outfile.write(first_line)
+            
+            # 2. Process the rest of the lines in the file.
+            lines_processed = 0
+            records_generated = 0
+            for line in infile:
+                # Skip any blank lines
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Load the JSON object from the line
+                data = json.loads(line)
+                
+                # Extract the common data
+                img_idx = data.get("img_idx")
+                content_dict = data.get("content", {}) # Use .get with default for safety
+                
+                # 3. Iterate through the inner 'content' dictionary to create flattened records.
+                if img_idx is not None and content_dict:
+                    for pos_class_str, content_str in content_dict.items():
+                        
+                        # Create the new, flattened dictionary
+                        flattened_record = {
+                            "img_idx": img_idx,
+                            "pos_class": int(pos_class_str), # Convert key to integer
+                            "content": content_str
+                        }
+                        
+                        # Write the flattened dictionary as a JSON string to the output file
+                        json.dump(flattened_record, outfile)
+                        outfile.write('\n')
+                        records_generated += 1
+
+                lines_processed += 1
+        
+        print(f"Processing complete.")
+        print(f"Total lines processed (excluding header): {lines_processed}")
+        print(f"Total flattened records generated: {records_generated}\n")
+
+    except FileNotFoundError:
+        print(f"Error: The input file '{input_path}' was not found.")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
+
+def print_file_content(filename):
+    """Utility function to print the content of a file."""
+    if not os.path.exists(filename):
+        print(f"File '{filename}' does not exist.")
+        return
+        
+    print(f"--- Contents of '{filename}' ---")
+    with open(filename, 'r') as f:
+        for line in f:
+            print(line, end='')
+    print("--- End of file ---\n")
 
 def batch_list(
         list_,
@@ -410,6 +491,7 @@ def pretty_metrics(
 ) -> dict:
     return {m: f"{s.item():.4f}" for m, s in metric_collection.items()}
 
+# TODO adapt the registry to take note of the outer class and cast the model to it to have type annotations.
 class Registry:
     """
     A class to manage and instantiate registered objects.
@@ -538,14 +620,7 @@ def blend_tensors(tensor1: torch.Tensor, tensor2: torch.Tensor, alpha: float) ->
     return out_tensor
 
 def main() -> None:
-    original_tensor_cuda = torch.randint(0, 200, (1, 520, 520), dtype=torch.long, device='cuda')
-
-    from data import CLASS_MAP
-
-    # Your mapping dictionary
-    mapping_dict = CLASS_MAP
-
-    map_tensor(original_tensor_cuda, mapping_dict)
+    ...
 
 if __name__ == "__main__":
     main()
