@@ -90,7 +90,7 @@ async def main() -> None:
         alpha=0.6,
         class_map=CLASS_MAP,
         color_map=COLOR_MAP_DICT,
-        image_size=224,
+        image_size=CONFIG['vlm']['image_size'],
         sup_set_img_idxs=[16],
         str_formats=None,
         prs_mask_paths=get_mask_prs_path(by_model=by_model)
@@ -104,7 +104,7 @@ async def main() -> None:
 
     image_uids = train_image_UIDs_
 
-    offset = 0
+    offset = 32
 
     ds = SegDataset(image_uids[offset:], CONFIG['seg']['image_size'], CLASS_MAP)
     print(len(ds))
@@ -154,6 +154,11 @@ async def main() -> None:
             scs_img = (scs_img*255).to(torch.uint8)
 
             gts = gts.unsqueeze(1)
+
+            # Both VLM and VLE receive the images in the same size.
+            gts = TF.resize(gts, fast_prompt_builder.image_size, TF.InterpolationMode.NEAREST)
+            prs = TF.resize(prs, fast_prompt_builder.image_size, TF.InterpolationMode.NEAREST)
+            scs_img = TF.resize(scs_img, fast_prompt_builder.image_size, TF.InterpolationMode.BILINEAR)
             
             cs_prompts = fast_prompt_builder.build_cs_inference_prompts(gts, prs, scs_img)
 
@@ -171,7 +176,7 @@ async def main() -> None:
                 use_tqdm=False
             )
 
-            for img_uid, cs_ans, sc_img, gt, pr in zip(batch_image_uids, cs_answer_list, scs_img, gts, prs):
+            for img_idx, img_uid, cs_ans, sc_img, gt, pr in zip(batch_idxs, batch_image_uids, cs_answer_list, scs_img, gts, prs):
                 sign_classes = fast_prompt_builder.extract_significant_classes(gt, pr)
                 
                 for pos_c in sign_classes:
