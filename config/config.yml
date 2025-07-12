@@ -1,5 +1,5 @@
-exp_name: "2st_half"
-exp_desc: "Test if we can split the training in two halfs and resetting the optimizer."
+exp_name: "TEST"
+exp_desc: ""
 
 tb_dir: "logs_tb"
 log_dir: "logs"
@@ -20,3 +20,9 @@ vlm:
   alpha: 0.6
   sup_set_img_idxs: [16]
   temperature: 0.1
+
+data_gen:
+  root: "/home/olivieri/exp/data/data_gen/VOC2012"
+  exp_name: "train_no_aug"
+  batch_size: 16
+  alpha: 0.55
