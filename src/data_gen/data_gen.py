@@ -104,7 +104,7 @@ async def main() -> None:
 
     image_uids = train_image_UIDs_
 
-    offset = 32
+    offset = 1464-20
 
     ds = SegDataset(image_uids[offset:], CONFIG['seg']['image_size'], CLASS_MAP)
     print(len(ds))
@@ -162,7 +162,7 @@ async def main() -> None:
             
             cs_prompts = fast_prompt_builder.build_cs_inference_prompts(gts, prs, scs_img)
 
-            batch_idxs = [offset + dl.batch_size*step + i for i in range(dl.batch_size)]
+            batch_idxs = [offset + dl.batch_size*step + i for i in range(len(scs_img))]
             batch_image_uids = image_uids[batch_idxs]
 
             cs_answer_list = await vlm.predict_many_class_splitted(
@@ -190,7 +190,7 @@ async def main() -> None:
 
                     ovr_diff_mask = blend_tensors(sc_img, diff_mask, CONFIG['data_gen']['alpha'])
                     
-                    torchvision.utils.save_image(ovr_diff_mask/255., images_path / f"{img_uid}-{pos_c}.png", normalize=True)
+                    torchvision.utils.save_image(ovr_diff_mask/255., images_path / f"{img_uid}-{pos_c}-.png", normalize=True)
 
 
 if __name__ == '__main__':
