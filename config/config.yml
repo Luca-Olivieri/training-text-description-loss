@@ -9,11 +9,18 @@ device: "cuda"
 
 log_every: 10
 
-seg:
+segnet:
   image_size: 520
-  train_decoder_only: False
-  batch_size: 16
-  num_epochs: 45
+  train:
+    train_decoder_only: False
+    batch_size: 16
+    num_epochs: 45
+
+vle:
+  image_size: 224
+  train:
+    batch_size: 16
+    num_epochs: 32
 
 vlm:
   image_size: 224
@@ -23,6 +30,7 @@ vlm:
 
 data_gen:
   root: "/home/olivieri/exp/data/data_gen/VOC2012"
-  exp_name: "train_no_aug"
+  exp_name: "val_no_aug"
   batch_size: 16
-  alpha: 0.55
+  offset: 0 # img-text idx from which to start the generation
+  alpha: 0.55 # the greater, the less scene is visible

@@ -55,8 +55,8 @@ class SegDataset(Dataset):
             class_map: dict,
             mask_resize_mode: str = "nearest",
     ) -> None:
-        self.scs_paths = [SCS_PATH / (UID + ".jpg") for UID in uids]
-        self.gts_paths = [GTS_PATH / (UID + ".png") for UID in uids]
+        self.scs_paths = sorted([SCS_PATH / (UID + ".jpg") for UID in uids])
+        self.gts_paths = sorted([GTS_PATH / (UID + ".png") for UID in uids])
         self.resize_size = resize_size
         self.class_map = class_map
         self.mask_resize_mode = mask_resize_mode
@@ -1267,25 +1267,30 @@ def crop_augment_preprocess_batch(
 
     return x, y
 
-def crop_image_preprocess_text_batch(
+def crop_image_preprocess_image_text_batch(
         batch: list,
         crop_fn: Callable,
-        preprocess_text_fn: Callable
+        preprocess_images_fn: Optional[Callable],
+        preprocess_texts_fn: Optional[Callable]
 ) -> tuple[Tensor, Tensor, Tensor]:
-    scs, gts, texts = zip(*batch)
+    imgs, texts = zip(*batch)
 
     # when the images are sampled in the batch, they are:
     #   1. in Float32 in the range [0, 1],
     #   2. in shape [B, C, H, W],
     
-    scs, gts = zip(*[crop_fn(x_, tv_tensors.Mask(y_)) for x_, y_ in zip(scs, gts)])
+    imgs = [crop_fn(x_) for x_ in imgs]
+    imgs = (torch.stack(imgs)/255.).float()
 
-    scs = (torch.stack(scs)/255.).float()
-    gts = torch.stack(gts).long().squeeze(1)
+    if preprocess_images_fn:
+        imgs = preprocess_images_fn(imgs)
 
-    texts = preprocess_text_fn(texts, scs.device)
+    texts = [d['content'] for d in texts]
 
-    return scs, gts, texts
+    if preprocess_texts_fn:
+        texts = preprocess_texts_fn(texts, imgs.device)
+
+    return imgs, texts
 
 def main() -> None:
     jsonl_ds = JSONLDataset(Path("/home/olivieri/exp/data/data_gen/VOC2012/flat/train_no_aug_flat.jsonl"))

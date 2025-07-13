@@ -1339,7 +1339,7 @@ class FastPromptBuilder:
             sign_classes.remove(0)
 
         return sorted(sign_classes)
-        
+    
     
     def expand_head_to_cs(
             self,

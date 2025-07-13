@@ -102,9 +102,9 @@ async def main() -> None:
     val_image_UIDs_ = get_image_UIDs(SPLITS_PATH, split='val', shuffle=False, uids_to_exclude=['2007_000256'])
     len(train_image_UIDs_), len(val_image_UIDs_)
 
-    image_uids = train_image_UIDs_
+    image_uids = val_image_UIDs_
 
-    offset = 1464-20
+    offset = CONFIG['data_gen']['offset']
 
     ds = SegDataset(image_uids[offset:], CONFIG['seg']['image_size'], CLASS_MAP)
     print(len(ds))
@@ -176,7 +176,7 @@ async def main() -> None:
                 use_tqdm=False
             )
 
-            for img_idx, img_uid, cs_ans, sc_img, gt, pr in zip(batch_idxs, batch_image_uids, cs_answer_list, scs_img, gts, prs):
+            for img_uid, cs_ans, sc_img, gt, pr in zip(batch_image_uids, cs_answer_list, scs_img, gts, prs):
                 sign_classes = fast_prompt_builder.extract_significant_classes(gt, pr)
 
                 sign_classes = sorted(sign_classes, key=lambda pos_c: str(pos_c))
@@ -192,7 +192,7 @@ async def main() -> None:
 
                     ovr_diff_mask = blend_tensors(sc_img, diff_mask, CONFIG['data_gen']['alpha'])
                     
-                    torchvision.utils.save_image(ovr_diff_mask/255., images_path / f"{img_uid}-{pos_c}-.png", normalize=True)
+                    torchvision.utils.save_image(ovr_diff_mask/255., images_path / f"{img_uid}-{pos_c}.png", normalize=True)
 
 
 if __name__ == '__main__':

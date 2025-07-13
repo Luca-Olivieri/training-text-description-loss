@@ -84,7 +84,6 @@ class VLEncoder(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    @torch.inference_mode()
     def encode_and_project(
             self,
             images: torch.Tensor,
@@ -246,8 +245,20 @@ class FLAIRAdapter(VLEncoder):
         return texts_tensor
     
     # TODO encode_image should be wrapped in order to account for adapters.
+
+    def encode_image_with_adapter(
+            self,
+            image,
+            normalize: bool = False
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        self.adapter = nn.Linear(512, 512, device=self.device)
+        global_image_token, local_image_tokens = self.model.encode_image(image, normalize=normalize) # # [B_i, d_i], [B_i, n_i, d_i]
+
+        adapted_global_token = self.adapter(global_image_token)
+        adapted_local_tokens = self.adapter(local_image_tokens)
+
+        return adapted_global_token, local_image_tokens
     
-    @torch.inference_mode()
     def encode_and_project(
             self,
             images: torch.Tensor,
@@ -317,13 +328,21 @@ class FLAIRAdapter(VLEncoder):
     def set_vision_trainable_params(
             self,
             trainable_module: Optional[Literal['adapter',
-                                               'visual_proj']]
+                                               'mlp',
+                                               'visual_proj'
+                                               'mlp+visual_proj']]
     ) -> None:
+        self.model.requires_grad_(False)
         match trainable_module:
-            case None:
-                self.model.requires_grad_(False)
+            case 'mlp':
+                self.model.image_post.proj.requires_grad_(True)
             case 'visual_proj':
                 self.model.visual_proj.requires_grad_(True)
+            case 'mlp+visual_proj':
+                self.model.image_post.proj.requires_grad_(True)
+                self.model.visual_proj.requires_grad_(True)
+            case None:
+                ...
     
     def create_loss(
             self,
@@ -416,7 +435,6 @@ class FG_CLIPAdapter(VLEncoder):
         texts_tensor = torch.tensor(self.tokenizer(texts, max_length=self.context_length, padding="max_length", truncation=True).input_ids, dtype=torch.long, device=device) # # [B, context_length]
         return texts_tensor
 
-    @torch.inference_mode()
     def encode_and_project(
             self,
             images: torch.Tensor,
