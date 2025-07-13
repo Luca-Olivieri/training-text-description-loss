@@ -1,8 +1,8 @@
 from config import *
 from color_map import pil_to_class_array, get_color_map_as, apply_colormap
 from utils import blend_tensors, flatten_list
-from data import read_txt, get_sc, get_gt, get_pr, image_UIDs, get_one_answer_gt, get_one_sup_set_answer_gt, CLASSES, get_significant_classes, read_json
-from path import get_prompts_path, get_mask_prs_path, SCS_PATH, GTS_PATH, get_data_gen_prompts_path, LOCAL_ANNOT_IMGS_PATH, MISC_PATH
+from data import read_txt, get_sc, get_gt, get_pr, get_image_UIDs, get_one_answer_gt, get_one_sup_set_answer_gt, CLASSES, get_significant_classes, read_json
+from path import get_prompts_path, get_mask_prs_path, SCS_PATH, GTS_PATH, get_data_gen_prompts_path, LOCAL_ANNOT_IMGS_PATH, MISC_PATH, SPLITS_PATH
 
 from PIL import Image, ImageFont, ImageDraw, ImageOps
 from pathlib import Path
@@ -876,6 +876,7 @@ class PromptBuilder():
         Returns:
             Tuple of scene, ground truth, and prediction PIL Image objects.
         """
+        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval")
         prs_path = get_mask_prs_path(self.by_model)
         sc = to_pil_image(get_sc(SCS_PATH / (image_UIDs[idx] + ".jpg"), resize_size))
         gt = to_pil_image(apply_colormap([get_gt(GTS_PATH / (image_UIDs[idx] + ".png"), self.class_map, resize_size)], self.color_map).squeeze(0))
@@ -1162,6 +1163,7 @@ class PromptBuilder():
             Dictionary of class-splitted inference prompts.
         """
         # TODO: if the masks only have BACKGROUND class, there might be an error when trying to build the prompt.
+        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval")
         significant_classes_gt = get_significant_classes(GTS_PATH / (image_UIDs[query_idx] + ".png"), self.image_size, self.class_map)
         significant_classes_pr = get_significant_classes(get_mask_prs_path(self.by_model) / (f"mask_pr_{query_idx}.png"), self.image_size, self.class_map)
         significant_classes = sorted(list(set(significant_classes_gt + significant_classes_pr))) # all appearing classes
@@ -1283,6 +1285,8 @@ class FastPromptBuilder:
         # This method works only if the sup sets have disjointed classes. Ideally, each support example would have its own color map.
         color_map = {pos_c: (255, 255, 255) for pos_c in img_idx_to_class_.values()}
 
+        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval")
+
         sup_set_uids = image_UIDs[sup_set_img_idxs]
         gts_paths = [GTS_PATH / (UID + ".png") for UID in sup_set_uids]
         prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in sup_set_img_idxs]
@@ -1318,14 +1322,12 @@ class FastPromptBuilder:
             return [img_t.unique().tolist() for img_t in input_tensor]
         else:
             return input_tensor.unique().tolist()
-    
-    def expand_head_to_cs(
+
+    def extract_significant_classes(
             self,
             query_gt: torch.Tensor,
             query_pr: torch.Tensor,
-            query_sc: Optional[torch.Tensor],
-            alpha: Optional[float]
-    ) -> list[Prompt]:
+    ) -> list[int]:
         gt_sign_classes = self.get_significant_classes(query_gt)
         pr_sign_classes = self.get_significant_classes(query_pr)
         sign_classes = list(set(gt_sign_classes + pr_sign_classes))
@@ -1335,6 +1337,19 @@ class FastPromptBuilder:
         # and both masks are completely white.
         if sign_classes != [0]:
             sign_classes.remove(0)
+
+        return sorted(sign_classes)
+        
+    
+    def expand_head_to_cs(
+            self,
+            query_gt: torch.Tensor,
+            query_pr: torch.Tensor,
+            query_sc: Optional[torch.Tensor],
+            alpha: Optional[float]
+    ) -> list[Prompt]:
+        
+        sign_classes = self.extract_significant_classes(query_gt, query_pr)
 
         concat_masks = torch.stack([query_gt, query_pr], dim=0)
 
@@ -1385,6 +1400,7 @@ class FastPromptBuilder:
             self,
             query_idxs: list[int]
     ) -> list[Prompt]:
+        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval")
         query_uids = image_UIDs[query_idxs]
         gts_paths = [GTS_PATH / (UID + ".png") for UID in query_uids]
         prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in query_idxs]

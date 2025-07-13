@@ -78,8 +78,6 @@ class SegDataset(Dataset):
             gt = get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=False)
             return sc, gt
 
-# TODO create a wrapper Dataset class that iterates on both SegDataset and JSONLDataset (each batch is composed by a batch of both datasets).
-
 
 class JSONLDataset(Dataset):
     """
@@ -221,6 +219,79 @@ class JSONLDataset(Dataset):
             self._file.close()
             self._file = None
 
+class ImageDataset(Dataset):
+    """
+    TODO
+    """
+    def __init__(
+            self,
+            path: Path,
+            resize_size: Optional[int | list[int, int]] = None,
+            resize_mode: Optional[str] = None,
+            class_map: Optional[dict] = None,
+            img_idxs: Optional[list[int]] = None,
+    ) -> None:
+        self.image_paths = np.array(sorted(glob(str(path / "*.png"))))
+        if img_idxs:
+            self.image_paths = self.image_paths[img_idxs]
+        self.resize_size = resize_size
+        self.class_map = class_map
+        self.mask_resize_mode = resize_mode
+
+    def __len__(self) -> int:
+        return len(self.image_paths)
+
+    def __getitem__(
+            self,
+            idx: int
+    ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor]:
+        if isinstance(idx, slice):
+            indices = range(*idx.indices(len(self)))
+            imgs = [get_mask(path=self.image_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=False) for i in indices]
+            return imgs
+        else:
+            img = get_mask(path=self.image_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=False)
+            return img
+
+class ImageCaptionDataset(Dataset):
+    """
+    A dataset that merges a segmentation dataset and a JSONL dataset.
+    It retrieves items from both datasets for a given index, supporting both
+    integer indexing and slicing.
+    """
+    def __init__(self, img_dataset: ImageDataset, jsonl_dataset: JSONLDataset):
+        self.img_dataset = img_dataset
+        self.jsonl_dataset = jsonl_dataset
+
+        if len(self.img_dataset) != len(self.jsonl_dataset):
+            import warnings
+            warnings.warn(
+                "The segmentation and JSONL datasets have different lengths."
+                f"ImageDataset: {len(self.mask_data)}, JSONLDataset: {len(self.jsonl_dataset)}."
+                "The combined dataset will be truncated to the length of the shorter one."
+            )
+
+    def __len__(self) -> int:
+        return min(len(self.img_dataset), len(self.jsonl_dataset))
+
+    def __getitem__(self, idx: int | slice) -> tuple | list[tuple]:
+        """
+        Retrieves items from both datasets.
+        - If idx is an integer, returns a single tuple: (image, jsonl_data).
+        - If idx is a slice, returns a list of such tuples.
+        """
+        img_data = self.img_dataset[idx]
+        jsonl_data = self.jsonl_dataset[idx]
+
+        if isinstance(idx, slice):
+            # ...
+            # jsonl_data is a list of dicts
+            return [(id, jd) for id, jd in zip(img_data, jsonl_data)]
+        else:
+            # ...
+            # jsonl_data is a dict
+            return (img_data, jsonl_data)
+
 
 def get_image_UIDs(
         path: Path,
@@ -229,8 +300,9 @@ def get_image_UIDs(
             'train'
             'val'
             ] = "trainval",
-        shuffle: bool = True
-) -> list[int]:
+        shuffle: bool = True,
+        uids_to_exclude: list[str] = []
+) -> np.ndarray[int]:
     """
     Lists the UIDs of the images stored into a certain path and by split.
 
@@ -247,7 +319,9 @@ def get_image_UIDs(
     with open(path / f"{split}.txt", "r") as f:
         for line in f:
             image_id = line.strip()  # Remove any leading/trailing whitespace
-            image_UIDs.append(image_id)
+            if image_id not in uids_to_exclude:
+                image_UIDs.append(image_id)
+    image_UIDs = sorted(image_UIDs)
     if shuffle:
         match split:
             case "trainval":
@@ -256,11 +330,7 @@ def get_image_UIDs(
                 image_UIDs[23:] = to_shuffle
             case _:
                 random.shuffle(image_UIDs)
-    return image_UIDs
-
-image_UIDs = np.array(get_image_UIDs(SPLITS_PATH, split="trainval"))
-image_train_UIDs = np.array(get_image_UIDs(SPLITS_PATH, split="train"))
-image_val_UIDs = np.array(get_image_UIDs(SPLITS_PATH, split="val"))
+    return np.array(sorted(image_UIDs))
 
 def get_image(
         path: str,
@@ -355,9 +425,9 @@ def apply_classmap(
 
 def get_mask(
         path: str,
-        class_map: dict,
-        resize_size: int | tuple[int, int] | None,
-        center_crop: bool
+        class_map: Optional[dict] = None,
+        resize_size: Optional[int | tuple[int, int]] = None,
+        center_crop: Optional[bool] = None
 ) -> torch.Tensor:
     """
     Loads a mask, applies class mapping, resizes, and optionally center-crops it.
@@ -531,7 +601,7 @@ def read_many_from_jsonl(
 
 def _append_one_to_jsonl(
         object_to_append: dict,
-        file
+        file,
 ) -> None:
     """
     Appends a single object to an open JSONL file.
@@ -545,7 +615,7 @@ def _append_one_to_jsonl(
 
 def append_many_to_jsonl(
         path: str,
-        objects_to_append: list[dict]
+        objects_to_append: list[dict],
 ) -> None:
     """
     Appends multiple objects to a JSONL file.
@@ -1196,6 +1266,26 @@ def crop_augment_preprocess_batch(
         x = preprocess_fn(x)
 
     return x, y
+
+def crop_image_preprocess_text_batch(
+        batch: list,
+        crop_fn: Callable,
+        preprocess_text_fn: Callable
+) -> tuple[Tensor, Tensor, Tensor]:
+    scs, gts, texts = zip(*batch)
+
+    # when the images are sampled in the batch, they are:
+    #   1. in Float32 in the range [0, 1],
+    #   2. in shape [B, C, H, W],
+    
+    scs, gts = zip(*[crop_fn(x_, tv_tensors.Mask(y_)) for x_, y_ in zip(scs, gts)])
+
+    scs = (torch.stack(scs)/255.).float()
+    gts = torch.stack(gts).long().squeeze(1)
+
+    texts = preprocess_text_fn(texts, scs.device)
+
+    return scs, gts, texts
 
 def main() -> None:
     jsonl_ds = JSONLDataset(Path("/home/olivieri/exp/data/data_gen/VOC2012/flat/train_no_aug_flat.jsonl"))

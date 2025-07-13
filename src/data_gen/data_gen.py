@@ -178,6 +178,8 @@ async def main() -> None:
 
             for img_idx, img_uid, cs_ans, sc_img, gt, pr in zip(batch_idxs, batch_image_uids, cs_answer_list, scs_img, gts, prs):
                 sign_classes = fast_prompt_builder.extract_significant_classes(gt, pr)
+
+                sign_classes = sorted(sign_classes, key=lambda pos_c: str(pos_c))
                 
                 for pos_c in sign_classes:
 

@@ -154,7 +154,9 @@ def flatten_cs_jsonl(
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
 
-def print_file_content(filename):
+def print_file_content(
+        filename: str
+) -> None:
     """Utility function to print the content of a file."""
     if not os.path.exists(filename):
         print(f"File '{filename}' does not exist.")
@@ -562,7 +564,7 @@ def map_tensor(
     max_val = max(mapping_dict.values()) if mapping_dict else 0 # For setting default value dtype
 
     # Create a lookup tensor
-    # Initialize with a default value for unmapped elements (e.g., original value, -1, or 0)
+    # Initialize with a default value for unmapped elements (e.g., original value, 0)
     # Make sure the dtype is appropriate for your mapped values.
     lookup_tensor = torch.full((max_key + 1,), 0, dtype=input_tensor.dtype, device=input_tensor.device) # Or original_tensor.dtype
 

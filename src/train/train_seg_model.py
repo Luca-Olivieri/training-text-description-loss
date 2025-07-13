@@ -1,5 +1,5 @@
 from config import *
-from data import SegDataset, image_train_UIDs, image_val_UIDs, CLASS_MAP_VOID, crop_augment_preprocess_batch, NUM_CLASSES_VOID
+from data import SegDataset, get_image_UIDs, CLASS_MAP_VOID, crop_augment_preprocess_batch, NUM_CLASSES_VOID, SPLITS_PATH
 from utils import get_compute_capability, title
 from models.seg_models import evaluate, set_trainable_params
 from logger import log_segnet_scores, logger, tb_writer
@@ -79,9 +79,9 @@ def train_loop(
     log_segnet_scores(f"After {CONFIG['seg']['num_epochs']} epochs of training, VALIDATION", val_loss, val_metrics_score, None, None, None, "val_")
 
 def main() -> None:
-    
-    train_ds = SegDataset(image_train_UIDs, CONFIG['seg']['image_size'], CLASS_MAP_VOID)
-    val_ds = SegDataset(image_val_UIDs, CONFIG['seg']['image_size'], CLASS_MAP_VOID)
+
+    train_ds = SegDataset(get_image_UIDs(SPLITS_PATH, split="train"), CONFIG['seg']['image_size'], CLASS_MAP_VOID)
+    val_ds = SegDataset(get_image_UIDs(SPLITS_PATH, split="val"), CONFIG['seg']['image_size'], CLASS_MAP_VOID)
 
     model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
     # model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
@@ -104,12 +104,12 @@ def main() -> None:
         # T.RandomPerspective(p=0.5, distortion_scale=0.2) # Shears the image
     ])
 
-    # train_collate_fn = partial(crop_augment_preprocess_batch, crop_module=T.RandomCrop(CONFIG['seg']['image_size']), augment_fn=augment_fn, preprocess_fn=preprocess)
     train_collate_fn = partial(
         crop_augment_preprocess_batch,
         crop_fn=random_crop_fn,
         augment_fn=augment_fn,
-        preprocess_fn=preprocess_fn)
+        preprocess_fn=preprocess_fn
+    )
     
     val_collate_fn = partial(crop_augment_preprocess_batch, crop_fn=T.CenterCrop(CONFIG['seg']['image_size']), augment_fn=None, preprocess_fn=preprocess_fn)
 
