@@ -292,14 +292,53 @@ def create_multi_row_gallery(
 """
     return html_content
 
-def print_layer_numel(
+def get_layer_numel_str(
         module: nn.Module,
         print_only_total: bool = False,
         only_trainable: bool = False
-) -> None:
+) -> str:
     s = 0
+    out_str: str = ""
+    layer_names = []
+    layer_params = []
     for name, params in module.named_parameters():
         if (only_trainable and params.requires_grad) or not only_trainable:
-            print(f"{name:<30}: {params.numel():,}") if print_only_total else None
+            layer_names.append(name)
+            layer_params.append(params)
             s += params.numel()
-    print(f"Total: {s:,}")
+    max_name_len = max([len(n) for n in layer_names])
+    if not print_only_total:
+        out_str += '\n'.join([f"{n:<{max_name_len+1}}: {ps.numel():,}" for n, ps in zip(layer_names, layer_params)]) + '\n'
+    out_str += f"Total: {s:,}"
+    return out_str
+
+def format_to_title(
+        text: str,
+        total_length: int = 100,
+        pad_symbol: str = '-'
+) -> str:
+    """
+    Centers a title within a given total length, padding with hyphens.
+
+    Args:
+        title (str): The string to be centered.
+        total_length (int): The total desired length of the output string.
+
+    Returns:
+        str: The centered string with hyphen padding.
+             Returns the original title if total_length is less than
+             or equal to the length of the title.
+    """
+    text = f"[ {text} ]"
+    if total_length <= len(text):
+        return text
+
+    padding_needed = total_length - len(text)
+    
+    # Calculate padding for left and right
+    # Integer division might put an extra '-' on the right if padding_needed is odd
+    left_padding = padding_needed // 2
+    right_padding = padding_needed - left_padding
+
+    centered_string = pad_symbol * left_padding + text + pad_symbol * right_padding
+    return centered_string

@@ -328,18 +328,18 @@ class FLAIRAdapter(VLEncoder):
     def set_vision_trainable_params(
             self,
             trainable_module: Optional[Literal['adapter',
-                                               'mlp',
+                                               'proj',
                                                'visual_proj'
-                                               'mlp+visual_proj']]
+                                               'proj+visual_proj']]
     ) -> None:
         self.model.requires_grad_(False)
         match trainable_module:
-            case 'mlp':
-                self.model.image_post.proj.requires_grad_(True)
+            case 'proj':
+                self.model.image_post.requires_grad_(True)
             case 'visual_proj':
                 self.model.visual_proj.requires_grad_(True)
-            case 'mlp+visual_proj':
-                self.model.image_post.proj.requires_grad_(True)
+            case 'proj+visual_proj':
+                self.model.image_post.requires_grad_(True)
                 self.model.visual_proj.requires_grad_(True)
             case None:
                 ...

@@ -300,7 +300,7 @@ def get_image_UIDs(
             'train'
             'val'
             ] = "trainval",
-        shuffle: bool = True,
+        shuffle: bool = False,
         uids_to_exclude: list[str] = []
 ) -> np.ndarray[int]:
     """

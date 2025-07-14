@@ -1,26 +1,28 @@
-exp_name: "TEST"
-exp_desc: ""
-
-tb_dir: "logs_tb"
-log_dir: "logs"
-
 seed: 42
 device: "cuda"
-
-log_every: 10
 
 segnet:
   image_size: 520
   train:
+    exp_name: "TEST"
+    exp_desc: "" # can be None
     train_decoder_only: False
     batch_size: 16
     num_epochs: 45
+    log_dir_path: "/home/olivieri/exp/logs/segnet"
+    tb_dir_path: "/home/olivieri/exp/logs_tb/segnet"
+    log_every: 10
 
 vle:
   image_size: 224
   train:
+    exp_name: "TEST"
+    exp_desc: "This is just a test" # can be None
     batch_size: 16
     num_epochs: 32
+    log_dir_path: "/home/olivieri/exp/logs/vle"
+    tb_dir_path: "/home/olivieri/exp/logs_tb/vle"
+    log_every: 20
 
 vlm:
   image_size: 224
@@ -29,7 +31,7 @@ vlm:
   temperature: 0.1
 
 data_gen:
-  root: "/home/olivieri/exp/data/data_gen/VOC2012"
+  data_root: "/home/olivieri/exp/data/data_gen/VOC2012"
   exp_name: "val_no_aug"
   batch_size: 16
   offset: 0 # img-text idx from which to start the generation

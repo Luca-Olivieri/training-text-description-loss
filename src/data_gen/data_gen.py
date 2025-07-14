@@ -57,7 +57,7 @@ def create_diff_mask(
 
 async def main() -> None:
 
-    exp_path = Path(CONFIG['data_gen']['root']) / f"{CONFIG['data_gen']['exp_name']}"
+    exp_path = Path(CONFIG['data_gen']['data_root']) / f"{CONFIG['data_gen']['exp_name']}"
     captions_path = exp_path / "captions.jsonl"
     images_path = exp_path / "images"
 

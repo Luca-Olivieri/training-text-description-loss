@@ -876,7 +876,7 @@ class PromptBuilder():
         Returns:
             Tuple of scene, ground truth, and prediction PIL Image objects.
         """
-        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval")
+        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval", shuffle=True)
         prs_path = get_mask_prs_path(self.by_model)
         sc = to_pil_image(get_sc(SCS_PATH / (image_UIDs[idx] + ".jpg"), resize_size))
         gt = to_pil_image(apply_colormap([get_gt(GTS_PATH / (image_UIDs[idx] + ".png"), self.class_map, resize_size)], self.color_map).squeeze(0))
@@ -1163,7 +1163,7 @@ class PromptBuilder():
             Dictionary of class-splitted inference prompts.
         """
         # TODO: if the masks only have BACKGROUND class, there might be an error when trying to build the prompt.
-        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval")
+        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval", shuffle=True)
         significant_classes_gt = get_significant_classes(GTS_PATH / (image_UIDs[query_idx] + ".png"), self.image_size, self.class_map)
         significant_classes_pr = get_significant_classes(get_mask_prs_path(self.by_model) / (f"mask_pr_{query_idx}.png"), self.image_size, self.class_map)
         significant_classes = sorted(list(set(significant_classes_gt + significant_classes_pr))) # all appearing classes
@@ -1285,7 +1285,7 @@ class FastPromptBuilder:
         # This method works only if the sup sets have disjointed classes. Ideally, each support example would have its own color map.
         color_map = {pos_c: (255, 255, 255) for pos_c in img_idx_to_class_.values()}
 
-        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval")
+        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval", shuffle=True)
 
         sup_set_uids = image_UIDs[sup_set_img_idxs]
         gts_paths = [GTS_PATH / (UID + ".png") for UID in sup_set_uids]
@@ -1400,7 +1400,7 @@ class FastPromptBuilder:
             self,
             query_idxs: list[int]
     ) -> list[Prompt]:
-        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval")
+        image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval", shuffle=True)
         query_uids = image_UIDs[query_idxs]
         gts_paths = [GTS_PATH / (UID + ".png") for UID in query_uids]
         prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in query_idxs]

@@ -1,6 +1,7 @@
 from config import *
 from data import SegDataset, get_image_UIDs, CLASS_MAP_VOID, crop_augment_preprocess_batch, NUM_CLASSES_VOID, SPLITS_PATH
-from utils import get_compute_capability, title
+from utils import get_compute_capability
+from viz import format_to_title
 from models.seg_models import evaluate, set_trainable_params
 from logger import log_segnet_scores, logger, tb_writer
 
@@ -71,7 +72,7 @@ def train_loop(
 
         log_segnet_scores(f"epoch: {epoch+1}/{CONFIG['seg']['num_epochs']}, VALIDATION", val_loss, val_metrics_score, epoch+1, "val", None,"val_")
     
-    logger.info(title("Training Finished"))
+    logger.info(format_to_title("Training Finished"))
     
     # final train. logs to file
     train_loss, train_metrics_score = evaluate(model, train_dl, criterion, metrics_dict)
@@ -80,8 +81,8 @@ def train_loop(
 
 def main() -> None:
 
-    train_ds = SegDataset(get_image_UIDs(SPLITS_PATH, split="train"), CONFIG['seg']['image_size'], CLASS_MAP_VOID)
-    val_ds = SegDataset(get_image_UIDs(SPLITS_PATH, split="val"), CONFIG['seg']['image_size'], CLASS_MAP_VOID)
+    train_ds = SegDataset(get_image_UIDs(SPLITS_PATH, split="train", shuffle=False), CONFIG['seg']['image_size'], CLASS_MAP_VOID)
+    val_ds = SegDataset(get_image_UIDs(SPLITS_PATH, split="val", shuffle=False), CONFIG['seg']['image_size'], CLASS_MAP_VOID)
 
     model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
     # model.load_state_dict(torch.load(MODEL_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
@@ -111,7 +112,10 @@ def main() -> None:
         preprocess_fn=preprocess_fn
     )
     
-    val_collate_fn = partial(crop_augment_preprocess_batch, crop_fn=T.CenterCrop(CONFIG['seg']['image_size']), augment_fn=None, preprocess_fn=preprocess_fn)
+    val_collate_fn = partial(
+        crop_augment_preprocess_batch,
+        crop_fn=T.CenterCrop(CONFIG['seg']['image_size']),
+        augment_fn=None, preprocess_fn=preprocess_fn)
 
     criterion = nn.CrossEntropyLoss(ignore_index=21)
 
@@ -143,14 +147,14 @@ def main() -> None:
     # TODO why if I set zero_division=torch.nan with average="macro" the result is 'nan'?. With average=None it works as expected.
     # TODO the logger creates a exp log folder at each evaluation I think, perhaps, moving outside of the global scope of 'logging.py' will fix it.
 
-    logger.info(title(CONFIG['exp_name'], pad_symbol='='))
+    logger.info(format_to_title(CONFIG['exp_name'], pad_symbol='='))
     logger.info(CONFIG["exp_desc"]) if CONFIG["exp_desc"] is not None else None
-    logger.info(title("Config"))
+    logger.info(format_to_title("Config"))
     logger.info(CONFIG)
-    logger.info(title("Data"))
+    logger.info(format_to_title("Data"))
     logger.info(f"- Training data: {len(train_ds)} samples, in {len(train_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
     logger.info(f"- Validation data: {len(val_ds)} samples, in {len(val_dl)} mini-batches of size {CONFIG['seg']['batch_size']}")
-    logger.info(title("Training Start"))
+    logger.info(format_to_title("Training Start"))
 
     try:
         train_loop(
@@ -161,7 +165,7 @@ def main() -> None:
         metrics_dict
     )
     except KeyboardInterrupt:
-        logger.info(title("Training Interrupted", pad_symbol='-'))
+        logger.info(format_to_title("Training Interrupted", pad_symbol='-'))
 
     tb_writer.close()
     

@@ -1,15 +1,18 @@
 from config import *
 from utils import pretty_metrics
+from viz import format_to_title
 
 from pathlib import Path
 import logging
+from logging import Logger
 import os
 from torch.utils.tensorboard import SummaryWriter
 import torchmetrics as tm
 from typing import Literal, Optional
+from torch.utils.data import Dataset, DataLoader
 
 def get_logger(
-        log_dir: Path,
+        log_dir: Optional[Path],
         exp_name: str
 ) -> logging.Logger:
     fmt = "[%(asctime)s %(levelname)s %(filename)s line %(lineno)d] %(message)s"
@@ -17,6 +20,8 @@ def get_logger(
     logger_name = "main_logger"
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.INFO)
+
+    logger.propagate = False
     
     # log to StdOut
     handler = logging.StreamHandler()
@@ -24,11 +29,12 @@ def get_logger(
     logger.addHandler(handler)
 
     # log to file
-    os.makedirs(log_dir, exist_ok=True) 
-    log_filename = os.path.join(log_dir, exp_name+".log")
-    file_handler = logging.FileHandler(log_filename)
-    file_handler.setFormatter(logging.Formatter(fmt))
-    logger.addHandler(file_handler)
+    if log_dir:
+        os.makedirs(log_dir, exist_ok=True)
+        log_filename = os.path.join(log_dir, exp_name+".log")
+        file_handler = logging.FileHandler(log_filename)
+        file_handler.setFormatter(logging.Formatter(fmt))
+        logger.addHandler(file_handler)
 
     return logger
 
@@ -40,17 +46,37 @@ def get_tb_logger(
     os.makedirs(tb_exp_dir, exist_ok=True)
     return SummaryWriter(log_dir=tb_exp_dir)
 
-logger = get_logger(CONFIG["log_dir"], CONFIG["exp_name"])
-tb_writer = get_tb_logger(CONFIG["tb_dir"], CONFIG["exp_name"])
+# logger = get_logger(CONFIG["log_dir"], CONFIG["exp_name"])
+# tb_writer = get_tb_logger(CONFIG["tb_dir"], CONFIG["exp_name"])
+
+def log_intro(
+        logger: Logger,
+        exp_name: str,
+        exp_desc: Optional[str],
+        config: dict[str, Any],
+        train_ds: Dataset,
+        val_ds: Dataset,
+        train_dl: DataLoader,
+        val_dl: DataLoader
+) -> None:
+    logger.info(format_to_title(exp_name, pad_symbol='='))
+    logger.info(exp_desc) if exp_desc is not None else None
+    logger.info(format_to_title("Config"))
+    logger.info(config)
+    logger.info(format_to_title("Data"))
+    logger.info(f"- Training data: {len(train_ds)} samples, in {len(train_dl)} mini-batches of size {train_dl.batch_size}")
+    logger.info(f"- Validation data: {len(val_ds)} samples, in {len(val_dl)} mini-batches of size {val_dl.batch_size}")
 
 def log_segnet_scores(
-          title: str,
-          loss: float,
-          metrics_score: dict[dict, tm.Metric],
-          tb_log_counter: Optional[int],
-          tb_phase: Optional[Literal["train", "val"]],
-          suffix: Optional[str] = None,
-          metrics_prefix: Optional[str] = None
+        logger: Logger,
+        tb_writer: SummaryWriter,
+        title: str,
+        loss: float,
+        metrics_score: dict[dict, tm.Metric],
+        tb_log_counter: Optional[int],
+        tb_phase: Optional[Literal["train", "val"]],
+        suffix: Optional[str] = None,
+        metrics_prefix: Optional[str] = None
 ) -> None:
     log_str = f"[{title}] {metrics_prefix}loss: {loss:.4f}"
     tb_writer.add_scalar(f"{tb_phase}/loss", loss, tb_log_counter) if tb_log_counter is not None else None
@@ -59,3 +85,9 @@ def log_segnet_scores(
             tb_writer.add_scalar(f"{tb_phase}/{m}", s, tb_log_counter)  if tb_log_counter is not None else None
     log_str += suffix if suffix is not None else ""
     logger.info(log_str)
+
+def log_title(
+        logger: Logger,
+        text: str,
+) -> None:
+    logger.info(format_to_title(text, pad_symbol='-'))

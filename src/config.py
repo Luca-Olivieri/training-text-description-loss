@@ -20,7 +20,9 @@ BASE_PATH = Path("/home/olivieri/exp").resolve() # outer-most project path
 CONFIG_PATH =  BASE_PATH / "config"
 
 CONFIG = load_config(CONFIG_PATH / "config.yml")
-CONFIG["exp_name"] += f'_{datetime.now().strftime("%y%m%d_%H%M")}'
+
+for module in ['segnet', 'vle']:
+    CONFIG[module]['train']["exp_name"] += f'_{datetime.now().strftime("%y%m%d_%H%M")}'
 
 # PyTorch Hub
 TORCH_WEIGHTS_ROOT = Path('/home/olivieri/exp/data/torch_weights')
