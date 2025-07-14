@@ -590,6 +590,20 @@ def blend_tensors(tensor1: torch.Tensor, tensor2: torch.Tensor, alpha: float) ->
     out_tensor = torch.clamp(blended_tensor, 0, 255).to(torch.uint8)
     return out_tensor
 
+def compile_torch_model(model: torch.nn.Module):
+    if get_compute_capability() >= 7.0:
+        model = torch.compile(model)
+    return model
+
+def create_directory(
+        parent_path: Path,
+        folder_name: str
+) -> Path:
+    # Create the directory, including any necessary parents.
+    # The 'exist_ok=True' argument prevents an error if the directory already exists.
+    (parent_path / folder_name).mkdir(parents=False, exist_ok=True)
+    return parent_path / folder_name
+
 def main() -> None:
     ...
 

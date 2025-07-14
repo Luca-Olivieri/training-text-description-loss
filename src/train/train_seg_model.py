@@ -3,7 +3,7 @@ from data import SegDataset, get_image_UIDs, CLASS_MAP_VOID, crop_augment_prepro
 from utils import get_compute_capability
 from viz import format_to_title
 from models.seg_models import evaluate, set_trainable_params
-from logger import log_segnet_scores, logger, tb_writer
+from logger import log_scores, logger, tb_writer
 
 from functools import partial
 from collections import OrderedDict
@@ -24,18 +24,19 @@ def train_loop(
         criterion: Callable,
         metrics_dict: dict[dict, tm.Metric],
 ) -> None:
-    if get_compute_capability() >= 7.0:
-        model = torch.compile(model)
-
+    
     train_metrics = tm.MetricCollection(metrics_dict)
 
     lr = 1e-4
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
 
+    if get_compute_capability() >= 7.0:
+        model = torch.compile(model)
+    
     # initial val. logs log to file and TensorBoard
     val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
-    log_segnet_scores(f"Before any weight update, VALIDATION", val_loss, val_metrics_score, 0, "val", None, "val_")
-
+    log_scores(f"Before any weight update, VALIDATION", val_loss, val_metrics_score, 0, "val", None, "val_")
+    
     for epoch in range(CONFIG["seg"]["num_epochs"]):
 
         train_metrics.reset()
@@ -64,20 +65,20 @@ def train_loop(
 
             # train. logs to file and TensorBoard
             if (step+1) % CONFIG["log_every"] == 0:
-                log_segnet_scores(f"epoch: {epoch+1}/{CONFIG['seg']['num_epochs']}, step: {step+1}/{len(train_dl)}", batch_loss, train_metrics_score, tb_log_counter, "train", f", lr: {lr:.2e}, grad_norm: {grad_norm:.2f}" ,"batch_")
+                log_scores(f"epoch: {epoch+1}/{CONFIG['seg']['num_epochs']}, step: {step+1}/{len(train_dl)}", batch_loss, train_metrics_score, tb_log_counter, "train", f", lr: {lr:.2e}, grad_norm: {grad_norm:.2f}" ,"batch_")
 
             torch.cuda.synchronize() if CONFIG["device"] == "cuda" else None
 
         val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
 
-        log_segnet_scores(f"epoch: {epoch+1}/{CONFIG['seg']['num_epochs']}, VALIDATION", val_loss, val_metrics_score, epoch+1, "val", None,"val_")
+        log_scores(f"epoch: {epoch+1}/{CONFIG['seg']['num_epochs']}, VALIDATION", val_loss, val_metrics_score, epoch+1, "val", None,"val_")
     
     logger.info(format_to_title("Training Finished"))
     
     # final train. logs to file
     train_loss, train_metrics_score = evaluate(model, train_dl, criterion, metrics_dict)
-    log_segnet_scores(f"After {CONFIG['seg']['num_epochs']} epochs of training, TRAINING", train_loss, train_metrics_score, tb_log_counter, "train", None, "train_")
-    log_segnet_scores(f"After {CONFIG['seg']['num_epochs']} epochs of training, VALIDATION", val_loss, val_metrics_score, None, None, None, "val_")
+    log_scores(f"After {CONFIG['seg']['num_epochs']} epochs of training, TRAINING", train_loss, train_metrics_score, tb_log_counter, "train", None, "train_")
+    log_scores(f"After {CONFIG['seg']['num_epochs']} epochs of training, VALIDATION", val_loss, val_metrics_score, None, None, None, "val_")
 
 def main() -> None:
 
@@ -123,14 +124,14 @@ def main() -> None:
         train_ds,
         batch_size=CONFIG["seg"]["batch_size"],
         shuffle=True,
-        generator=TORCH_GEN.clone_state(),
+        generator=get_torch_gen(),
         collate_fn=train_collate_fn,
     )
     val_dl = DataLoader(
         val_ds,
         batch_size=CONFIG["seg"]["batch_size"],
         shuffle=False,
-        generator=TORCH_GEN.clone_state(),
+        generator=get_torch_gen(),
         collate_fn=val_collate_fn,
     )
 
@@ -143,9 +144,6 @@ def main() -> None:
     # TODO check if the pre-processing can in be coded better.
     # TODO integrate callbacks such as save the best model, etc.
     # TODO Excluding the VOID during training worsen the segmentation visual quality since the borders can be fucked up, it it correct to exclude it?.
-    # TODO integrate the full images evaluation in 'seg.ipynb'.
-    # TODO why if I set zero_division=torch.nan with average="macro" the result is 'nan'?. With average=None it works as expected.
-    # TODO the logger creates a exp log folder at each evaluation I think, perhaps, moving outside of the global scope of 'logging.py' will fix it.
 
     logger.info(format_to_title(CONFIG['exp_name'], pad_symbol='='))
     logger.info(CONFIG["exp_desc"]) if CONFIG["exp_desc"] is not None else None

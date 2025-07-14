@@ -2,9 +2,9 @@ from config import *
 from models.vl_models import GenParams, OllamaMLLM
 from prompter import FastPromptBuilder
 from data import CLASS_MAP, append_many_to_jsonl, get_image_UIDs, SegDataset, crop_augment_preprocess_batch, apply_classmap
-from color_map import COLOR_MAP_DICT
+from color_map import COLOR_MAP_DICT, apply_colormap
 from path import SPLITS_PATH, get_mask_prs_path
-from utils import blend_tensors
+from utils import blend_tensors, create_directory
 
 from pathlib import Path
 from torchvision.models import segmentation as segmodels
@@ -23,7 +23,7 @@ import torch
 
 def create_diff_mask(
         mask1: torch.Tensor,
-        mask2: torch.Tensor
+        mask2: torch.Tensor,
 ) -> torch.Tensor:
     """
     Creates a binary difference mask from two integer-based segmentation masks.
@@ -46,20 +46,16 @@ def create_diff_mask(
     # 2. Perform element-wise comparison. This creates a boolean tensor.
     #    'True' where elements are not equal, 'False' where they are equal.
     #    This is the functional equivalent of `torch.ne(mask1, mask2)`.
-    diff = (mask1 != mask2)
+    diff = (mask1 != mask2).to(torch.uint8)
     
-    # 3. Convert the boolean tensor to an 8-bit unsigned integer tensor and scale.
-    #    In PyTorch, casting a boolean to a numeric type converts True -> 1 and False -> 0.
-    #    We then multiply by 255 to get the desired output range.
-    diff_mask = diff.to(torch.uint8) * 255
-    
-    return diff_mask
+    return diff
 
 async def main() -> None:
 
-    exp_path = Path(CONFIG['data_gen']['data_root']) / f"{CONFIG['data_gen']['exp_name']}"
+    exp_path = create_directory(Path(CONFIG['data_gen']['data_root']), CONFIG['data_gen']['exp_name'])
+    images_RB_path = create_directory(exp_path,  "images_RB")
+    images_L_path = create_directory(exp_path,  "images_L")
     captions_path = exp_path / "captions.jsonl"
-    images_path = exp_path / "images"
 
     model_name = "gemma3:12b-it-qat"
 
@@ -100,13 +96,12 @@ async def main() -> None:
 
     train_image_UIDs_ = get_image_UIDs(SPLITS_PATH, split='train', shuffle=False, uids_to_exclude=['2007_000256'])
     val_image_UIDs_ = get_image_UIDs(SPLITS_PATH, split='val', shuffle=False, uids_to_exclude=['2007_000256'])
-    len(train_image_UIDs_), len(val_image_UIDs_)
 
-    image_uids = val_image_UIDs_
+    image_uids = train_image_UIDs_
 
     offset = CONFIG['data_gen']['offset']
 
-    ds = SegDataset(image_uids[offset:], CONFIG['seg']['image_size'], CLASS_MAP)
+    ds = SegDataset(image_uids[offset:], CONFIG['segnet']['image_size'], CLASS_MAP)
     print(len(ds))
 
     segnet = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
@@ -114,34 +109,27 @@ async def main() -> None:
     segnet.requires_grad_(False)
     segnet.eval()
 
-    preprocess_fn = partial(SemanticSegmentation, resize_size=CONFIG['seg']['image_size'])() # same as original one, but with custom resizing
-
-    center_crop_fn = T.CenterCrop(CONFIG['seg']['image_size'])
-    random_crop_fn = T.RandomCrop(CONFIG['seg']['image_size'])
-
-    # augmentations
-    augment_fn = None
+    preprocess_fn = partial(SemanticSegmentation, resize_size=CONFIG['segnet']['image_size'])() # same as original one, but with custom resizing
 
     collate_fn = partial(
         crop_augment_preprocess_batch,
-        crop_fn=center_crop_fn,
+        crop_fn=T.CenterCrop(CONFIG['segnet']['image_size']),
         augment_fn=None,
-        preprocess_fn=None)
+        preprocess_fn=None
+    )
 
     dl = DataLoader(
-            ds,
-            batch_size=CONFIG["data_gen"]["batch_size"],
-            shuffle=False,
-            generator=TORCH_GEN.clone_state(),
-            collate_fn=collate_fn,
-        )
+        ds,
+        batch_size=CONFIG["data_gen"]["batch_size"],
+        shuffle=False,
+        generator=get_torch_gen(),
+        collate_fn=collate_fn,
+    )
 
     # Generation
 
     with torch.inference_mode():
         for step, (scs_img, gts) in enumerate(dl):
-
-            if augment_fn: scs_img, gts = augment_fn(scs_img, tv_tensors.Mask(gts))
 
             if preprocess_fn: scs = preprocess_fn(scs_img)
 
@@ -151,18 +139,19 @@ async def main() -> None:
             logits = segnet(scs)
             logits: torch.Tensor = logits["out"] if isinstance(logits, OrderedDict) else logits # shape [N, C, H, W]
             prs = logits.argmax(dim=1, keepdim=True)
+            
             scs_img = (scs_img*255).to(torch.uint8)
 
             gts = gts.unsqueeze(1)
 
             # Both VLM and VLE receive the images in the same size.
-            gts = TF.resize(gts, fast_prompt_builder.image_size, TF.InterpolationMode.NEAREST)
-            prs = TF.resize(prs, fast_prompt_builder.image_size, TF.InterpolationMode.NEAREST)
-            scs_img = TF.resize(scs_img, fast_prompt_builder.image_size, TF.InterpolationMode.BILINEAR)
+            gts_down = TF.resize(gts, fast_prompt_builder.image_size, TF.InterpolationMode.NEAREST)
+            prs_down = TF.resize(prs, fast_prompt_builder.image_size, TF.InterpolationMode.NEAREST)
+            scs_down = TF.resize(scs_img, fast_prompt_builder.image_size, TF.InterpolationMode.BILINEAR)
             
-            cs_prompts = fast_prompt_builder.build_cs_inference_prompts(gts, prs, scs_img)
+            cs_prompts = fast_prompt_builder.build_cs_inference_prompts(gts_down, prs_down, scs_down)
 
-            batch_idxs = [offset + dl.batch_size*step + i for i in range(len(scs_img))]
+            batch_idxs = [offset + dl.batch_size*step + i for i in range(len(scs_down))]
             batch_image_uids = image_uids[batch_idxs]
 
             cs_answer_list = await vlm.predict_many_class_splitted(
@@ -190,9 +179,16 @@ async def main() -> None:
 
                     diff_mask = create_diff_mask(pos_class_gt, pos_class_pr)
 
-                    ovr_diff_mask = blend_tensors(sc_img, diff_mask, CONFIG['data_gen']['alpha'])
+                    # L overlay image
+                    ovr_diff_mask_L = blend_tensors(sc_img, diff_mask*255, CONFIG['data_gen']['alpha'])
+                    torchvision.utils.save_image(ovr_diff_mask_L/255., images_L_path / f"{img_uid}-{pos_c}.png", normalize=True)
+
+                    # RB overlay image
+                    diff_mask += (diff_mask*pos_class_gt) # sets to 2 the false negatives
+                    diff_mask_col_RB = apply_colormap([diff_mask], {0: (0, 0, 0), 1: (255, 0, 0), 2: (0, 0, 255)})
+                    ovr_diff_mask_RB = blend_tensors(sc_img, diff_mask_col_RB, CONFIG['data_gen']['alpha'])
                     
-                    torchvision.utils.save_image(ovr_diff_mask/255., images_path / f"{img_uid}-{pos_c}.png", normalize=True)
+                    torchvision.utils.save_image(ovr_diff_mask_RB/255., images_RB_path / f"{img_uid}-{pos_c}.png", normalize=True)
 
 
 if __name__ == '__main__':

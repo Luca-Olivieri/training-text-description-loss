@@ -1,7 +1,7 @@
 from config import *
 from color_map import pil_to_class_array, get_color_map_as, apply_colormap
 from utils import blend_tensors, flatten_list
-from data import read_txt, get_sc, get_gt, get_pr, get_image_UIDs, get_one_answer_gt, get_one_sup_set_answer_gt, CLASSES, get_significant_classes, read_json
+from data import read_txt, get_sc, get_gt, get_pr, get_image_UIDs, get_one_answer_gt, get_one_sup_set_answer_gt, CLASSES, get_significant_classes_, read_json
 from path import get_prompts_path, get_mask_prs_path, SCS_PATH, GTS_PATH, get_data_gen_prompts_path, LOCAL_ANNOT_IMGS_PATH, MISC_PATH, SPLITS_PATH
 
 from PIL import Image, ImageFont, ImageDraw, ImageOps
@@ -1164,8 +1164,8 @@ class PromptBuilder():
         """
         # TODO: if the masks only have BACKGROUND class, there might be an error when trying to build the prompt.
         image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval", shuffle=True)
-        significant_classes_gt = get_significant_classes(GTS_PATH / (image_UIDs[query_idx] + ".png"), self.image_size, self.class_map)
-        significant_classes_pr = get_significant_classes(get_mask_prs_path(self.by_model) / (f"mask_pr_{query_idx}.png"), self.image_size, self.class_map)
+        significant_classes_gt = get_significant_classes_(GTS_PATH / (image_UIDs[query_idx] + ".png"), self.image_size, self.class_map)
+        significant_classes_pr = get_significant_classes_(get_mask_prs_path(self.by_model) / (f"mask_pr_{query_idx}.png"), self.image_size, self.class_map)
         significant_classes = sorted(list(set(significant_classes_gt + significant_classes_pr))) # all appearing classes
         class_splitted_prompts = {}
         for pos_class in significant_classes:

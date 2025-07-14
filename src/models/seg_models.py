@@ -1,12 +1,11 @@
-from collections import OrderedDict
+from config import *
 
 import torch
 import torchmetrics as tm
 from torch import nn
 from torch.utils.data import DataLoader
 from torchmetrics.metric import Metric
-
-from config import *
+from collections import OrderedDict
 
 def set_trainable_params(
         model: nn.Module,

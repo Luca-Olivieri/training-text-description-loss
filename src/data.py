@@ -14,7 +14,6 @@ import pandas as pd
 
 import math
 import torch
-from torch import Tensor
 from torchvision.io import decode_image
 import torchvision.transforms.v2 as T
 import torchvision.transforms.functional as TF
@@ -67,7 +66,7 @@ class SegDataset(Dataset):
     def __getitem__(
             self,
             idx: int
-    ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor]:
+    ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
         if isinstance(idx, slice):
             indices = range(*idx.indices(len(self)))
             scs = [get_sc(path=self.scs_paths[i], resize_size=self.resize_size, center_crop=False) for i in indices]
@@ -244,7 +243,7 @@ class ImageDataset(Dataset):
     def __getitem__(
             self,
             idx: int
-    ) -> tuple[Tensor, Tensor] | tuple[Tensor, Tensor]:
+    ) -> list[torch.Tensor] | torch.Tensor:
         if isinstance(idx, slice):
             indices = range(*idx.indices(len(self)))
             imgs = [get_mask(path=self.image_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=False) for i in indices]
@@ -264,12 +263,7 @@ class ImageCaptionDataset(Dataset):
         self.jsonl_dataset = jsonl_dataset
 
         if len(self.img_dataset) != len(self.jsonl_dataset):
-            import warnings
-            warnings.warn(
-                "The segmentation and JSONL datasets have different lengths."
-                f"ImageDataset: {len(self.mask_data)}, JSONLDataset: {len(self.jsonl_dataset)}."
-                "The combined dataset will be truncated to the length of the shorter one."
-            )
+            raise AttributeError(f"The segmentation and JSONL datasets have different lengths.\nImageDataset: {len(self.mask_data)}, JSONLDataset: {len(self.jsonl_dataset)}.")
 
     def __len__(self) -> int:
         return min(len(self.img_dataset), len(self.jsonl_dataset))
@@ -1092,7 +1086,7 @@ def ent_k(
     return entropy
 
 def embd_diversity(
-        embds: list[Tensor],
+        embds: list[torch.Tensor],
 ) -> float:
     """
     Computes the average cosine similarity between the tensors in a fast way.
@@ -1123,7 +1117,7 @@ def embd_diversity(
     return sum_of_unique_pairwise_similarities / num_unique_pairs
 
 def vendi_score(
-    embds: list[Tensor],
+    embds: list[torch.Tensor],
 ) -> float:
     """
     Computes the VendiScore for a list of PyTorch tensors (embeddings).
@@ -1246,7 +1240,7 @@ def crop_augment_preprocess_batch(
         crop_fn: Callable,
         augment_fn: Callable,
         preprocess_fn: Callable
-) -> tuple[Tensor, Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     # Has to be made into a 'collate_fn' by fixing the parameters other than 'batch'!
     x, y = zip(*batch)
 
@@ -1272,7 +1266,7 @@ def crop_image_preprocess_image_text_batch(
         crop_fn: Callable,
         preprocess_images_fn: Optional[Callable],
         preprocess_texts_fn: Optional[Callable]
-) -> tuple[Tensor, Tensor, Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor]:
     imgs, texts = zip(*batch)
 
     # when the images are sampled in the batch, they are:

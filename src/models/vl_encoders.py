@@ -3,19 +3,22 @@ from utils import Registry
 
 import torch
 from torch import nn
-import torchvision.transforms as T
+import torchvision.transforms.v2 as T
 import torchvision.transforms.functional as TF
 import torch.nn.functional as F
+from torch.utils.data import DataLoader
 from torchvision.transforms.functional import to_pil_image
 from abc import abstractmethod, ABC
 import math
 from PIL import Image
 from dataclasses import dataclass
+from collections import OrderedDict
 
 # FLAIR
 from vendors.flair.src import flair
 from open_clip.tokenizer import HFTokenizer, SimpleTokenizer
 from vendors.flair.src.flair.loss import FlairLoss
+from vendors.flair.src.flair.train import backward, unwrap_model
 
 # FG-CLIP
 from transformers import AutoImageProcessor, AutoTokenizer, AutoModelForCausalLM
@@ -191,6 +194,44 @@ class VLEncoder(ABC):
     
     def create_loss(self, *args, **kwargs) -> nn.Module:
         raise NotImplementedError
+
+    def evaluate(
+            self,
+            dl: DataLoader,
+            criterion: nn.modules.loss._Loss,
+    ) -> torch.Tensor:
+        running_loss = 0.0
+        running_supcount = 0
+
+        self.model.eval()
+
+        with torch.no_grad():
+            for step, (images, texts) in enumerate(dl):
+
+                vle_output = self.encode_and_project(images, texts, broadcast=False)
+
+                batch_losses = criterion(
+                        image_features=vle_output.global_image_token,
+                        image_tokens=vle_output.local_image_tokens.clone(),
+                        text_features=vle_output.global_text_token.squeeze(1),
+                        logit_scale=self.model.logit_scale,
+                        visual_proj=self.model.visual_proj,
+                        logit_bias=self.model.logit_bias,
+                        output_dict=True
+                )
+                total_batch_loss = sum(batch_losses.values()) # in our case, we only have losses has only the 'constrastive loss' key.
+
+                with torch.no_grad():
+                    self.model.logit_scale.clamp_(0, math.log(100))
+
+                running_loss += total_batch_loss.item() * images.size(0)
+                running_supcount += images.size(0)
+
+                torch.cuda.synchronize() if CONFIG["device"] == "cuda" else None
+        
+        loss = running_loss / running_supcount
+        
+        return loss
     
     @abstractmethod
     def count_tokens(self, *args, **kwargs) -> None:

@@ -5,7 +5,7 @@ segnet:
   image_size: 520
   train:
     exp_name: "TEST"
-    exp_desc: "" # can be None
+    exp_desc: "" #  Optional
     train_decoder_only: False
     batch_size: 16
     num_epochs: 45
@@ -17,7 +17,7 @@ vle:
   image_size: 224
   train:
     exp_name: "TEST"
-    exp_desc: "This is just a test" # can be None
+    exp_desc: "This is just a test" # Optional
     batch_size: 16
     num_epochs: 32
     log_dir_path: "/home/olivieri/exp/logs/vle"
@@ -32,7 +32,7 @@ vlm:
 
 data_gen:
   data_root: "/home/olivieri/exp/data/data_gen/VOC2012"
-  exp_name: "val_no_aug"
-  batch_size: 16
+  exp_name: "train_no_aug_fp_fn"
+  batch_size: 2
   offset: 0 # img-text idx from which to start the generation
   alpha: 0.55 # the greater, the less scene is visible

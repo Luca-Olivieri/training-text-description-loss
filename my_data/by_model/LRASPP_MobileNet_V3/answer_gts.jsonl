@@ -11,7 +11,7 @@
 {"img_idx": 10, "content": "The prediction mask for the ground truth PERSON region is imperfect, some area has been missed on the bottom-left while some area has been hallucinated on the top edge. Of all the ground truth BOTTLE instances (two on the left half and two on the right half of the scene) have been completely missed by the prediction.\n"}
 {"img_idx": 11, "content": "The prediction mask for the ground truth SHEEP region is incomplete in the top-right corner and in the top-left corner. Moreover, The boundaries are imperfect towards the center-bottom and there is some slight over-extension on the center-bottom-right.\n"}
 {"img_idx": 12, "content": "The prediction hallucinated several TVMONITOR patches on the right half of the scene.\n"}
-{"img_idx": 13, "content": "The ground truth BOAT region on the left has a more blob-like and over-extended shape but its mast has mostly been missed.\n"}
+{"img_idx": 13, "content": "The ground truth BOAT region on the left has a more blob-like and over-extended shape and its mast has mostly been missed.\n"}
 {"img_idx": 14, "content": "The prediction mask for the ground truth AEROPLANE region has some slightly coarser boundaries.\n"}
 {"img_idx": 15, "content": "The ground truth DININGTABLE has been segmented with some irregular, erratic and over-extended boundaries in the center of the scene, and the prediction mask for the ground truth BOTTLE region is under-segmented a bit.\n"}
 {"img_idx": 16, "content": "The ground truth AEROPLANE region has been segmented with somewhat coarser, less defined boundaries, and these tend to be slightly over-extended, especially on the right.\n"}

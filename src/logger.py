@@ -67,12 +67,12 @@ def log_intro(
     logger.info(f"- Training data: {len(train_ds)} samples, in {len(train_dl)} mini-batches of size {train_dl.batch_size}")
     logger.info(f"- Validation data: {len(val_ds)} samples, in {len(val_dl)} mini-batches of size {val_dl.batch_size}")
 
-def log_segnet_scores(
+def log_scores(
         logger: Logger,
         tb_writer: SummaryWriter,
         title: str,
         loss: float,
-        metrics_score: dict[dict, tm.Metric],
+        metrics_score: Optional[dict[dict, tm.Metric]],
         tb_log_counter: Optional[int],
         tb_phase: Optional[Literal["train", "val"]],
         suffix: Optional[str] = None,
@@ -80,9 +80,11 @@ def log_segnet_scores(
 ) -> None:
     log_str = f"[{title}] {metrics_prefix}loss: {loss:.4f}"
     tb_writer.add_scalar(f"{tb_phase}/loss", loss, tb_log_counter) if tb_log_counter is not None else None
-    for m, s in pretty_metrics(metrics_score).items():
-            log_str += f", {metrics_prefix}{m}: {s}"
-            tb_writer.add_scalar(f"{tb_phase}/{m}", s, tb_log_counter)  if tb_log_counter is not None else None
+
+    if metrics_score:
+        for m, s in pretty_metrics(metrics_score).items():
+                log_str += f", {metrics_prefix}{m}: {s}"
+                tb_writer.add_scalar(f"{tb_phase}/{m}", s, tb_log_counter)  if tb_log_counter is not None else None
     log_str += suffix if suffix is not None else ""
     logger.info(log_str)
 
