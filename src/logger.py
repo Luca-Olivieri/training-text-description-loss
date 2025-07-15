@@ -59,13 +59,14 @@ def log_intro(
         train_dl: DataLoader,
         val_dl: DataLoader
 ) -> None:
-    logger.info(format_to_title(exp_name, pad_symbol='='))
-    logger.info(exp_desc) if exp_desc is not None else None
-    logger.info(format_to_title("Config"))
-    logger.info(config)
-    logger.info(format_to_title("Data"))
-    logger.info(f"- Training data: {len(train_ds)} samples, in {len(train_dl)} mini-batches of size {train_dl.batch_size}")
-    logger.info(f"- Validation data: {len(val_ds)} samples, in {len(val_dl)} mini-batches of size {val_dl.batch_size}")
+    _stacklevel = 2
+    logger.info(format_to_title(exp_name, pad_symbol='='), stacklevel=_stacklevel)
+    logger.info(exp_desc, stacklevel=_stacklevel) if exp_desc is not None else None
+    logger.info(format_to_title("Config"), stacklevel=_stacklevel)
+    logger.info(config, stacklevel=_stacklevel)
+    logger.info(format_to_title("Data"), stacklevel=_stacklevel)
+    logger.info(f"- Training data: {len(train_ds)} samples, in {len(train_dl)} mini-batches of size {train_dl.batch_size}", stacklevel=_stacklevel)
+    logger.info(f"- Validation data: {len(val_ds)} samples, in {len(val_dl)} mini-batches of size {val_dl.batch_size}", stacklevel=_stacklevel)
 
 def log_scores(
         logger: Logger,
@@ -78,18 +79,21 @@ def log_scores(
         suffix: Optional[str] = None,
         metrics_prefix: Optional[str] = None
 ) -> None:
+    _stacklevel = 2
     log_str = f"[{title}] {metrics_prefix}loss: {loss:.4f}"
-    tb_writer.add_scalar(f"{tb_phase}/loss", loss, tb_log_counter) if tb_log_counter is not None else None
+    tb_writer.add_scalar(f"{tb_phase}/loss", loss, tb_log_counter) if tb_log_counter is not None and tb_writer is not None else None
 
     if metrics_score:
         for m, s in pretty_metrics(metrics_score).items():
                 log_str += f", {metrics_prefix}{m}: {s}"
                 tb_writer.add_scalar(f"{tb_phase}/{m}", s, tb_log_counter)  if tb_log_counter is not None else None
     log_str += suffix if suffix is not None else ""
-    logger.info(log_str)
+    logger.info(log_str, stacklevel=_stacklevel)
 
 def log_title(
         logger: Logger,
         text: str,
+        pad_symbol: str = '-'
 ) -> None:
-    logger.info(format_to_title(text, pad_symbol='-'))
+    _stacklevel = 2
+    logger.info(format_to_title(text, pad_symbol=pad_symbol), stacklevel=_stacklevel)

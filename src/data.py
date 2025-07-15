@@ -227,15 +227,15 @@ class ImageDataset(Dataset):
             path: Path,
             resize_size: Optional[int | list[int, int]] = None,
             resize_mode: Optional[str] = None,
-            class_map: Optional[dict] = None,
             img_idxs: Optional[list[int]] = None,
+            center_crop: bool = False
     ) -> None:
         self.image_paths = np.array(sorted(glob(str(path / "*.png"))))
         if img_idxs:
             self.image_paths = self.image_paths[img_idxs]
         self.resize_size = resize_size
-        self.class_map = class_map
-        self.mask_resize_mode = resize_mode
+        self.resize_mode = resize_mode
+        self.center_crop = center_crop
 
     def __len__(self) -> int:
         return len(self.image_paths)
@@ -246,10 +246,10 @@ class ImageDataset(Dataset):
     ) -> list[torch.Tensor] | torch.Tensor:
         if isinstance(idx, slice):
             indices = range(*idx.indices(len(self)))
-            imgs = [get_mask(path=self.image_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=False) for i in indices]
+            imgs = [get_sc(path=self.image_paths[i], resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
             return imgs
         else:
-            img = get_mask(path=self.image_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=False)
+            img = get_sc(path=self.image_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
             return img
 
 class ImageCaptionDataset(Dataset):
@@ -258,12 +258,16 @@ class ImageCaptionDataset(Dataset):
     It retrieves items from both datasets for a given index, supporting both
     integer indexing and slicing.
     """
-    def __init__(self, img_dataset: ImageDataset, jsonl_dataset: JSONLDataset):
+    def __init__(
+            self,
+            img_dataset: ImageDataset,
+            jsonl_dataset: JSONLDataset
+    ) -> None:
         self.img_dataset = img_dataset
         self.jsonl_dataset = jsonl_dataset
 
         if len(self.img_dataset) != len(self.jsonl_dataset):
-            raise AttributeError(f"The segmentation and JSONL datasets have different lengths.\nImageDataset: {len(self.mask_data)}, JSONLDataset: {len(self.jsonl_dataset)}.")
+            raise AttributeError(f"The segmentation and JSONL datasets have different lengths.\nImageDataset: {len(self.img_dataset)}, JSONLDataset: {len(self.jsonl_dataset)}.")
 
     def __len__(self) -> int:
         return min(len(self.img_dataset), len(self.jsonl_dataset))
@@ -378,6 +382,7 @@ def one_hot_encode_masks(
 def get_sc(
         path: Path,
         resize_size: None | int | tuple[int, int] = None,
+        resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
         center_crop: bool = True
 ) -> torch.Tensor:
     """
@@ -393,7 +398,7 @@ def get_sc(
     """
     sc = get_image(path)
     if resize_size is not None:
-        sc = TF.resize(sc, resize_size, TF.InterpolationMode.BILINEAR)
+        sc = TF.resize(sc, resize_size, resize_mode)
     if center_crop:
         sc = TF.center_crop(sc, output_size=min(sc.shape[1:]))
     return sc
@@ -488,7 +493,7 @@ def get_pr(
     """
     return get_mask(path, class_map, resize_size, center_crop)
 
-def get_significant_classes(
+def get_significant_classes_(
         path: str,
         image_size: int | tuple[int, int],
         class_map: dict

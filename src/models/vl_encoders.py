@@ -1,4 +1,4 @@
-from config import CONFIG
+from config import *
 from utils import Registry
 
 import torch
@@ -214,7 +214,7 @@ class VLEncoder(ABC):
                         image_features=vle_output.global_image_token,
                         image_tokens=vle_output.local_image_tokens.clone(),
                         text_features=vle_output.global_text_token.squeeze(1),
-                        logit_scale=self.model.logit_scale,
+                        logit_scale=self.model.logit_scale.exp(),
                         visual_proj=self.model.visual_proj,
                         logit_bias=self.model.logit_bias,
                         output_dict=True
@@ -253,17 +253,36 @@ class FLAIRAdapter(VLEncoder):
                                 'flair-yfcc15m-recap.pt',
                                 'flair-merged30m.pt'] = 'flair-cc3m-recap.pt',
             device: str = 'cuda',
+            vision_adapter: bool = False
     ) -> None:
         self.device = device
+
+        # Model
         pretrained = flair.download_weights_from_hf(model_repo='xiaorui638/flair', filename=checkpoint)
         model, _, preprocess_fn = flair.create_model_and_transforms('ViT-B-16-FLAIR', pretrained=pretrained, device=self.device)
-        model.requires_grad_(False)
-        model.eval()
+        if vision_adapter:
+            # NOTE the authors do not use a bias nor an activation function, I won't use them either
+            vision_adapter = nn.Linear(512, 512, bias=False, device=self.device)
+            model.add_module('vision_adapter', vision_adapter)
         self.model: FLAIR = model
-        self.preprocess_fn: T.Compose = preprocess_fn
-        self.tokenizer: SimpleTokenizer = flair.get_tokenizer('ViT-B-16-FLAIR')
+        self.init_weights()
+        self.model.requires_grad_(False)
+        self.model.eval()
 
+        # Preprocess
+        self.preprocess_fn: T.Compose = preprocess_fn
+
+        # Tokenizer
+        self.tokenizer: SimpleTokenizer = flair.get_tokenizer('ViT-B-16-FLAIR')
         self.context_length = self.tokenizer.context_length
+
+    def init_weights(self) -> None:
+        if hasattr(self.model, 'vision_adapter'):
+            # Use Xavier Uniform initialisation for the weight matrix
+            nn.init.xavier_uniform_(self.model.vision_adapter.weight)
+            # Initialise the bias to zeros
+            if self.model.vision_adapter.bias is not None:
+                nn.init.zeros_(self.model.vision_adapter.bias)
 
     @torch.inference_mode()
     def preprocess_images(
@@ -285,21 +304,6 @@ class FLAIRAdapter(VLEncoder):
         texts_tensor = self.tokenizer(texts).to(device) # [B, context_length]
         return texts_tensor
     
-    # TODO encode_image should be wrapped in order to account for adapters.
-
-    def encode_image_with_adapter(
-            self,
-            image,
-            normalize: bool = False
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        self.adapter = nn.Linear(512, 512, device=self.device)
-        global_image_token, local_image_tokens = self.model.encode_image(image, normalize=normalize) # # [B_i, d_i], [B_i, n_i, d_i]
-
-        adapted_global_token = self.adapter(global_image_token)
-        adapted_local_tokens = self.adapter(local_image_tokens)
-
-        return adapted_global_token, local_image_tokens
-    
     def encode_and_project(
             self,
             images: torch.Tensor,
@@ -316,6 +320,10 @@ class FLAIRAdapter(VLEncoder):
         local_image_tokens: torch.Tensor = self.model.image_post(local_image_tokens)    # [B_i, n_i, D]
         global_text_token: torch.Tensor = self.model.text_post(global_text_token)       # [B_t, D]
         local_text_tokens: torch.Tensor = self.model.text_post(local_text_tokens)       # [B_t, n_t, D]
+        
+        if hasattr(self.model, 'vision_adapter'):
+            global_image_token = self.model.vision_adapter(global_image_token) # [B_i, D]
+            local_image_tokens = self.model.vision_adapter(local_image_tokens) # [B_i, n_i, D]
 
         image_batch_size = local_image_tokens.shape[0] # B_i, n_i
 
@@ -368,22 +376,24 @@ class FLAIRAdapter(VLEncoder):
     
     def set_vision_trainable_params(
             self,
-            trainable_module: Optional[Literal['adapter',
-                                               'proj',
-                                               'visual_proj'
-                                               'proj+visual_proj']]
+            trainable_modules: list[Literal['vision_adapter',
+                                            'proj',
+                                            'visual_proj']],
     ) -> None:
+        # LUT: module name -> module
+        train_modules_lut = {
+            'vision_adapter': self.model.vision_adapter,
+            'proj': self.model.image_post,
+            'visual_proj': self.model.visual_proj
+        }
+
+        # first, gradients are disabled for all modules.
         self.model.requires_grad_(False)
-        match trainable_module:
-            case 'proj':
-                self.model.image_post.requires_grad_(True)
-            case 'visual_proj':
-                self.model.visual_proj.requires_grad_(True)
-            case 'proj+visual_proj':
-                self.model.image_post.requires_grad_(True)
-                self.model.visual_proj.requires_grad_(True)
-            case None:
-                ...
+
+        # access the right modules with the LUT
+        train_params: list[nn.Module] = [train_modules_lut[m].requires_grad_(True) for m in trainable_modules]
+        # enable the gradiens in the accessed modules
+        [p.requires_grad_(True) for p in train_params]
     
     def create_loss(
             self,

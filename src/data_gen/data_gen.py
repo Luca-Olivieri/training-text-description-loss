@@ -165,14 +165,19 @@ async def main() -> None:
                 use_tqdm=False
             )
 
-            for img_uid, cs_ans, sc_img, gt, pr in zip(batch_image_uids, cs_answer_list, scs_img, gts, prs):
-                sign_classes = fast_prompt_builder.extract_significant_classes(gt, pr)
+            for img_idx, img_uid, cs_ans, sc_img, gt, pr in zip(batch_idxs, batch_image_uids, cs_answer_list, scs_img, gts, prs):
+                # VLEs and VLMs are fed usually fed downsampled images, therefore they might not see some classes which appear in the saved images.
+                # The classes that do not appear in the downsampled classes are skipped (the corresponding splits are not generated).
+                sign_classes = fast_prompt_builder.extract_significant_classes(
+                    TF.resize(gt, fast_prompt_builder.image_size, TF.InterpolationMode.NEAREST),
+                    TF.resize(pr, fast_prompt_builder.image_size, TF.InterpolationMode.NEAREST)
+                )
 
                 sign_classes = sorted(sign_classes, key=lambda pos_c: str(pos_c))
                 
                 for pos_c in sign_classes:
 
-                    append_many_to_jsonl(captions_path, [{"img_uid": img_uid, "pos_class": pos_c, "content": cs_ans["content"][pos_c]}])
+                    append_many_to_jsonl(captions_path, [{'img_idx': img_idx, "img_uid": img_uid, "pos_class": pos_c, "content": cs_ans["content"][pos_c]}])
 
                     pos_class_gt = (gt == pos_c)
                     pos_class_pr = (pr == pos_c)
@@ -181,15 +186,14 @@ async def main() -> None:
 
                     # L overlay image
                     ovr_diff_mask_L = blend_tensors(sc_img, diff_mask*255, CONFIG['data_gen']['alpha'])
-                    torchvision.utils.save_image(ovr_diff_mask_L/255., images_L_path / f"{img_uid}-{pos_c}.png", normalize=True)
+                    torchvision.utils.save_image(ovr_diff_mask_L/255., images_L_path / f"{img_idx}-{img_uid}-{pos_c}.png", normalize=True)
 
                     # RB overlay image
                     diff_mask += (diff_mask*pos_class_gt) # sets to 2 the false negatives
                     diff_mask_col_RB = apply_colormap([diff_mask], {0: (0, 0, 0), 1: (255, 0, 0), 2: (0, 0, 255)})
                     ovr_diff_mask_RB = blend_tensors(sc_img, diff_mask_col_RB, CONFIG['data_gen']['alpha'])
+                    torchvision.utils.save_image(ovr_diff_mask_RB/255., images_RB_path / f"{img_idx}-{img_uid}-{pos_c}.png", normalize=True)
                     
-                    torchvision.utils.save_image(ovr_diff_mask_RB/255., images_RB_path / f"{img_uid}-{pos_c}.png", normalize=True)
-
 
 if __name__ == '__main__':
     asyncio.run(main())
