@@ -23,6 +23,7 @@ logs/
 
 # Data folder
 data
+shared_data
 
 # GitHub Vendors
 src/vendors/*
