@@ -1,3 +1,0 @@
-## Instructions
-
-Your task is to find where and how the prediction deviates from the ground truth. Assume the ground truth to be correct. If there are no significant deviations, simply say it.

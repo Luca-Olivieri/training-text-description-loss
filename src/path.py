@@ -9,7 +9,7 @@ PRIVATE_DATASETS_PATH = BASE_PATH / "data"
 MISC_PATH = BASE_PATH / "misc"
 
 VOC_PATH = PRIVATE_DATASETS_PATH / "VOCdevkit/VOC2012"
-MY_DATA_PATH = BASE_PATH / "my_data"
+PROMPTS_DATA_PATH = PRIVATE_DATASETS_PATH / "prompts_data"
 SPLITS_PATH = VOC_PATH / "ImageSets/Segmentation"
 
 SCS_PATH = VOC_PATH / "JPEGImages"
@@ -29,7 +29,7 @@ def get_selected_model_path(
     Returns:
         The path to the selected model directory.
     """
-    return MY_DATA_PATH / "by_model" / by_model
+    return PROMPTS_DATA_PATH / "by_model" / by_model
 
 def get_selected_model_split_path(
         by_model: str,
@@ -90,14 +90,14 @@ def get_prompts_path(split_by: str) -> Path:
     Returns:
         The path to the prompts directory.
     """
-    prompts_path = MY_DATA_PATH / "prompts" / split_by
+    prompts_path = PROMPTS_DATA_PATH / "prompts" / split_by
     return prompts_path
 
 def get_data_gen_prompts_path() -> Path:
     """
     Returns the path to the synthetic data generation prompts directory.
     """
-    prompts_path = MY_DATA_PATH / "prompts"
+    prompts_path = PROMPTS_DATA_PATH / "prompts"
     return prompts_path
 
 def get_mask_prs_path(by_model: str) -> Path:

@@ -1,1 +1,0 @@
-I will give you the ground truth and the prediction in form of images overlaid with the scene as well as arrays of shape (H, W), in which each coordinate corresponds to the class identifier of the class assigned to that coordinate. The first array-image pair encodes the ground truth, the second one encodes the prediction.

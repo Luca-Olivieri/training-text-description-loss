@@ -1,1 +1,0 @@
-I will give you two images: the first image is the ground truth, the second image is the prediction.

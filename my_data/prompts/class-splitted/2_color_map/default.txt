@@ -1,1 +1,0 @@
-In both masks, a color-class mapping is applied: the white color is mapped to the {pos_class} class, while the black color refers to unlabelled classes.

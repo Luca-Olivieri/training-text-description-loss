@@ -1,1 +1,0 @@
-In the masks, the classes are mapped to a specific color as defined by a color map, which is shared by both masks. What follows is a mapping between class names, class identifiers and colors.

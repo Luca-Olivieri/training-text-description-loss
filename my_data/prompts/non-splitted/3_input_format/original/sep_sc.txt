@@ -1,2 +1,0 @@
-I will give you three images: the first image is the scene image, the second image is ground truth mask, the third image is the prediction mask.
-Use the scene on the left to support your analysis.

@@ -1,6 +1,7 @@
 from config import *
 from path import get_answer_gts_path, SCS_PATH, GTS_PATH, get_sup_set_answer_gts_path, get_answer_prs_path, SPLITS_PATH, get_eval_gts_path, get_eval_prs_path
-from utils import map_tensor, extract_uppercase_words, flatten_list
+from utils import map_tensor, extract_uppercase_words, flatten_list, is_list_of_tensors
+from color_map import full_color_map, RGB_tuple
 
 import json
 import random
@@ -11,6 +12,7 @@ from collections import Counter
 import numpy as np
 import xarray as xr
 import pandas as pd
+import matplotlib.pyplot as plt
 
 import math
 import torch
@@ -23,59 +25,216 @@ from PIL import Image
 import base64
 import nltk
 from pathlib import Path
+import re
 
 from typing import Literal, Callable, Optional
+from typing_extensions import deprecated
 
-CLASSES = ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR"]
-CLASSES_VOID = CLASSES + ["UNLABELLED"]
+def extract_final_number(path_string: str) -> int:
+        stem = Path(path_string).stem
+        numbers_found = re.findall(r'\d+', stem)
+        return int(numbers_found[-1])
 
-# define the class mappings
-CLASS_MAP: dict[int, int] = {i: i for i in range(len(CLASSES))} | {255: 0} # default mapping
-CLASS_MAP_VOID: dict[int, int] = CLASS_MAP | {255: 21}
 
-NUM_CLASSES = len(set(CLASS_MAP.values())) # actual number of classes
-NUM_CLASSES_VOID = len(set(CLASS_MAP_VOID.values())) # actual number of classes
-
-class MyDataset(Dataset):
-    vlm_image_size: int | tuple[int, int] = None
-    seg_image_size: int | tuple[int, int] = None
-
-    def get_image_uids(self) -> list[int]:
-        ...
-
-class SegDataset(Dataset):
+class VOC2012SegDataset(Dataset):
     """
     TODO
     """
+    splits = ['train', 'val', 'trainval']
+    
+    def get_image_UIDs(
+            self,
+            split: Literal['trainval',
+                           'train'
+                           'val'] = "trainval",
+            my_shuffle: bool = False,
+            uids_to_exclude: list[str] = []
+    ) -> np.ndarray[int]:
+        """
+        Lists the UIDs of the images stored into a certain path and by split.
+
+        Args:
+            path: root directory of the images.
+            split: split type ('train' or 'class-splitted').
+        
+        Returns:
+            List of image UIDs.
+
+        Returns a list of image UIDs read in the "splits.txt" file for a specified split.
+        """
+        image_UIDs = []
+        with open(self.root_path / 'VOC2012' / 'ImageSets' / 'Segmentation' / f"{split}.txt", "r") as f:
+            for line in f:
+                image_id = line.strip()  # Remove any leading/trailing whitespace
+                if image_id not in uids_to_exclude:
+                    image_UIDs.append(image_id)
+        image_UIDs = sorted(image_UIDs)
+        if my_shuffle:
+            match split:
+                case "trainval":
+                    to_shuffle = image_UIDs[23:]
+                    random.shuffle(to_shuffle)
+                    image_UIDs[23:] = to_shuffle
+                case _:
+                    random.shuffle(image_UIDs)
+        return np.array(image_UIDs)
+    
     def __init__(
             self,
-            uids: list[int],
-            resize_size: int | list[int, int],
-            class_map: dict,
-            mask_resize_mode: str = "nearest",
+            root_path: Path,
+            split: Literal['train', 'val', 'trainval'],
+            resize_size: Optional[int | list[int, int]] = None,
+            sc_resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
+            mask_resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+            img_idxs: Optional[list[int] | slice] = None, # if None, all samples are considered
+            uids_to_exclude: list[str] = [],
+            center_crop: bool = False,
+            with_unlabelled: bool = True, # only effective for the masks class mapping
+            my_shuffle: bool = False,
+            mask_prs_path: Path = None
     ) -> None:
-        self.scs_paths = sorted([SCS_PATH / (UID + ".jpg") for UID in uids])
-        self.gts_paths = sorted([GTS_PATH / (UID + ".png") for UID in uids])
+        self.root_path = root_path
+        self.mask_prs_path = mask_prs_path
+        self.split = split
+        self.my_shuffle = my_shuffle
+        self.img_idxs = img_idxs
+
+        self.image_UIDs = self.get_image_UIDs(self.split, self.my_shuffle, uids_to_exclude=uids_to_exclude)
+
+        if self.img_idxs:
+            self.image_UIDs = self.image_UIDs[self.img_idxs]
+
+        self.scs_paths = np.array([root_path / 'VOC2012' / 'JPEGImages' / f"{uid}.jpg" for uid in self.image_UIDs])
+        self.gts_paths = np.array([root_path / 'VOC2012' / 'SegmentationClass' / f"{uid}.png" for uid in self.image_UIDs])
+
+        if mask_prs_path:
+            self.prs_paths = np.array([mask_prs_path / f'mask_pr_{i}.png' for i in range(0, 80)])
+        
+        if len(self.scs_paths) != len(self.gts_paths):
+            raise AttributeError(f"There is a different number of samples of scenes ({len(self.scs_paths)}) and ground truths ({len(self.gts_paths)}).")
+        
+        self.with_unlabelled = with_unlabelled
+        self.class_map = self.get_class_map(with_unlabelled)
+        
         self.resize_size = resize_size
-        self.class_map = class_map
+        self.sc_resize_mode = sc_resize_mode
         self.mask_resize_mode = mask_resize_mode
+        self.center_crop = center_crop
+
+    @classmethod
+    def get_classes(
+            self,
+            with_unlabelled: bool = False
+    ) -> list[str]:
+        # 21 classes
+        classes = ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR"] # 21 classes
+
+        if with_unlabelled:
+            classes += ["UNLABELLED"] # 22 classes
+
+        return classes
+    
+    @classmethod
+    def get_class_map(
+            self,
+            with_unlabelled: bool = False
+    ) -> dict[int, int]:
+        class_map = {i: i for i in range(len(self.get_classes(with_unlabelled=False)))} | {255: 0} # default mapping
+
+        if with_unlabelled:
+            class_map = class_map | {255: 21} # 'UNLABELLED' class (idx. 255) is mapped to idx. 21 for continuity.
+
+        return class_map
+
+    def set_class_map(
+            self,
+            with_unlabelled: bool
+    ) -> dict:
+        self.class_map = self.get_class_map(with_unlabelled)
+
+    @classmethod
+    def get_num_classes(
+            self,
+            with_unlabelled: bool = False
+    ) -> int:
+        num_classes = len(set(self.get_class_map(with_unlabelled=with_unlabelled).values())) # actual number of classes
+        return num_classes
+    
+    # TODO set this private
 
     def __len__(self) -> int:
         return len(self.gts_paths)
+
+    @classmethod
+    def get_sc(
+        self,
+        path: Path,
+        resize_size: None | int | tuple[int, int] = None,
+        resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
+        center_crop: bool = True
+    ) -> torch.Tensor:
+        return get_image(path, resize_size, resize_mode, center_crop)
+    
+    @classmethod
+    def get_gt(
+        self,
+        path: str,
+        class_map: Optional[dict] = None,
+        resize_size: Optional[int | tuple[int, int]] = None,
+        resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+        center_crop: Optional[bool] = None
+    ) -> torch.Tensor:
+        return get_mask(path, class_map, resize_size, resize_mode, center_crop)
+
+    @classmethod
+    def get_pr(
+        self,
+        path: str,
+        class_map: Optional[dict] = None,
+        resize_size: Optional[int | tuple[int, int]] = None,
+        resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+        center_crop: Optional[bool] = None
+    ) -> torch.Tensor:
+        return get_mask(path, class_map, resize_size, resize_mode, center_crop)
 
     def __getitem__(
             self,
             idx: int
     ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
-        if isinstance(idx, slice):
+        if isinstance(idx, int):
+            sc = self.get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
+            gt = self.get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
+            if self.mask_prs_path:
+                pr = self.get_pr(path=self.prs_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
+                return sc, gt, pr
+            else:
+                return sc, gt
+        elif isinstance(idx, slice):
             indices = range(*idx.indices(len(self)))
-            scs = [get_sc(path=self.scs_paths[i], resize_size=self.resize_size, center_crop=False) for i in indices]
-            gts = [get_gt(path=self.gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=False) for i in indices]
-            return scs, gts
+        elif isinstance(idx, list) or isinstance(idx, tuple):
+            indices = idx
+        scs = [self.get_sc(path=self.scs_paths[i], resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+        gts = [self.get_gt(path=self.gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+        if self.mask_prs_path:
+            prs = [self.get_pr(path=self.prs_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+            return scs, gts, prs
         else:
-            sc = get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=False)
-            gt = get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=False)
-            return sc, gt
+            return scs, gts
+    
+    @classmethod
+    def get_color_map_dict(
+            self,
+            with_void: bool = False
+    ) -> dict[int, RGB_tuple]:
+        """Gets the color map as dictionary {cls_idx: (r, g, b)} for the 21 VOC classes.
+
+        Returns:
+            Dictionary mapping class index to RGB tuple.
+        """
+        color_map_list = full_color_map()[:21].tolist()
+        if with_void:
+            color_map_list += [full_color_map()[255].tolist()]
+        return {i: tuple(rgb) for i, rgb in enumerate(color_map_list)}
 
 
 class JSONLDataset(Dataset):
@@ -246,10 +405,10 @@ class ImageDataset(Dataset):
     ) -> list[torch.Tensor] | torch.Tensor:
         if isinstance(idx, slice):
             indices = range(*idx.indices(len(self)))
-            imgs = [get_sc(path=self.image_paths[i], resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+            imgs = [get_image(path=self.image_paths[i], resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
             return imgs
         else:
-            img = get_sc(path=self.image_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
+            img = get_image(path=self.image_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
             return img
 
 class ImageCaptionDataset(Dataset):
@@ -290,60 +449,29 @@ class ImageCaptionDataset(Dataset):
             # jsonl_data is a dict
             return (img_data, jsonl_data)
 
-
-def get_image_UIDs(
-        path: Path,
-        split: Literal[
-            'trainval',
-            'train'
-            'val'
-            ] = "trainval",
-        shuffle: bool = False,
-        uids_to_exclude: list[str] = []
-) -> np.ndarray[int]:
-    """
-    Lists the UIDs of the images stored into a certain path and by split.
-
-    Args:
-        path: root directory of the images.
-        split: split type ('train' or 'class-splitted').
-    
-    Returns:
-        List of image UIDs.
-
-    Returns a list of image UIDs read in the "splits.txt" file for a specified split.
-    """
-    image_UIDs = []
-    with open(path / f"{split}.txt", "r") as f:
-        for line in f:
-            image_id = line.strip()  # Remove any leading/trailing whitespace
-            if image_id not in uids_to_exclude:
-                image_UIDs.append(image_id)
-    image_UIDs = sorted(image_UIDs)
-    if shuffle:
-        match split:
-            case "trainval":
-                to_shuffle = image_UIDs[23:]
-                random.shuffle(to_shuffle)
-                image_UIDs[23:] = to_shuffle
-            case _:
-                random.shuffle(image_UIDs)
-    return np.array(sorted(image_UIDs))
-
 def get_image(
-        path: str,
+        path: Path,
+        resize_size: None | int | tuple[int, int] = None,
+        resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
+        center_crop: bool = True
 ) -> torch.Tensor:
     """
     Reads a single image from disk and encodes it in a tensor.
+    Optionally resizes and center-crops an image
 
     Args:
         path: Path to the image file.
+        image_size: Target size as int, tuple, or None.
+        center_crop: Whether to center crop the image.
 
     Returns:
         Image as a torch.Tensor on the global device.
     """
-    img = decode_image(path)
-    img = img.to(CONFIG["device"])
+    img = decode_image(path).to(CONFIG["device"])
+    if resize_size is not None:
+        img = TF.resize(img, resize_size, resize_mode)
+    if center_crop:
+        img = TF.center_crop(img, output_size=min(img.shape[-2:]))
     return img
 
 def image_to_base64(
@@ -363,46 +491,6 @@ def image_to_base64(
     img_bytes = buffered.getvalue()
     return base64.b64encode(img_bytes).decode("utf-8")
 
-def one_hot_encode_masks(
-        masks: torch.Tensor
-) -> torch.Tensor:
-    """
-    One-hot encodes a tensor of masks.
-
-    Args:
-        masks: Tensor of masks to encode.
-
-    Returns:
-        One-hot encoded tensor of masks.
-    """
-    one_hot_masks = masks == torch.arange(NUM_CLASSES).to(CONFIG["device"])[:, None, None, None]
-    one_hot_masks = one_hot_masks.swapaxes(0, 1)
-    return one_hot_masks
-
-def get_sc(
-        path: Path,
-        resize_size: None | int | tuple[int, int] = None,
-        resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
-        center_crop: bool = True
-) -> torch.Tensor:
-    """
-    Loads and optionally resizes and center-crops an image.
-
-    Args:
-        path: Path to the image file.
-        image_size: Target size as int, tuple, or None.
-        center_crop: Whether to center crop the image.
-
-    Returns:
-        Processed image tensor.
-    """
-    sc = get_image(path)
-    if resize_size is not None:
-        sc = TF.resize(sc, resize_size, resize_mode)
-    if center_crop:
-        sc = TF.center_crop(sc, output_size=min(sc.shape[1:]))
-    return sc
-
 def apply_classmap(
         mask: torch.Tensor,
         class_map: dict
@@ -417,8 +505,6 @@ def apply_classmap(
     Returns:
         Mask tensor with mapped classes.
     """
-    # mask_ = mask.cpu()
-    # mask_.apply_(lambda x: class_map[x]) # class mapping # TODO this is too slow
     mask = map_tensor(mask, class_map)
     return mask
 
@@ -426,6 +512,7 @@ def get_mask(
         path: str,
         class_map: Optional[dict] = None,
         resize_size: Optional[int | tuple[int, int]] = None,
+        resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
         center_crop: Optional[bool] = None
 ) -> torch.Tensor:
     """
@@ -446,53 +533,12 @@ def get_mask(
     if class_map:
         mask = apply_classmap(mask, class_map)
     if resize_size:
-        mask = TF.resize(mask, resize_size, T.InterpolationMode.NEAREST)
+        mask = TF.resize(mask, resize_size, interpolation=resize_mode)
     if center_crop:
         mask = TF.center_crop(mask, output_size=min(mask.shape[1:]))
     return mask
 
-def get_gt(
-        path: Path,
-        class_map: dict,
-        resize_size: None | tuple[int, int] | int = None,
-        center_crop: bool = True
-) -> torch.Tensor:
-    """
-    Loads and processes a ground truth mask.
-
-    Args:
-        path: Path to the mask file.
-        class_map: Dictionary mapping class indices.
-        image_size: Target size as int, tuple, or None.
-        resize_mode: Interpolation mode.
-        center_crop: Whether to center crop the mask.
-
-    Returns:
-        Processed ground truth mask tensor.
-    """
-    return get_mask(path, class_map, resize_size, center_crop)
-
-def get_pr(
-        path: str,
-        class_map: dict,
-        resize_size: int | tuple[int, int] | None = None,
-        center_crop: bool = True
-) -> torch.Tensor:
-    """
-    Loads and processes a predicted mask.
-
-    Args:
-        path: Path to the mask file.
-        class_map: Dictionary mapping class indices.
-        resize_size: Target size as int, tuple, or None.
-        resize_mode: Interpolation mode.
-        center_crop: Whether to center crop the mask.
-
-    Returns:
-        Processed predicted mask tensor.
-    """
-    return get_mask(path, class_map, resize_size, center_crop)
-
+@deprecated("The best one is in 'Prompter.py'")
 def get_significant_classes_(
         path: str,
         image_size: int | tuple[int, int],
@@ -937,6 +983,7 @@ def expand_words_to_variants(
 
 def validate_pertinence(
         sentences: list[str],
+        classes: list[str],
         significant_classes: list[int]
 ) -> None:
     """
@@ -945,9 +992,9 @@ def validate_pertinence(
     """
     for s, pos_class in zip(sentences, significant_classes):
         reason_upper_words = extract_uppercase_words(s)
-        pos_class_name = CLASSES[pos_class]
+        pos_class_name = classes[pos_class]
         allowed_class_names = ["BACKGROUND", pos_class_name]
-        forbidden_class_names = flatten_list([expand_words_to_variants(cn) for cn in CLASSES if cn not in allowed_class_names])
+        forbidden_class_names = flatten_list([expand_words_to_variants(cn) for cn in classes if cn not in allowed_class_names])
         assert all(word != fw for word in reason_upper_words for fw in forbidden_class_names), f"Forbidden words found in answer of pos. class '{pos_class_name}'"
         assert [s in reason_upper_words for s in allowed_class_names] , f"Allowed words '{allowed_class_names}' not found in answer '{pos_class_name}'"
 
@@ -1003,7 +1050,8 @@ def compute_results_da(
     return data_da
 
 def compute_results_da_class_splitted(
-        exp_path: Path
+        exp_path: Path,
+        num_classes: int
 ) -> xr.DataArray:
     data_da = None
 
@@ -1015,7 +1063,7 @@ def compute_results_da_class_splitted(
         eval_prs = get_many_eval_pr(var_p, return_state=False, format_to_dict=True)
         prs_per_img_idx_df = pd.DataFrame.from_dict(eval_prs, orient='index')
         
-        for column in [str(n) for n in range(0, NUM_CLASSES)]:
+        for column in [str(n) for n in range(0, num_classes)]:
             if column not in prs_per_img_idx_df.columns:
                 prs_per_img_idx_df[column] = pd.NA
         prs_per_img_idx_df.columns = [int(s) for s in prs_per_img_idx_df.columns]

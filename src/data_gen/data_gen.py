@@ -1,9 +1,9 @@
 from config import *
 from models.vl_models import GenParams, OllamaMLLM
 from prompter import FastPromptBuilder
-from data import CLASS_MAP, append_many_to_jsonl, get_image_UIDs, SegDataset, crop_augment_preprocess_batch, apply_classmap
-from color_map import COLOR_MAP_DICT, apply_colormap
-from path import SPLITS_PATH, get_mask_prs_path
+from data import append_many_to_jsonl, VOC2012SegDataset, crop_augment_preprocess_batch
+from color_map import apply_colormap
+from path import get_mask_prs_path
 from utils import blend_tensors, create_directory
 
 from pathlib import Path
@@ -78,14 +78,30 @@ async def main() -> None:
             "support_set_item": "default",
             "query": "default",
     }
+    
+    offset = CONFIG['data_gen']['offset']
+
+    ds = VOC2012SegDataset(
+        root_path=Path('/home/olivieri/exp/data/VOCdevkit'),
+        split='train',
+        resize_size=CONFIG['segnet']['image_size'],
+        uids_to_exclude=['2007_000256'],
+        img_idxs=slice(offset, None, None),
+        center_crop=True,
+        with_unlabelled=False,
+        my_shuffle=False,
+        mask_prs_path=get_mask_prs_path(by_model=by_model)
+    )
+    print(len(ds))
 
     fast_prompt_builder = FastPromptBuilder(
+        seg_dataset=ds,
         seed=CONFIG["seed"],
         prompt_blueprint=prompt_blueprint,
         by_model=by_model,
         alpha=0.6,
-        class_map=CLASS_MAP,
-        color_map=COLOR_MAP_DICT,
+        class_map=ds.get_class_map(with_unlabelled=False),
+        color_map=ds.get_color_map_dict(with_void=False),
         image_size=CONFIG['vlm']['image_size'],
         sup_set_img_idxs=[16],
         str_formats=None,
@@ -93,16 +109,6 @@ async def main() -> None:
     )
 
     append_many_to_jsonl(captions_path, [{"state": fast_prompt_builder.get_state()} | {"vlm": f"{vlm.__class__.__name__}:{vlm.model}"}])
-
-    train_image_UIDs_ = get_image_UIDs(SPLITS_PATH, split='train', shuffle=False, uids_to_exclude=['2007_000256'])
-    val_image_UIDs_ = get_image_UIDs(SPLITS_PATH, split='val', shuffle=False, uids_to_exclude=['2007_000256'])
-
-    image_uids = train_image_UIDs_
-
-    offset = CONFIG['data_gen']['offset']
-
-    ds = SegDataset(image_uids[offset:], CONFIG['segnet']['image_size'], CLASS_MAP)
-    print(len(ds))
 
     segnet = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
     segnet.load_state_dict(torch.load(TORCH_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-full-pt" + ".pth")))
@@ -152,7 +158,7 @@ async def main() -> None:
             cs_prompts = fast_prompt_builder.build_cs_inference_prompts(gts_down, prs_down, scs_down)
 
             batch_idxs = [offset + dl.batch_size*step + i for i in range(len(scs_down))]
-            batch_image_uids = image_uids[batch_idxs]
+            batch_image_uids = ds.image_UIDs[batch_idxs]
 
             cs_answer_list = await vlm.predict_many_class_splitted(
                 cs_prompts,
@@ -186,13 +192,13 @@ async def main() -> None:
 
                     # L overlay image
                     ovr_diff_mask_L = blend_tensors(sc_img, diff_mask*255, CONFIG['data_gen']['alpha'])
-                    torchvision.utils.save_image(ovr_diff_mask_L/255., images_L_path / f"{img_idx}-{img_uid}-{pos_c}.png", normalize=True)
+                    torchvision.utils.save_image(ovr_diff_mask_L/255., images_L_path / f"{img_uid}-{pos_c}.png", normalize=True)
 
                     # RB overlay image
                     diff_mask += (diff_mask*pos_class_gt) # sets to 2 the false negatives
                     diff_mask_col_RB = apply_colormap([diff_mask], {0: (0, 0, 0), 1: (255, 0, 0), 2: (0, 0, 255)})
                     ovr_diff_mask_RB = blend_tensors(sc_img, diff_mask_col_RB, CONFIG['data_gen']['alpha'])
-                    torchvision.utils.save_image(ovr_diff_mask_RB/255., images_RB_path / f"{img_idx}-{img_uid}-{pos_c}.png", normalize=True)
+                    torchvision.utils.save_image(ovr_diff_mask_RB/255., images_RB_path / f"{img_uid}-{pos_c}.png", normalize=True)
                     
 
 if __name__ == '__main__':
