@@ -40,6 +40,9 @@ class SegDataset(Dataset, ABC):
     def __init__(self) -> None:
         raise NotImplementedError
     
+    def __len__(self) -> int:
+        return len(self.image_UIDs)
+    
     def get_sc(
         self,
         path: Path,
@@ -193,13 +196,9 @@ class VOC2012SegDataset(SegDataset):
         num_classes = len(set(self.get_class_map(with_unlabelled=with_unlabelled).values())) # actual number of classes
         return num_classes
 
-    def __len__(self) -> int:
-        return len(self.gts_paths)
-
-
     def __getitem__(
             self,
-            idx: int
+            idx: int | list[int] | slice
     ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
         if isinstance(idx, int):
             sc = self.get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
@@ -211,7 +210,7 @@ class VOC2012SegDataset(SegDataset):
                 return sc, gt
         elif isinstance(idx, slice):
             indices = range(*idx.indices(len(self)))
-        elif isinstance(idx, list) or isinstance(idx, tuple):
+        elif isinstance(idx, list):
             indices = idx
         scs = [self.get_sc(path=self.scs_paths[i], resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
         gts = [self.get_gt(path=self.gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
@@ -223,7 +222,7 @@ class VOC2012SegDataset(SegDataset):
     
     def get_color_map_dict(
             self,
-            with_void: bool = False
+            with_unlabelled: bool = False
     ) -> dict[int, RGB_tuple]:
         """Gets the color map as dictionary {cls_idx: (r, g, b)} for the 21 VOC classes.
 
@@ -231,7 +230,7 @@ class VOC2012SegDataset(SegDataset):
             Dictionary mapping class index to RGB tuple.
         """
         color_map_list = full_color_map()[:21].tolist()
-        if with_void:
+        if with_unlabelled:
             color_map_list += [full_color_map()[255].tolist()]
         return {i: tuple(rgb) for i, rgb in enumerate(color_map_list)}
 
@@ -248,26 +247,42 @@ class COCO2017SegDataset(SegDataset):
         sc_resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
         mask_resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
         img_idxs: Optional[list[int] | slice] = None, # if None, all samples are considered
-        uids_to_exclude: list[str] = [],
+        uids_to_exclude: list[int] = [],
         center_crop: bool = False,
+        with_unlabelled: bool = True, # as far, ineffective
+        mask_prs_path: Path = None # as far, ineffective
     ) -> None:
-        
+                
         self.root_path = root_path
-        self.scs_path = self.root_path / f"{self.split}2017"
-        self.coco = COCO(self.root_path / 'annotations' / f'instances_{split}2017.json')
+        self.split = split
 
+        self.coco = COCO(self.root_path / 'annotations' / f'instances_{self.split}2017.json')
+        
         self.image_UIDs = self.get_image_UIDs()
+        self.cat_ids = self.coco.getCatIds()
+        self.cats = self.coco.loadCats(self.cat_ids)
+        
+        self.img_idxs = img_idxs
         if img_idxs:
             self.image_UIDs = self.image_UIDs[self.img_idxs]
 
-        if uids_to_exclude != []:
-            ...
-
-
+        self.uids_to_exclude = uids_to_exclude
+        if self.uids_to_exclude != []:
+            mask_exclude = np.isin(self.image_UIDs, uids_to_exclude)
+            self.image_UIDs = self.image_UIDs[~mask_exclude]
     
+        self.scs_root_path = self.root_path / f"{self.split}2017"
+
+        self.resize_size = resize_size
+        self.sc_resize_mode = sc_resize_mode
+        self.mask_resize_mode = mask_resize_mode
+        self.center_crop = center_crop
+
+        self.class_map = self.get_class_map(with_unlabelled)
+
     def get_image_UIDs(
             self,
-    ) -> np.ndarray[str]:
+    ) -> np.ndarray[int]:
         img_ids = self.coco.getImgIds()
         return np.array(img_ids)
 
@@ -275,8 +290,8 @@ class COCO2017SegDataset(SegDataset):
             self,
             with_unlabelled: bool = False
     ) -> list[str]:
-        # 80 classes
-        classes = ['BACKGROUND'] + [s.upper() for s in self.coco.loadCats(self.coco.getCatIds())]
+        # 81 classes
+        classes = ['BACKGROUND'] + [d['name'].upper() for d in self.cats]
 
         return classes
     
@@ -284,7 +299,10 @@ class COCO2017SegDataset(SegDataset):
             self,
             with_unlabelled: bool = False
     ) -> dict[int, int]:
-        class_map = {i: i for i in range(len(self.get_classes(with_unlabelled=False)))} # default mapping
+        # class_map = {i: i for i in range(len(self.get_classes(with_unlabelled=False)))} # default mapping
+        # class_map = {c_ids: i for i, c_ids in enumerate(self.cat_ids)} # default mapping
+
+        class_map = {0: 0} | {c_d['id']: i+1 for i, c_d in enumerate(self.cats)}
 
         return class_map
     
@@ -308,14 +326,108 @@ class COCO2017SegDataset(SegDataset):
         if with_unlabelled:
             color_map_list += [full_color_map()[255].tolist()]
         return {i: tuple(rgb) for i, rgb in enumerate(color_map_list)}
+
+    def _create_COCO_masks(
+            self,
+            sc_dict: dict
+    ) -> torch.Tensor:
+        mask = np.zeros((sc_dict['height'], sc_dict['width']), dtype=np.uint8)
+        ann_ids = self.coco.getAnnIds(imgIds=sc_dict['id'], catIds=self.cat_ids, iscrowd=None)
+        anns = self.coco.loadAnns(ann_ids)
+        for ann in anns:
+            category_id = ann['category_id']
+            # coco.annToMask() creates a binary mask for a single annotation
+            instance_mask = self.coco.annToMask(ann)
+            # Add the instance mask to the main mask, using the category_id as the pixel value
+            mask[instance_mask == 1] = category_id
+        gt = torch.tensor(mask, device=CONFIG['device']).unsqueeze(0)
+
+        return gt
+    
+    def _create_COCO_masks_CUDA(
+            self,
+            sc_dict: dict
+    ) -> torch.Tensor:
+        """
+        Generates a semantic segmentation mask from COCO annotations.
+
+        This method is optimized by:
+        1. Performing the iterative mask creation on the CPU using NumPy, which is
+        very fast for these operations.
+        2. Transferring the final, complete mask to the GPU in a single operation.
+        3. Using a non-blocking transfer to allow the CPU to continue working while
+        the data is being copied by the GPU's DMA engine.
+        
+        This approach is generally faster than creating the mask directly on the GPU
+        due to the high overhead of many small CPU->GPU transfers.
+        """
+        # device = torch.device()
+        h, w = sc_dict['height'], sc_dict['width']
+
+        # 1. Get all annotations for the given image and categories
+        ann_ids = self.coco.getAnnIds(imgIds=sc_dict['id'], catIds=self.cat_ids, iscrowd=None)
+        if not ann_ids:
+            # Return an empty mask if there are no annotations
+            return torch.zeros((1, h, w), dtype=torch.uint8, device=CONFIG['device'])
+            
+        anns = self.coco.loadAnns(ann_ids)
+
+        # 2. Efficiently create the mask on the CPU using NumPy.
+        # The for-loop and boolean indexing in NumPy are highly optimized C operations.
+        mask = np.zeros((h, w), dtype=np.uint8)
+        for ann in anns:
+            # coco.annToMask() is a CPU operation that returns a NumPy array
+            instance_mask = self.coco.annToMask(ann)
+            
+            # "Paint" the category ID onto the mask.
+            # This overwrites previous annotations in case of overlap, matching
+            # the original logic where the last annotation in the list wins.
+            mask[instance_mask == 1] = ann['category_id']
+
+        # 3. Transfer the completed mask to the GPU in one go.
+        # torch.from_numpy is slightly more efficient than torch.tensor for this.
+        # .to(..., non_blocking=True) is key for performance in data loading pipelines.
+        gt = torch.from_numpy(mask).to(CONFIG['device'], non_blocking=True).unsqueeze(0)
+        
+        # The dtype will be torch.uint8, which is what we want.
+        return gt
+    
+    def get_gt(
+        self,
+        sc_dict: dict,
+        class_map: Optional[dict] = None,
+        resize_size: Optional[int | tuple[int, int]] = None,
+        resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+        center_crop: Optional[bool] = None
+    ) -> torch.Tensor:
+        gt = self._create_COCO_masks_CUDA(sc_dict)
+        if class_map:
+           gt = apply_classmap(gt, class_map) 
+        if resize_size:
+            gt = TF.resize(gt, resize_size, resize_mode)
+        if center_crop:
+            gt = TF.center_crop(gt, output_size=min(gt.shape[-2:]))
+        return gt
     
     def __getitem__(
             self,
-            idx: int
+            idx: int | list[int] | slice
     ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
-            sc = self.get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
-            gt = self.get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
-            return sc, gt
+            if isinstance(idx, int):
+                sc_dict = self.coco.loadImgs([self.image_UIDs[idx]])[0] # the output is a singleton list
+                sc = self.get_sc(self.scs_root_path / sc_dict["file_name"], resize_size=self.resize_size, resize_mode=self.sc_resize_mode, center_crop=self.center_crop)
+                gt = self.get_gt(sc_dict, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop)
+                return sc, gt
+            elif isinstance(idx, slice):
+                indices = range(*idx.indices(len(self)))
+            elif isinstance(idx, list):
+                indices = idx
+            
+            scs_dict = self.coco.loadImgs(self.image_UIDs[indices])
+            scs = [self.get_sc(self.scs_root_path / sc_d["file_name"], resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]            
+            gts = [self.get_gt(sc_d, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]
+
+            return scs, gts
 
 class JSONLDataset(Dataset):
     """
@@ -615,7 +727,7 @@ def get_mask(
     if resize_size:
         mask = TF.resize(mask, resize_size, interpolation=resize_mode)
     if center_crop:
-        mask = TF.center_crop(mask, output_size=min(mask.shape[1:]))
+        mask = TF.center_crop(mask, output_size=min(mask.shape[-2:]))
     return mask
 
 @deprecated("The best one is in 'Prompter.py'")

@@ -29,6 +29,8 @@ TORCH_WEIGHTS_ROOT = Path('/home/olivieri/exp/data/torch_weights')
 TORCH_WEIGHTS_CHECKPOINTS = TORCH_WEIGHTS_ROOT / 'checkpoints'
 torch.hub.set_dir(TORCH_WEIGHTS_ROOT) # set local model weights directory
 
+# TODO set CONFIG['device'] = torch.device(CONFIG['device'])
+
 # HuggingFace Hub
 os.environ["HF_HOME"] = '/home/olivieri/exp/data/huggingface/datasets'
 os.environ["HF_HUB_CACHE"] = '/home/olivieri/exp/data/huggingface/hub'

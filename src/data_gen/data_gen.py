@@ -108,7 +108,7 @@ async def main() -> None:
         by_model=by_model,
         alpha=0.6,
         class_map=seg_dataset.get_class_map(with_unlabelled=False),
-        color_map=seg_dataset.get_color_map_dict(with_void=False),
+        color_map=seg_dataset.get_color_map_dict(with_unlabelled=False),
         image_size=CONFIG['vlm']['image_size'],
         sup_set_img_idxs=[16],
         sup_set_seg_dataset=sup_set_seg_dataset,
