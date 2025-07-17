@@ -1,6 +1,6 @@
 from config import *
-from path import get_answer_gts_path, SCS_PATH, GTS_PATH, get_sup_set_answer_gts_path, get_answer_prs_path, SPLITS_PATH, get_eval_gts_path, get_eval_prs_path
-from utils import map_tensor, extract_uppercase_words, flatten_list, is_list_of_tensors
+from path import get_answer_gts_path, get_sup_set_answer_gts_path, get_answer_prs_path, get_eval_gts_path, get_eval_prs_path
+from utils import map_tensor, extract_uppercase_words, flatten_list
 from color_map import full_color_map, RGB_tuple
 
 import json
@@ -111,7 +111,6 @@ class VOC2012SegDataset(SegDataset):
             to_shuffle = image_UIDs[23:]
             rng = random.Random(CONFIG['seed'])
             rng.shuffle(to_shuffle)
-            # random.shuffle(to_shuffle)
             image_UIDs[23:] = to_shuffle
             image_UIDs = image_UIDs[:80] # NOTE hard-coded
         return np.array(image_UIDs)
@@ -237,20 +236,45 @@ class VOC2012SegDataset(SegDataset):
 
 class COCO2017SegDataset(SegDataset):
 
+    voc_idx_to_coco_idx = {
+        0: 0, # background -> unlabeled
+        1: 5, # aeroplane -> airplane
+        2: 2, # bicycle -> bicycle
+        3: 16, # bird -> bird
+        4: 9, # boat -> boat
+        5: 44, # bottle -> bottle
+        6: 6, # bus -> bus
+        7: 3, # car -> car
+        8: 17, # cat -> cat
+        9: 62, # chair -> chair
+        10: 21, # cow -> cow
+        11: 67, # diningtable -> dining table
+        12: 18, # dog -> dog
+        13: 19, # horse -> horse
+        14: 4, # motorbike -> motorcycle
+        15: 1, # person -> person
+        16: 64, # pottedplant -> potted plant
+        17: 20, # sheep -> sheep
+        18: 63, # sofa -> couch
+        19: 7, # train -> train
+        20: 72 # tvmonitor -> tv
+    }
+    coco_idx_to_voc_idx = {c: v for v, c in voc_idx_to_coco_idx.items()}
+
     def __init__(
         self,
         root_path: Path,
         split: Literal['train',
-                       'val',
-                       'test'],
+                       'val'],
         resize_size: Optional[int | list[int, int]] = None,
         sc_resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
         mask_resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
         img_idxs: Optional[list[int] | slice] = None, # if None, all samples are considered
-        uids_to_exclude: list[int] = [],
+        uids_to_exclude: list[int] = None,
         center_crop: bool = False,
         with_unlabelled: bool = True, # as far, ineffective
-        mask_prs_path: Path = None # as far, ineffective
+        mask_prs_path: Path = None, # as far, ineffective
+        only_VOC_labels: bool = False
     ) -> None:
                 
         self.root_path = root_path
@@ -258,8 +282,15 @@ class COCO2017SegDataset(SegDataset):
 
         self.coco = COCO(self.root_path / 'annotations' / f'instances_{self.split}2017.json')
         
-        self.image_UIDs = self.get_image_UIDs()
-        self.cat_ids = self.coco.getCatIds()
+        self.only_VOC_labels = only_VOC_labels
+        if self.only_VOC_labels: # consider only labels present in VOC and images showing them. No other label is displayed at all.
+            self.cat_ids = list(set(COCO2017SegDataset.voc_idx_to_coco_idx.values())) # only keeps cat_ids also present in VOC2012
+            self.cat_ids.remove(0)
+            self.image_UIDs = self.get_image_UIDs(self.cat_ids) # only retrieves images with labels mapped in VOC2012
+        else:
+            self.cat_ids = self.coco.getCatIds()
+            self.image_UIDs = self.get_image_UIDs()
+        
         self.cats = self.coco.loadCats(self.cat_ids)
         
         self.img_idxs = img_idxs
@@ -267,7 +298,7 @@ class COCO2017SegDataset(SegDataset):
             self.image_UIDs = self.image_UIDs[self.img_idxs]
 
         self.uids_to_exclude = uids_to_exclude
-        if self.uids_to_exclude != []:
+        if self.uids_to_exclude is not None:
             mask_exclude = np.isin(self.image_UIDs, uids_to_exclude)
             self.image_UIDs = self.image_UIDs[~mask_exclude]
     
@@ -282,8 +313,18 @@ class COCO2017SegDataset(SegDataset):
 
     def get_image_UIDs(
             self,
+            only_cat_ids_to_keep: list[int] = None
     ) -> np.ndarray[int]:
-        img_ids = self.coco.getImgIds()
+        img_ids = np.array(self.coco.getImgIds())
+
+        # NOTE: even considering all classes, the images effectively retrieved are less than the total number in all splits
+        # because some images only contain the BACKGROUND (0) class. These images are not retrieve by 'getImgIds'.
+        # This should not be a problem for the image-text generation pipeline because only-background images are discarded anyway.
+        if only_cat_ids_to_keep:
+            img_ids_keep = np.array(list(set().union(*[self.coco.getImgIds(catIds=cat_ids) for cat_ids in only_cat_ids_to_keep])))
+            mask_keep = np.isin(img_ids, img_ids_keep)
+            img_ids = img_ids[mask_keep]
+        
         return np.array(img_ids)
 
     def get_classes(
@@ -299,9 +340,6 @@ class COCO2017SegDataset(SegDataset):
             self,
             with_unlabelled: bool = False
     ) -> dict[int, int]:
-        # class_map = {i: i for i in range(len(self.get_classes(with_unlabelled=False)))} # default mapping
-        # class_map = {c_ids: i for i, c_ids in enumerate(self.cat_ids)} # default mapping
-
         class_map = {0: 0} | {c_d['id']: i+1 for i, c_d in enumerate(self.cats)}
 
         return class_map
@@ -326,25 +364,8 @@ class COCO2017SegDataset(SegDataset):
         if with_unlabelled:
             color_map_list += [full_color_map()[255].tolist()]
         return {i: tuple(rgb) for i, rgb in enumerate(color_map_list)}
-
-    def _create_COCO_masks(
-            self,
-            sc_dict: dict
-    ) -> torch.Tensor:
-        mask = np.zeros((sc_dict['height'], sc_dict['width']), dtype=np.uint8)
-        ann_ids = self.coco.getAnnIds(imgIds=sc_dict['id'], catIds=self.cat_ids, iscrowd=None)
-        anns = self.coco.loadAnns(ann_ids)
-        for ann in anns:
-            category_id = ann['category_id']
-            # coco.annToMask() creates a binary mask for a single annotation
-            instance_mask = self.coco.annToMask(ann)
-            # Add the instance mask to the main mask, using the category_id as the pixel value
-            mask[instance_mask == 1] = category_id
-        gt = torch.tensor(mask, device=CONFIG['device']).unsqueeze(0)
-
-        return gt
     
-    def _create_COCO_masks_CUDA(
+    def _create_COCO_masks(
             self,
             sc_dict: dict
     ) -> torch.Tensor:
@@ -400,7 +421,7 @@ class COCO2017SegDataset(SegDataset):
         resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
         center_crop: Optional[bool] = None
     ) -> torch.Tensor:
-        gt = self._create_COCO_masks_CUDA(sc_dict)
+        gt = self._create_COCO_masks(sc_dict)
         if class_map:
            gt = apply_classmap(gt, class_map) 
         if resize_size:
