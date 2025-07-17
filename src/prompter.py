@@ -879,6 +879,9 @@ class PromptBuilder():
             Tuple of scene, ground truth, and prediction PIL Image objects.
         """
         sc, gt, pr = self.seg_dataset[idx]
+        sc = TF.resize(sc, size=resize_size, interpolation=TF.InterpolationMode.BILINEAR)
+        gt = TF.resize(gt, size=resize_size, interpolation=TF.InterpolationMode.NEAREST)
+        pr = TF.resize(pr, size=resize_size, interpolation=TF.InterpolationMode.NEAREST)
         sc = to_pil_image(sc)
         gt = to_pil_image(apply_colormap([gt], self.color_map).squeeze(0))
         pr = to_pil_image(apply_colormap([pr], self.color_map).squeeze(0))
