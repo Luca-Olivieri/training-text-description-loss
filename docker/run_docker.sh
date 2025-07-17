@@ -116,6 +116,8 @@ docker_args=(
 	--cpuset-cpus ${CPU_SET} \
 	--mount type=bind,source=${CODE_FOLDER},target=${WORKING_DIR} \
 	--mount type=bind,source=${PRIVATE_DATASET_FOLDER},target=${WORKING_DIR}/data \
+	# --mount type=bind,source=${SHARED_DATASET_FOLDER}/coco2017,target=${WORKING_DIR}/shared_data \
+	--mount type=bind,source=${SHARED_DATASET_FOLDER},target=${WORKING_DIR}/shared_data \
 	-m ${MEMORY_LIMIT} \
 	-w ${WORKING_DIR} \
 	-e log=/home/log.txt \

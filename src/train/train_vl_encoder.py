@@ -128,6 +128,7 @@ def main() -> None:
     # Vision-Language Encoder
     vle: VLEncoder = VLE_REGISTRY.get("flair", device=CONFIG['device'], vision_adapter=True)
     vle.set_vision_trainable_params(['proj', 'visual_proj', 'vision_adapter'])
+    # TODO try to set the weights of 'vision_adapter' to 0 and see what happens.
     layer_numel_str = get_layer_numel_str(vle.model, print_only_total=False, only_trainable=True).split('\n')
 
     # DataLoaders

@@ -23,7 +23,10 @@ logs/
 
 # Data folder
 data
+
+# Temp
 shared_data
+pyrightconfig.json
 
 # GitHub Vendors
 src/vendors/*

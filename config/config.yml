@@ -33,8 +33,10 @@ vlm:
 
 data_gen:
   data_root: "/home/olivieri/exp/data/data_gen/VOC2012"
-  exp_name: "train_3"
+  exp_name: "val_new"
   batch_size: 1
   offset: 0 # img-text idx from which to start the generation
   alpha: 0.55 # the greater, the less scene is visible
   print_every: 100
+  temperature: null # null for default values
+  top_p: null

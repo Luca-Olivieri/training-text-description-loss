@@ -1223,9 +1223,9 @@ class FastPromptBuilder:
             class_map: dict[int, int],
             color_map: dict[int, tuple[int, int, int]],
             image_size: int | tuple[int, int],
+            sup_set_seg_dataset: VOC2012SegDataset,
             sup_set_img_idxs: list[int],
             str_formats: dict[str, str],
-            prs_mask_paths: Optional[Path],
     ) -> None:
         """
         Initializea GenParams with optional generation parameters.
@@ -1242,9 +1242,9 @@ class FastPromptBuilder:
         self.class_map = class_map
         self.color_map = color_map
         self.image_size = image_size
-        self.prs_mask_paths = prs_mask_paths
         self.str_formats = str_formats
         self.sup_set_img_idxs = sup_set_img_idxs
+        self.sup_set_seg_dataset = sup_set_seg_dataset
         
         base_head_prompt = self.build_cs_base_prompt(self.sup_set_img_idxs, alpha)
         self.base_prompt = base_head_prompt[:-1]
@@ -1302,12 +1302,16 @@ class FastPromptBuilder:
         # gts_paths = [GTS_PATH / (UID + ".png") for UID in sup_set_uids]
         # prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in sup_set_img_idxs]
         # scs_paths = [SCS_PATH / (UID + ".jpg") for UID in sup_set_uids]
-
-        scs, gts, prs = self.seg_dataset[sup_set_img_idxs]
+        
+        scs, gts, prs = self.sup_set_seg_dataset[sup_set_img_idxs]
 
         scs = torch.stack(scs)
         gts = torch.stack(gts)
         prs = torch.stack(prs)
+
+        scs = TF.resize(scs, self.image_size, TF.InterpolationMode.BILINEAR)
+        gts = TF.resize(gts, self.image_size, TF.InterpolationMode.NEAREST)
+        prs = TF.resize(prs, self.image_size, TF.InterpolationMode.NEAREST)
         
         # gts = torch.stack([get_gt(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in gts_paths])
         # prs = torch.stack([get_pr(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in prs_paths]) # tensors (3, H, W)
@@ -1328,8 +1332,6 @@ class FastPromptBuilder:
         sup_set_answers = [get_one_sup_set_answer_gt(self.by_model, sup_set_img_idx, return_state=False, format_to_dict=False)['content'] for sup_set_img_idx in self.sup_set_img_idxs]
 
         base_prompt = self.build_base_prompt_(sup_set_imgs, sup_set_answers)
-
-        self.seg_dataset.mask_prs_path = None
 
         return base_prompt
 

@@ -65,7 +65,8 @@ async def main() -> None:
 
     gen_params = GenParams(
         seed=CONFIG["seed"],
-        temperature=0.1
+        temperature=CONFIG['data_gen']['temperature'],
+        top_p=CONFIG['data_gen']['top_p']
     )
 
     prompt_blueprint={
@@ -81,31 +82,37 @@ async def main() -> None:
     
     offset = CONFIG['data_gen']['offset']
 
-    ds = VOC2012SegDataset(
-        root_path=Path('/home/olivieri/exp/data/VOCdevkit'),
-        split='train',
+    seg_dataset = VOC2012SegDataset(
+        root_path=Path("/home/olivieri/exp/data/VOCdevkit"),
+        split='val',
         resize_size=CONFIG['segnet']['image_size'],
-        uids_to_exclude=['2007_000256'],
-        img_idxs=slice(offset, None, None),
         center_crop=True,
         with_unlabelled=False,
-        my_shuffle=False,
+        uids_to_exclude=['2007_000256']
+    )
+    print(f"{len(seg_dataset)} unique images.")
+
+    sup_set_seg_dataset = VOC2012SegDataset(
+        root_path=Path("/home/olivieri/exp/data/VOCdevkit"),
+        split='prompts_split',
+        resize_size=CONFIG['segnet']['image_size'],
+        center_crop=True,
+        with_unlabelled=False,
         mask_prs_path=get_mask_prs_path(by_model=by_model)
     )
-    print(len(ds))
 
     fast_prompt_builder = FastPromptBuilder(
-        seg_dataset=ds,
+        seg_dataset=seg_dataset,
         seed=CONFIG["seed"],
         prompt_blueprint=prompt_blueprint,
         by_model=by_model,
         alpha=0.6,
-        class_map=ds.get_class_map(with_unlabelled=False),
-        color_map=ds.get_color_map_dict(with_void=False),
+        class_map=seg_dataset.get_class_map(with_unlabelled=False),
+        color_map=seg_dataset.get_color_map_dict(with_void=False),
         image_size=CONFIG['vlm']['image_size'],
         sup_set_img_idxs=[16],
+        sup_set_seg_dataset=sup_set_seg_dataset,
         str_formats=None,
-        prs_mask_paths=get_mask_prs_path(by_model=by_model)
     )
 
     append_many_to_jsonl(captions_path, [{"state": fast_prompt_builder.get_state()} | {"vlm": f"{vlm.__class__.__name__}:{vlm.model}"}])
@@ -125,7 +132,7 @@ async def main() -> None:
     )
 
     dl = DataLoader(
-        ds,
+        seg_dataset,
         batch_size=CONFIG["data_gen"]["batch_size"],
         shuffle=False,
         generator=get_torch_gen(),
@@ -135,6 +142,10 @@ async def main() -> None:
     # Generation
 
     with torch.inference_mode():
+
+        img_idx_count = 0
+        cs_img_idx_count = 0
+
         for step, (scs_img, gts) in enumerate(dl):
 
             if preprocess_fn: scs = preprocess_fn(scs_img)
@@ -158,7 +169,7 @@ async def main() -> None:
             cs_prompts = fast_prompt_builder.build_cs_inference_prompts(gts_down, prs_down, scs_down)
 
             batch_idxs = [offset + dl.batch_size*step + i for i in range(len(scs_down))]
-            batch_image_uids = ds.image_UIDs[batch_idxs]
+            batch_image_uids = seg_dataset.image_UIDs[batch_idxs]
 
             cs_answer_list = await vlm.predict_many_class_splitted(
                 cs_prompts,
@@ -199,6 +210,13 @@ async def main() -> None:
                     diff_mask_col_RB = apply_colormap([diff_mask], {0: (0, 0, 0), 1: (255, 0, 0), 2: (0, 0, 255)})
                     ovr_diff_mask_RB = blend_tensors(sc_img, diff_mask_col_RB, CONFIG['data_gen']['alpha'])
                     torchvision.utils.save_image(ovr_diff_mask_RB/255., images_RB_path / f"{img_uid}-{pos_c}.png", normalize=True)
+
+                    cs_img_idx_count += 1
+
+                img_idx_count += 1
+
+                if img_idx_count % CONFIG['data_gen']['print_every'] == 0:
+                    print(f"Generated {img_idx_count} unique photos ({cs_img_idx_count} class-splitted photos).")
                     
 
 if __name__ == '__main__':

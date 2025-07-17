@@ -27,29 +27,60 @@ import nltk
 from pathlib import Path
 import re
 
+from pycocotools.coco import COCO
+
 from typing import Literal, Callable, Optional
 from typing_extensions import deprecated
+from abc import ABC
 
-def extract_final_number(path_string: str) -> int:
-        stem = Path(path_string).stem
-        numbers_found = re.findall(r'\d+', stem)
-        return int(numbers_found[-1])
-
-
-class VOC2012SegDataset(Dataset):
+class SegDataset(Dataset, ABC):
     """
     TODO
     """
-    splits = ['train', 'val', 'trainval']
+    def __init__(self) -> None:
+        raise NotImplementedError
     
+    def get_sc(
+        self,
+        path: Path,
+        resize_size: None | int | tuple[int, int] = None,
+        resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
+        center_crop: bool = True
+    ) -> torch.Tensor:
+        return get_image(path, resize_size, resize_mode, center_crop)
+    
+    def get_gt(
+        self,
+        path: str,
+        class_map: Optional[dict] = None,
+        resize_size: Optional[int | tuple[int, int]] = None,
+        resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+        center_crop: Optional[bool] = None
+    ) -> torch.Tensor:
+        return get_mask(path, class_map, resize_size, resize_mode, center_crop)
+
+    def get_pr(
+        self,
+        path: str,
+        class_map: Optional[dict] = None,
+        resize_size: Optional[int | tuple[int, int]] = None,
+        resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+        center_crop: Optional[bool] = None
+    ) -> torch.Tensor:
+        return get_mask(path, class_map, resize_size, resize_mode, center_crop)
+
+class VOC2012SegDataset(SegDataset):
+    """
+    TODO
+    """
     def get_image_UIDs(
             self,
             split: Literal['trainval',
                            'train'
-                           'val'] = "trainval",
-            my_shuffle: bool = False,
+                           'val',
+                           'prompts_split'] = "trainval",
             uids_to_exclude: list[str] = []
-    ) -> np.ndarray[int]:
+    ) -> np.ndarray[str]:
         """
         Lists the UIDs of the images stored into a certain path and by split.
 
@@ -63,26 +94,32 @@ class VOC2012SegDataset(Dataset):
         Returns a list of image UIDs read in the "splits.txt" file for a specified split.
         """
         image_UIDs = []
+        prompt_split = False
+        if split == 'prompts_split':
+            prompt_split = True
+            split = 'trainval'
         with open(self.root_path / 'VOC2012' / 'ImageSets' / 'Segmentation' / f"{split}.txt", "r") as f:
             for line in f:
                 image_id = line.strip()  # Remove any leading/trailing whitespace
                 if image_id not in uids_to_exclude:
                     image_UIDs.append(image_id)
         image_UIDs = sorted(image_UIDs)
-        if my_shuffle:
-            match split:
-                case "trainval":
-                    to_shuffle = image_UIDs[23:]
-                    random.shuffle(to_shuffle)
-                    image_UIDs[23:] = to_shuffle
-                case _:
-                    random.shuffle(image_UIDs)
+        if prompt_split:
+            to_shuffle = image_UIDs[23:]
+            rng = random.Random(CONFIG['seed'])
+            rng.shuffle(to_shuffle)
+            # random.shuffle(to_shuffle)
+            image_UIDs[23:] = to_shuffle
+            image_UIDs = image_UIDs[:80] # NOTE hard-coded
         return np.array(image_UIDs)
     
     def __init__(
             self,
             root_path: Path,
-            split: Literal['train', 'val', 'trainval'],
+            split: Literal['train',
+                           'val',
+                           'trainval',
+                           'prompts_split'],
             resize_size: Optional[int | list[int, int]] = None,
             sc_resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
             mask_resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
@@ -90,16 +127,14 @@ class VOC2012SegDataset(Dataset):
             uids_to_exclude: list[str] = [],
             center_crop: bool = False,
             with_unlabelled: bool = True, # only effective for the masks class mapping
-            my_shuffle: bool = False,
             mask_prs_path: Path = None
     ) -> None:
         self.root_path = root_path
         self.mask_prs_path = mask_prs_path
         self.split = split
-        self.my_shuffle = my_shuffle
         self.img_idxs = img_idxs
 
-        self.image_UIDs = self.get_image_UIDs(self.split, self.my_shuffle, uids_to_exclude=uids_to_exclude)
+        self.image_UIDs = self.get_image_UIDs(self.split, uids_to_exclude=uids_to_exclude)
 
         if self.img_idxs:
             self.image_UIDs = self.image_UIDs[self.img_idxs]
@@ -108,7 +143,7 @@ class VOC2012SegDataset(Dataset):
         self.gts_paths = np.array([root_path / 'VOC2012' / 'SegmentationClass' / f"{uid}.png" for uid in self.image_UIDs])
 
         if mask_prs_path:
-            self.prs_paths = np.array([mask_prs_path / f'mask_pr_{i}.png' for i in range(0, 80)])
+            self.prs_paths = np.array([mask_prs_path / f'mask_pr_{i}.png' for i, uid in enumerate(self.image_UIDs)])
         
         if len(self.scs_paths) != len(self.gts_paths):
             raise AttributeError(f"There is a different number of samples of scenes ({len(self.scs_paths)}) and ground truths ({len(self.gts_paths)}).")
@@ -134,7 +169,6 @@ class VOC2012SegDataset(Dataset):
 
         return classes
     
-    @classmethod
     def get_class_map(
             self,
             with_unlabelled: bool = False
@@ -152,50 +186,16 @@ class VOC2012SegDataset(Dataset):
     ) -> dict:
         self.class_map = self.get_class_map(with_unlabelled)
 
-    @classmethod
     def get_num_classes(
             self,
             with_unlabelled: bool = False
     ) -> int:
         num_classes = len(set(self.get_class_map(with_unlabelled=with_unlabelled).values())) # actual number of classes
         return num_classes
-    
-    # TODO set this private
 
     def __len__(self) -> int:
         return len(self.gts_paths)
 
-    @classmethod
-    def get_sc(
-        self,
-        path: Path,
-        resize_size: None | int | tuple[int, int] = None,
-        resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
-        center_crop: bool = True
-    ) -> torch.Tensor:
-        return get_image(path, resize_size, resize_mode, center_crop)
-    
-    @classmethod
-    def get_gt(
-        self,
-        path: str,
-        class_map: Optional[dict] = None,
-        resize_size: Optional[int | tuple[int, int]] = None,
-        resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
-        center_crop: Optional[bool] = None
-    ) -> torch.Tensor:
-        return get_mask(path, class_map, resize_size, resize_mode, center_crop)
-
-    @classmethod
-    def get_pr(
-        self,
-        path: str,
-        class_map: Optional[dict] = None,
-        resize_size: Optional[int | tuple[int, int]] = None,
-        resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
-        center_crop: Optional[bool] = None
-    ) -> torch.Tensor:
-        return get_mask(path, class_map, resize_size, resize_mode, center_crop)
 
     def __getitem__(
             self,
@@ -221,7 +221,6 @@ class VOC2012SegDataset(Dataset):
         else:
             return scs, gts
     
-    @classmethod
     def get_color_map_dict(
             self,
             with_void: bool = False
@@ -236,6 +235,87 @@ class VOC2012SegDataset(Dataset):
             color_map_list += [full_color_map()[255].tolist()]
         return {i: tuple(rgb) for i, rgb in enumerate(color_map_list)}
 
+
+class COCO2017SegDataset(SegDataset):
+
+    def __init__(
+        self,
+        root_path: Path,
+        split: Literal['train',
+                       'val',
+                       'test'],
+        resize_size: Optional[int | list[int, int]] = None,
+        sc_resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
+        mask_resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+        img_idxs: Optional[list[int] | slice] = None, # if None, all samples are considered
+        uids_to_exclude: list[str] = [],
+        center_crop: bool = False,
+    ) -> None:
+        
+        self.root_path = root_path
+        self.scs_path = self.root_path / f"{self.split}2017"
+        self.coco = COCO(self.root_path / 'annotations' / f'instances_{split}2017.json')
+
+        self.image_UIDs = self.get_image_UIDs()
+        if img_idxs:
+            self.image_UIDs = self.image_UIDs[self.img_idxs]
+
+        if uids_to_exclude != []:
+            ...
+
+
+    
+    def get_image_UIDs(
+            self,
+    ) -> np.ndarray[str]:
+        img_ids = self.coco.getImgIds()
+        return np.array(img_ids)
+
+    def get_classes(
+            self,
+            with_unlabelled: bool = False
+    ) -> list[str]:
+        # 80 classes
+        classes = ['BACKGROUND'] + [s.upper() for s in self.coco.loadCats(self.coco.getCatIds())]
+
+        return classes
+    
+    def get_class_map(
+            self,
+            with_unlabelled: bool = False
+    ) -> dict[int, int]:
+        class_map = {i: i for i in range(len(self.get_classes(with_unlabelled=False)))} # default mapping
+
+        return class_map
+    
+    def get_num_classes(
+            self,
+            with_unlabelled: bool = False
+    ) -> int:
+        num_classes = len(set(self.get_class_map(with_unlabelled=with_unlabelled).values())) # actual number of classes
+        return num_classes
+    
+    def get_color_map_dict(
+            self,
+            with_unlabelled: bool = False
+    ) -> dict[int, RGB_tuple]:
+        """Gets the color map as dictionary {cls_idx: (r, g, b)} for the 21 VOC classes.
+
+        Returns:
+            Dictionary mapping class index to RGB tuple.
+        """
+        color_map_list = full_color_map()[:81].tolist()
+        if with_unlabelled:
+            color_map_list += [full_color_map()[255].tolist()]
+        return {i: tuple(rgb) for i, rgb in enumerate(color_map_list)}
+    
+    def __getitem__(
+            self,
+            idx: int
+    ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
+            sc = self.get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
+            gt = self.get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
+            return sc, gt
 
 class JSONLDataset(Dataset):
     """
