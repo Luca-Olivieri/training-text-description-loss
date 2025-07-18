@@ -1350,7 +1350,7 @@ class FastPromptBuilder:
         # Remove the BACKGROUND class only if it is not the only one.
         # Cropping can leave out all meaningful classes: in this case, the BACKGROUND class is considered positive
         # and both masks are completely white.
-        if sign_classes != [0]:
+        if 0 in sign_classes and sign_classes != [0]:
             sign_classes.remove(0)
 
         return sorted(sign_classes)

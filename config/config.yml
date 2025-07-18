@@ -45,7 +45,7 @@ data_gen:
   data_root: "/home/olivieri/exp/data/data_gen/COCO2017"
   exp_name: "first_val"
   batch_size: 1
-  offset: 0 # img-text idx from which to start the generation
+  offset: 160 # img-text idx from which to start the generation
   alpha: 0.55 # the greater, the less scene is visible
   print_every: 100
   temperature: 0.7 # null for default values

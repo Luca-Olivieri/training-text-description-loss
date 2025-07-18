@@ -85,6 +85,7 @@ async def main() -> None:
     seg_dataset = COCO2017SegDataset(
         root_path=Path(CONFIG['datasets']['COCO2017_root_path']),
         split='val',
+        img_idxs=slice(offset, None, None),
         resize_size=CONFIG['seg']['image_size'],
         center_crop=True,
         only_VOC_labels=True
