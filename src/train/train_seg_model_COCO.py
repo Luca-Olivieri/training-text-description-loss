@@ -1,5 +1,5 @@
 from config import *
-from data import VOC2012SegDataset, crop_augment_preprocess_batch
+from data import COCO2017SegDataset, crop_augment_preprocess_batch
 from models.seg_models import evaluate, set_trainable_params
 from logger import LogManager
 from viz import get_layer_numel_str
@@ -9,6 +9,7 @@ from collections import OrderedDict
 from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.models import segmentation as segmodels
+import torchvision
 import torchvision.transforms.v2 as T
 from torchvision.transforms._presets import SemanticSegmentation
 from torchmetrics.classification import MulticlassAccuracy, MulticlassJaccardIndex
@@ -45,7 +46,6 @@ def train_loop(
 
     log_manager.log_title("Initial Validation")
     
-    # initial val. logs log to file and TensorBoard
     val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
     log_manager.log_scores(f"Before any weight update, VALIDATION", val_loss, val_metrics_score, 0, "val", None, "val_")
 
@@ -75,11 +75,11 @@ def train_loop(
 
             train_metrics_score = train_metrics(logits.argmax(dim=1), gts)
 
-            tb_log_counter = epoch*len(train_dl) + step + 1
+            step_counter = epoch*len(train_dl) + step + 1
 
             # train. logs to file and TensorBoard
             if (step+1) % SEG_TRAIN_CONFIG['log_every'] == 0:
-                log_manager.log_scores(f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, step: {step+1}/{len(train_dl)}", batch_loss, train_metrics_score, tb_log_counter, "train", f", lr: {lr:.2e}, grad_norm: {grad_norm:.2f}" ,"batch_")
+                log_manager.log_scores(f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, step: {step+1}/{len(train_dl)}", batch_loss, train_metrics_score, step_counter, "train", f", lr: {lr:.2e}, grad_norm: {grad_norm:.2f}" ,"batch_")
 
             torch.cuda.synchronize() if CONFIG['device'] == 'cuda' else None
 
@@ -88,35 +88,38 @@ def train_loop(
         log_manager.log_scores(f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, VALIDATION", val_loss, val_metrics_score, epoch+1, "val", None,"val_")
     
     log_manager.log_title("Training Finished")
+
+    log_manager.log_title("Final Evaluation")
     
     # final train. logs to file
     train_loss, train_metrics_score = evaluate(model, train_dl, criterion, metrics_dict)
-    log_manager.log_scores(f"After {SEG_TRAIN_CONFIG['num_epochs']} epochs of training, TRAINING", train_loss, train_metrics_score, tb_log_counter, "train", None, "train_")
+    log_manager.log_scores(f"After {SEG_TRAIN_CONFIG['num_epochs']} epochs of training, TRAINING", train_loss, train_metrics_score, step_counter, "train", None, "train_")
     log_manager.log_scores(f"After {SEG_TRAIN_CONFIG['num_epochs']} epochs of training, VALIDATION", val_loss, val_metrics_score, None, None, None, "val_")
 
 def main() -> None:
 
-    train_ds = VOC2012SegDataset(
-        root_path=Path("/home/olivieri/exp/data/VOCdevkit"),
+    train_ds = COCO2017SegDataset(
+        root_path=Path(CONFIG['datasets']['COCO2017_root_path']),
         split='train',
         resize_size=SEG_CONFIG['image_size'],
         center_crop=True,
-        with_unlabelled=True,
-        uids_to_exclude=['2007_000256']
+        only_VOC_labels=False
     )
-
-    val_ds = VOC2012SegDataset(
-        root_path=Path("/home/olivieri/exp/data/VOCdevkit"),
-        split='train',
+    
+    val_ds = COCO2017SegDataset(
+        root_path=Path(CONFIG['datasets']['COCO2017_root_path']),
+        split='val',
         resize_size=SEG_CONFIG['image_size'],
         center_crop=True,
-        with_unlabelled=True,
-        uids_to_exclude=['2007_000256']
+        only_VOC_labels=False
     )
 
-    model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
-    model.load_state_dict(torch.load(TORCH_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
-    model.eval()
+    model = segmodels.lraspp_mobilenet_v3_large(
+        weights=None,
+        weights_backbone=torchvision.models.MobileNet_V3_Large_Weights.IMAGENET1K_V2,
+        num_classes=train_ds.get_num_classes()).to(CONFIG["device"])
+    # model.load_state_dict(torch.load(TORCH_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
+    model = model.eval()
 
     set_trainable_params(model, train_decoder_only=SEG_TRAIN_CONFIG['train_decoder_only'])
     
@@ -148,7 +151,7 @@ def main() -> None:
         preprocess_fn=preprocess_fn
     )
 
-    criterion = nn.CrossEntropyLoss(ignore_index=21)
+    criterion = nn.CrossEntropyLoss()
 
     train_dl = DataLoader(
         train_ds,
@@ -166,14 +169,9 @@ def main() -> None:
     )
 
     metrics_dict = {
-        "acc": MulticlassAccuracy(num_classes=train_ds.get_num_classes(with_unlabelled=True), top_k=1, average="micro", multidim_average="global", ignore_index=21).to(CONFIG["device"]),
-        "mIoU": MulticlassJaccardIndex(num_classes=train_ds.get_num_classes(with_unlabelled=True), average="macro", ignore_index=21).to(CONFIG["device"]),
+        "acc": MulticlassAccuracy(num_classes=train_ds.get_num_classes(), top_k=1, average="micro", multidim_average="global").to(CONFIG["device"]),
+        "mIoU": MulticlassJaccardIndex(num_classes=train_ds.get_num_classes(), average="macro").to(CONFIG["device"]),
     }
-
-    # TODO speed up things
-    # TODO check if the pre-processing can in be coded better.
-    # TODO integrate callbacks such as save the best model, etc.
-    # TODO Excluding the VOID during training worsen the segmentation visual quality since the borders can be fucked up, it it correct to exclude it?.
 
     log_manager.log_intro(
         config=CONFIG,
@@ -199,7 +197,7 @@ def main() -> None:
         log_manager.log_title("Training Interrupted")
     
     if SEG_TRAIN_CONFIG['save_weights']:
-        torch.save(model.state_dict(), TORCH_WEIGHTS_CHECKPOINTS / f"lraspp_mobilenet_v3_large-{SEG_TRAIN_CONFIG['exp_name']}.pth")
+        torch.save(model.state_dict(), TORCH_WEIGHTS_CHECKPOINTS / 'seg' / f"lraspp_mobilenet_v3_large-{SEG_TRAIN_CONFIG['exp_name']}.pth")
         log_manager.log_line(f"Model 'lraspp_mobilenet_v3_large-{SEG_TRAIN_CONFIG['exp_name']}.pth' successfully saved.")
 
     log_manager.close_loggers()

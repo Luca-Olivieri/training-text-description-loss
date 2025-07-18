@@ -13,6 +13,7 @@ import math
 from PIL import Image
 from dataclasses import dataclass
 from collections import OrderedDict
+import torchmetrics as tm
 
 # FLAIR
 from vendors.flair.src import flair
@@ -199,9 +200,12 @@ class VLEncoder(ABC):
             self,
             dl: DataLoader,
             criterion: nn.modules.loss._Loss,
+            metrics_dict: dict[dict, tm.Metric],
     ) -> torch.Tensor:
         running_loss = 0.0
         running_supcount = 0
+
+        # TODO integrate metrics dict here.
 
         self.model.eval()
 
@@ -248,20 +252,21 @@ class FLAIRAdapter(VLEncoder):
     """
     def __init__(
             self,
-            checkpoint: Literal['flair-cc3m-recap.pt',
-                                'flair-cc12m-recap.pt',
-                                'flair-yfcc15m-recap.pt',
-                                'flair-merged30m.pt'] = 'flair-cc3m-recap.pt',
+            version: Literal['flair-cc3m-recap.pt',
+                             'flair-cc12m-recap.pt',
+                             'flair-yfcc15m-recap.pt',
+                             'flair-merged30m.pt'] = 'flair-cc3m-recap.pt',
             device: str = 'cuda',
             vision_adapter: bool = False
     ) -> None:
         self.device = device
+        self.version = version
 
         # Model
-        pretrained = flair.download_weights_from_hf(model_repo='xiaorui638/flair', filename=checkpoint)
+        pretrained = flair.download_weights_from_hf(model_repo='xiaorui638/flair', filename=version)
         model, _, preprocess_fn = flair.create_model_and_transforms('ViT-B-16-FLAIR', pretrained=pretrained, device=self.device)
         if vision_adapter:
-            # NOTE the authors do not use a bias nor an activation function, I won't use them either
+            # NOTE the authors do not use a bias nor an activation function, I won't use them either, but I should experiment anyway.
             vision_adapter = nn.Linear(512, 512, bias=False, device=self.device)
             model.add_module('vision_adapter', vision_adapter)
         self.model: FLAIR = model
@@ -398,8 +403,8 @@ class FLAIRAdapter(VLEncoder):
     def create_loss(
             self,
             add_mps_loss: bool,
-            rank: int,
-            world_size: int,
+            world_size: int = 1,
+            rank: int = 0,
             num_caps_per_img: int = 1
     ) -> FlairLoss:
         flair_loss = FlairLoss(

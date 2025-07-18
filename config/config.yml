@@ -3,8 +3,9 @@ device: "cuda"
 
 datasets:
   COCO2017_root_path: '/home/olivieri/exp/shared_data/coco2017'
+  VOC2017_root_path: ... # TODO not yet used, to integrate
 
-segnet:
+seg:
   image_size: 520
   train:
     exp_name: "TEST"
@@ -12,21 +13,27 @@ segnet:
     train_decoder_only: False
     batch_size: 16
     num_epochs: 45
-    log_dir_path: "/home/olivieri/exp/logs/segnet"
-    tb_dir_path: "/home/olivieri/exp/logs_tb/segnet"
+    log_only_to_stdout: True
+    file_logs_dir_path: "/home/olivieri/exp/logs/segnet"
+    tb_logs_dir_path: "/home/olivieri/exp/logs_tb/segnet"
     log_every: 10
+    save_weights: False
 
 vle:
   image_size: 224
   train:
     exp_name: "TEST"
-    exp_desc: "This is just a test" # Optional
+    exp_desc: "This is just a test" # optional
     batch_size: 16
     num_epochs: 32
     mask_color: 'RB' # 'RB' (red-blue) or 'L' (black-white)
-    log_dir_path: "/home/olivieri/exp/logs/vle"
-    tb_dir_path: "/home/olivieri/exp/logs_tb/vle"
-    log_every: 50
+    log_only_to_stdout: True
+    file_logs_dir_path: "/home/olivieri/exp/logs/segnet"
+    tb_logs_dir_path: "/home/olivieri/exp/logs_tb/segnet"
+    log_every: 10
+    save_weights: False
+    precision: None # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
+    resume: False
 
 vlm:
   image_size: 224
@@ -35,11 +42,11 @@ vlm:
   temperature: 0.1
 
 data_gen:
-  data_root: "/home/olivieri/exp/data/data_gen/VOC2012"
-  exp_name: "val_new"
+  data_root: "/home/olivieri/exp/data/data_gen/COCO2017"
+  exp_name: "first_val"
   batch_size: 1
   offset: 0 # img-text idx from which to start the generation
   alpha: 0.55 # the greater, the less scene is visible
   print_every: 100
-  temperature: null # null for default values
+  temperature: 0.7 # null for default values
   top_p: null

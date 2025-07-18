@@ -681,6 +681,8 @@ def get_image(
         Image as a torch.Tensor on the global device.
     """
     img = decode_image(path).to(CONFIG["device"])
+    if img.shape[0] == 1:
+        img = img.expand(3, -1, -1) # shapes [1, H, W] are expanded to [3, H, W]
     if resize_size is not None:
         img = TF.resize(img, resize_size, resize_mode)
     if center_crop:

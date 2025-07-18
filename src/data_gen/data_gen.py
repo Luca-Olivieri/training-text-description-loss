@@ -1,7 +1,7 @@
 from config import *
 from models.vl_models import GenParams, OllamaMLLM
 from prompter import FastPromptBuilder
-from data import append_many_to_jsonl, VOC2012SegDataset, crop_augment_preprocess_batch
+from data import VOC2012SegDataset, COCO2017SegDataset, append_many_to_jsonl, crop_augment_preprocess_batch, apply_classmap
 from color_map import apply_colormap
 from path import get_mask_prs_path
 from utils import blend_tensors, create_directory
@@ -82,20 +82,19 @@ async def main() -> None:
     
     offset = CONFIG['data_gen']['offset']
 
-    seg_dataset = VOC2012SegDataset(
-        root_path=Path("/home/olivieri/exp/data/VOCdevkit"),
+    seg_dataset = COCO2017SegDataset(
+        root_path=Path(CONFIG['datasets']['COCO2017_root_path']),
         split='val',
-        resize_size=CONFIG['segnet']['image_size'],
+        resize_size=CONFIG['seg']['image_size'],
         center_crop=True,
-        with_unlabelled=False,
-        uids_to_exclude=['2007_000256']
+        only_VOC_labels=True
     )
     print(f"{len(seg_dataset)} unique images.")
 
     sup_set_seg_dataset = VOC2012SegDataset(
         root_path=Path("/home/olivieri/exp/data/VOCdevkit"),
         split='prompts_split',
-        resize_size=CONFIG['segnet']['image_size'],
+        resize_size=CONFIG['seg']['image_size'],
         center_crop=True,
         with_unlabelled=False,
         mask_prs_path=get_mask_prs_path(by_model=by_model)
@@ -120,13 +119,13 @@ async def main() -> None:
     segnet = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
     segnet.load_state_dict(torch.load(TORCH_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-full-pt" + ".pth")))
     segnet.requires_grad_(False)
-    segnet.eval()
+    segnet = segnet.eval()
 
-    preprocess_fn = partial(SemanticSegmentation, resize_size=CONFIG['segnet']['image_size'])() # same as original one, but with custom resizing
+    preprocess_fn = partial(SemanticSegmentation, resize_size=CONFIG['seg']['image_size'])() # same as original one, but with custom resizing
 
     collate_fn = partial(
         crop_augment_preprocess_batch,
-        crop_fn=T.CenterCrop(CONFIG['segnet']['image_size']),
+        crop_fn=T.CenterCrop(CONFIG['seg']['image_size']),
         augment_fn=None,
         preprocess_fn=None
     )
@@ -156,6 +155,11 @@ async def main() -> None:
             logits = segnet(scs)
             logits: torch.Tensor = logits["out"] if isinstance(logits, OrderedDict) else logits # shape [N, C, H, W]
             prs = logits.argmax(dim=1, keepdim=True)
+
+            # only for COCO
+            if hasattr(seg_dataset, 'only_VOC_labels') and seg_dataset.only_VOC_labels:
+                prs = apply_classmap(prs, seg_dataset.voc_idx_to_coco_idx)
+                prs = apply_classmap(prs, seg_dataset.get_class_map())
             
             scs_img = (scs_img*255).to(torch.uint8)
 
@@ -194,7 +198,7 @@ async def main() -> None:
                 
                 for pos_c in sign_classes:
 
-                    append_many_to_jsonl(captions_path, [{'img_idx': img_idx, "img_uid": img_uid, "pos_class": pos_c, "content": cs_ans["content"][pos_c]}])
+                    append_many_to_jsonl(captions_path, [{'img_idx': img_idx, "img_uid": str(img_uid), "pos_class": pos_c, "content": cs_ans["content"][pos_c]}])
 
                     pos_class_gt = (gt == pos_c)
                     pos_class_pr = (pr == pos_c)

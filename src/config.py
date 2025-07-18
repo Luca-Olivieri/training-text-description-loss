@@ -21,7 +21,7 @@ CONFIG_PATH =  BASE_PATH / "config"
 
 CONFIG = load_config(CONFIG_PATH / "config.yml")
 
-for module in ['segnet', 'vle']:
+for module in ['seg', 'vle']:
     CONFIG[module]['train']["exp_name"] += f'_{datetime.now().strftime("%y%m%d_%H%M")}'
 
 # PyTorch Hub
@@ -51,7 +51,7 @@ def get_torch_gen() -> torch.Generator:
 
 load_dotenv(str(CONFIG_PATH / ".env"), override=True)
 
-GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY_3")
+GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY_1")
 GDRIVE_ANNOT_IMGS_PATH = os.getenv("GDRIVE_ANNOT_IMGS_PATH")
 
 # Custom Representations
