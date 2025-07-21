@@ -145,7 +145,7 @@ class VOC2012SegDataset(SegDataset):
         self.gts_paths = np.array([root_path / 'VOC2012' / 'SegmentationClass' / f"{uid}.png" for uid in self.image_UIDs])
 
         if mask_prs_path:
-            self.prs_paths = np.array([mask_prs_path / f'mask_pr_{i}.png' for i, uid in enumerate(self.image_UIDs)])
+            self.prs_paths = np.array([mask_prs_path / f'mask_pr_{img_i}.png' for img_i in img_idxs])
         
         if len(self.scs_paths) != len(self.gts_paths):
             raise AttributeError(f"There is a different number of samples of scenes ({len(self.scs_paths)}) and ground truths ({len(self.gts_paths)}).")

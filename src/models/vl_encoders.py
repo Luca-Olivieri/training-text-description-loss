@@ -13,6 +13,7 @@ import math
 from PIL import Image
 from dataclasses import dataclass
 from collections import OrderedDict
+from huggingface_hub import hf_hub_download
 
 # FLAIR
 from vendors.flair.src import flair
@@ -115,12 +116,13 @@ class VLEncoder(ABC):
             upsample_size: Optional[int | tuple[int]] = None,
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
             broadcast: bool = False,
+            **kwargs
     ) -> torch.Tensor:
         match map_compute_mode:
             case MapComputeMode.ATTENTION:
-                return self.get_attn_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast)
+                return self.get_attn_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast, **kwargs)
             case MapComputeMode.SIMILARITY:
-                return self.get_sim_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast)
+                return self.get_sim_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast, **kwargs)
             case _:
                 raise ValueError(f"Unknown mode: {map_compute_mode}. The only supported types are {[c.name for c in MapComputeMode]}.")
     
@@ -132,6 +134,7 @@ class VLEncoder(ABC):
             upsample_size: Optional[int | tuple[int]] = None,
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
             broadcast: bool = False,
+            attn_heads_idx: Optional[list[int]] = None # [0, 3, 5, 7]
     ) -> torch.Tensor:
         """
         Encodes image and text and returns the attention maps from the visual projection layer.
@@ -139,6 +142,11 @@ class VLEncoder(ABC):
         # _, [B_i, B_t, D], [B_i, n_i, D], _, _, [B_i, B_t, n_i+1]
         # 'B_t' = 1 if 'broadcast' = False
         vle_output = self.encode_and_project(images, texts, broadcast)
+
+        if attn_heads_idx:
+            vle_output.attn_maps_flat = vle_output.attn_maps_flat[:, attn_heads_idx, ...].mean(dim=1, keepdim=False)
+        else:
+            vle_output.attn_maps_flat = vle_output.attn_maps_flat.mean(dim=1, keepdim=False)
 
         text_batch_size = vle_output.global_text_token.shape[1] # B_t
         image_batch_size, image_num_patches = vle_output.local_image_tokens.shape[:2] # B_i, n_i
@@ -259,7 +267,8 @@ class FLAIRAdapter(VLEncoder):
         self.version = version
 
         # Model
-        pretrained = flair.download_weights_from_hf(model_repo='xiaorui638/flair', filename=version)
+        # pretrained = flair.download_weights_from_hf(model_repo='xiaorui638/flair', filename=version)
+        pretrained = hf_hub_download(repo_id='xiaorui638/flair', filename=version, cache_dir=CONFIG['vle']['pretrained_weights_root_path'])
         model, _, preprocess_fn = flair.create_model_and_transforms('ViT-B-16-FLAIR', pretrained=pretrained, device=self.device)
         if vision_adapter:
             # NOTE the authors do not use a bias nor an activation function, I won't use them either, but I should experiment anyway.
@@ -342,7 +351,8 @@ class FLAIRAdapter(VLEncoder):
             global_text_token,      # [B_i, B_t, D]
             local_image_tokens,     # [B_i, n_i, D]
             local_image_tokens,     # [B_i, n_i, D]
-            output_attn_weights=True
+            output_attn_weights=True,
+            average_attn_weights=False
         ) # [B_i, B_t, D], [B_i, B_t, n_i+1] (the +1 is there for the added 'cls' token)
         
         flair_output = FLAIROutput(

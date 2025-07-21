@@ -8,10 +8,11 @@ from logger import LogManager
 from torch import nn
 from functools import partial
 import torchvision.transforms.v2 as T
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 import math
 from open_clip_train.precision import get_autocast # for AMP
 from torch.amp import GradScaler # for AMP
+from open_clip_train.scheduler import cosine_lr, const_lr, const_lr_cooldown
 
 from typing import Callable, Optional
 import dataclasses
@@ -53,15 +54,30 @@ def train_loop(
     optimizer = torch.optim.AdamW(
         [
             {"params": gain_or_bias_params, "weight_decay": 0.},
-            {"params": rest_params, "weight_decay": 1e-2}, # authors use 0.5, seems to high
+            {"params": rest_params, "weight_decay": 0.5}, # authors use 0.5, seems to high
         ],
-        lr=5e-4,
+        lr=VLE_TRAIN_CONFIG['lr_schedule']['base_lr'],
         betas=(0.9, 0.98),
         eps=1e-8,
     )
-    optimizer = torch.optim.AdamW(vle.model.parameters(), lr=1e-4)
     optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict']) if VLE_TRAIN_CONFIG['resume'] else None
     optimizer.zero_grad()
+
+    num_batches = len(train_dl) // VLE_TRAIN_CONFIG['grad_accum_steps']
+
+    # scheduler
+    total_steps = num_batches * VLE_TRAIN_CONFIG['num_epochs']
+    sched_config = VLE_TRAIN_CONFIG['lr_schedule']
+    match sched_config['policy']:
+        case None:
+            scheduler = None
+        case 'const':
+            scheduler = const_lr(optimizer, sched_config['base_lr'], sched_config['warmup_length'], total_steps)
+        case 'const-cooldown':
+            cooldown_steps = num_batches * sched_config['epochs_cooldown']
+            scheduler = const_lr_cooldown(optimizer, sched_config['base_lr'], sched_config['warmup_length'], total_steps, cooldown_steps, sched_config['lr_cooldown_power'], sched_config['lr_cooldown_end'])
+        case 'cosine':
+            scheduler = cosine_lr(optimizer, sched_config['base_lr'], sched_config['warmup_length'], total_steps)
     
     # AMP scaler
     scaler = GradScaler() if VLE_TRAIN_CONFIG['precision'] == "amp" else None
@@ -76,8 +92,6 @@ def train_loop(
 
     autocast = get_autocast(VLE_TRAIN_CONFIG['precision'])
 
-    num_batches = len(train_dl) // VLE_TRAIN_CONFIG['grad_accum_steps']
-
     if VLE_TRAIN_CONFIG['grad_accum_steps'] > 1:
         accum_images, accum_texts, accum_features = [], [], {}
     
@@ -90,9 +104,11 @@ def train_loop(
             step_accum = step // VLE_TRAIN_CONFIG['grad_accum_steps']
             step_counter = epoch*num_batches + step_accum
             global_step_counter = checkpoint_dict['global_step_counter'] + step_counter if VLE_TRAIN_CONFIG['resume'] else step_counter
-            
+
             vle.model.train()
 
+            scheduler(global_step_counter) if scheduler else None
+            
             optimizer.zero_grad()
 
             if VLE_TRAIN_CONFIG['grad_accum_steps'] == 1:
@@ -191,12 +207,12 @@ def train_loop(
             
         val_loss = vle.evaluate(val_dl, criterion)
 
-        log_manager.log_scores(f"epoch: {epoch+1}/{VLE_TRAIN_CONFIG['num_epochs']} ({global_epoch}), VALIDATION", val_loss, None, global_epoch+1, "val", None,"val_")
+        log_manager.log_scores(f"epoch: {epoch+1}/{VLE_TRAIN_CONFIG['num_epochs']} ({global_epoch+1}), VALIDATION", val_loss, None, global_epoch+1, "val", None,"val_")
 
     log_manager.log_title("Training Finished")
 
     # checkpoint saving
-    if VLE_TRAIN_CONFIG['save_weights']:    
+    if VLE_TRAIN_CONFIG['save_weights_path']:
         new_checkpoint_dict = {
                 'global_epoch': global_epoch,
                 'global_step': global_step_counter,
@@ -204,10 +220,9 @@ def train_loop(
                 'optimizer_state_dict': optimizer.state_dict(),
         }
         new_checkpoint_dict |= {'scaler_state_dict': scaler.state_dict()} if scaler else None
-        # 'scheduler_state_dict': scheduler.state_dict(), # TODO implement scheduler
 
         ckp_filename = f"flair-{vle.version}-{VLE_TRAIN_CONFIG['exp_name']}"
-        torch.save(vle.model.state_dict(), TORCH_WEIGHTS_CHECKPOINTS / 'vle' / f"{ckp_filename}.pth")
+        torch.save(vle.model.state_dict(), VLE_TRAIN_CONFIG['save_weights_path'] / f"{ckp_filename}.pth")
         log_manager.log_line(f"Model '{ckp_filename}.pth' successfully saved.")
 
     # final logs
@@ -222,12 +237,18 @@ def main() -> None:
 
     # Datasets
     train_image_text_ds = ImageCaptionDataset(
-        ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/VOC2012/train/images_{mask_color}')),
-        JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/train/captions.jsonl'))
+        ConcatDataset([
+            ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/VOC2012/train/images_{mask_color}')),
+            ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/COCO2017/val/images_{mask_color}')),
+        ]),
+        ConcatDataset([
+            JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/train/captions.jsonl')),
+            JSONLDataset(Path('/home/olivieri/exp/data/data_gen/COCO2017/val/captions.jsonl')),
+        ])
     )
     val_image_text_ds = ImageCaptionDataset(
-        ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/VOC2012/val/images_{mask_color}'), img_idxs=slice(None, 50, None)),
-        JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/val/captions.jsonl'), line_idxs=slice(None, 50, None))
+        ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/VOC2012/val/images_{mask_color}')),
+        JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/val/captions.jsonl'))
     )
 
     # Vision-Language Encoder
@@ -262,6 +283,7 @@ def main() -> None:
         shuffle=False,
         generator=get_torch_gen(),
         collate_fn=train_collate_fn,
+        num_workers=2
     )
     
     val_image_text_dl = DataLoader(
@@ -270,6 +292,7 @@ def main() -> None:
         shuffle=False,
         generator=get_torch_gen(),
         collate_fn=val_collate_fn,
+        num_workers=2
     )
 
     criterion = vle.create_loss(

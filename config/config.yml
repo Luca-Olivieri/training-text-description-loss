@@ -3,7 +3,7 @@ device: "cuda"
 
 datasets:
   COCO2017_root_path: '/home/olivieri/exp/shared_data/coco2017'
-  VOC2017_root_path: ... # TODO not yet used, to integrate
+  VOC2012_root_path: '/home/olivieri/exp/data/VOCdevkit'
 
 seg:
   image_size: 520
@@ -20,22 +20,30 @@ seg:
     save_weights: True
 
 vle:
+  pretrained_weights_root_path: '/home/olivieri/exp/data/torch_weights/vle/flair'
   image_size: 224
   train:
     exp_name: "TEST"
     exp_desc: "This is just a test" # optional
-    batch_size: 16
+    batch_size: 128 # WITH ALL IMAGES, SET TO 256
     num_epochs: 32
     mask_color: 'RB' # 'RB' (red-blue) or 'L' (black-white)
     precision: 'amp_bfloat16' # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
-    resume: False
+    lr_schedule:
+      policy: 'cosine'
+      base_lr: 5.0e-4 # 5e-4
+      warmup_length: 15 # 0 for no warmup
+      epochs_cooldown: null
+      lr_cooldown_power: null
+      lr_cooldown_end: null
     grad_clip_norm: 10.0 # optional
-    grad_accum_steps: 2 # 1 for no gradient accumuluation
+    grad_accum_steps: 1 # 1 for no gradient accumuluation
+    resume: False
     log_only_to_stdout: True
     file_logs_dir_path: "/home/olivieri/exp/logs/vle"
     tb_logs_dir_path: "/home/olivieri/exp/logs_tb/vle"
     log_every: 10
-    save_weights: False
+    save_weights_path: '/home/olivieri/exp/data/torch_weights/vle/flair'
 
 vlm:
   image_size: 224
