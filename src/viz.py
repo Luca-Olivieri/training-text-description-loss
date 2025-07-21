@@ -1,4 +1,5 @@
 from config import *
+from config import torch
 from prompter import Prompt
 
 from IPython.display import Markdown, display
@@ -45,7 +46,7 @@ def overlay_map(
         background: torch.Tensor | Image.Image,
         map: torch.Tensor,
         alpha: float = 1.0,
-        pos_rgb_fill: tuple[int, int, int] = (255, 0, 0),
+        pos_rgb_fill: tuple[int, int, int] = (0, 255, 0),
         neg_rgb_fill: tuple[int, int, int] = (0, 0, 255),
         normalize: bool = True
 ) -> Image.Image:
@@ -342,3 +343,33 @@ def format_to_title(
 
     centered_string = pad_symbol * left_padding + text + pad_symbol * right_padding
     return centered_string
+
+
+def create_diff_mask(
+        mask1: torch.Tensor,
+        mask2: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Creates a binary difference mask from two integer-based segmentation masks.
+
+    The operation is fully vectorized and runs efficiently on CUDA devices.
+
+    Args:
+        mask1 (torch.Tensor): The first segmentation mask with class indices.
+                              Expected dtype: torch.long, torch.int, etc.
+        mask2 (torch.Tensor): The second segmentation mask with class indices.
+                              Must have the same shape and device as mask1.
+
+    Returns:
+        torch.Tensor: A mask with value 255 (uint8) where pixels in mask1 and mask2
+                      are different, and 0 where they are the same.
+    """
+    # 1. Ensure the masks have the same shape for element-wise comparison.
+    assert mask1.shape == mask2.shape, f"Input masks must have the same shape, but got {mask1.shape} and {mask2.shape}"
+
+    # 2. Perform element-wise comparison. This creates a boolean tensor.
+    #    'True' where elements are not equal, 'False' where they are equal.
+    #    This is the functional equivalent of `torch.ne(mask1, mask2)`.
+    diff = (mask1 != mask2).to(torch.uint8)
+
+    return diff

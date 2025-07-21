@@ -5,6 +5,7 @@ from data import VOC2012SegDataset, COCO2017SegDataset, append_many_to_jsonl, cr
 from color_map import apply_colormap
 from path import get_mask_prs_path
 from utils import blend_tensors, create_directory
+from viz import create_diff_mask
 
 from pathlib import Path
 from torchvision.models import segmentation as segmodels
@@ -21,34 +22,6 @@ import asyncio
 
 import torch
 
-def create_diff_mask(
-        mask1: torch.Tensor,
-        mask2: torch.Tensor,
-) -> torch.Tensor:
-    """
-    Creates a binary difference mask from two integer-based segmentation masks.
-
-    The operation is fully vectorized and runs efficiently on CUDA devices.
-
-    Args:
-        mask1 (torch.Tensor): The first segmentation mask with class indices.
-                              Expected dtype: torch.long, torch.int, etc.
-        mask2 (torch.Tensor): The second segmentation mask with class indices.
-                              Must have the same shape and device as mask1.
-
-    Returns:
-        torch.Tensor: A mask with value 255 (uint8) where pixels in mask1 and mask2
-                      are different, and 0 where they are the same.
-    """
-    # 1. Ensure the masks have the same shape for element-wise comparison.
-    assert mask1.shape == mask2.shape, f"Input masks must have the same shape, but got {mask1.shape} and {mask2.shape}"
-    
-    # 2. Perform element-wise comparison. This creates a boolean tensor.
-    #    'True' where elements are not equal, 'False' where they are equal.
-    #    This is the functional equivalent of `torch.ne(mask1, mask2)`.
-    diff = (mask1 != mask2).to(torch.uint8)
-    
-    return diff
 
 async def main() -> None:
 
