@@ -472,7 +472,8 @@ class JSONLDataset(Dataset):
     def __init__(
             self,
             file_path: Path,
-            transform: Optional[Callable] = None
+            transform: Optional[Callable] = None,
+            line_idxs: Optional[list[int] | slice] = None
     ):
         super().__init__()
         self.file_path = file_path
@@ -480,8 +481,13 @@ class JSONLDataset(Dataset):
         self._file = None  # File handle will be opened lazily by each worker
         self.state_line = None
 
+
         # Create an index of byte offsets for each line
         self.line_offsets = self._build_index()
+
+        self.line_idxs = line_idxs
+        if line_idxs:
+            self.line_offsets = self.line_offsets[self.line_idxs]
 
     def _build_index(self) -> list[int]:
         """
@@ -599,8 +605,8 @@ class ImageDataset(Dataset):
             path: Path,
             resize_size: Optional[int | list[int, int]] = None,
             resize_mode: Optional[str] = None,
-            img_idxs: Optional[list[int]] = None,
-            center_crop: bool = False
+            img_idxs: Optional[list[int] | slice] = None,
+            center_crop: bool = False,
     ) -> None:
         self.image_paths = np.array(sorted(glob(str(path / "*.png"))))
         if img_idxs:

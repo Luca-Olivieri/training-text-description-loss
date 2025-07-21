@@ -13,7 +13,6 @@ import math
 from PIL import Image
 from dataclasses import dataclass
 from collections import OrderedDict
-import torchmetrics as tm
 
 # FLAIR
 from vendors.flair.src import flair
@@ -200,12 +199,9 @@ class VLEncoder(ABC):
             self,
             dl: DataLoader,
             criterion: nn.modules.loss._Loss,
-            metrics_dict: dict[dict, tm.Metric],
     ) -> torch.Tensor:
         running_loss = 0.0
         running_supcount = 0
-
-        # TODO integrate metrics dict here.
 
         self.model.eval()
 

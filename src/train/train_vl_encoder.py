@@ -10,24 +10,26 @@ from functools import partial
 import torchvision.transforms.v2 as T
 from torch.utils.data import DataLoader
 import math
-import torchmetrics as tm
 from open_clip_train.precision import get_autocast # for AMP
 from torch.amp import GradScaler # for AMP
 
 from typing import Callable, Optional
+import dataclasses
 
 from vendors.flair.src.flair.train import backward
 
-VLE_CONFIG = CONFIG['seg']
+VLE_CONFIG = CONFIG['vle']
 VLE_TRAIN_CONFIG = VLE_CONFIG['train']
 
 if VLE_TRAIN_CONFIG['log_only_to_stdout']:
     log_manager = LogManager(
-        exp_name=VLE_TRAIN_CONFIG['exp_name']
+        exp_name=VLE_TRAIN_CONFIG['exp_name'],
+        exp_desc=VLE_TRAIN_CONFIG['exp_desc'],
     )
 else:
     log_manager = LogManager(
         exp_name=VLE_TRAIN_CONFIG['exp_name'],
+        exp_desc=VLE_TRAIN_CONFIG['exp_desc'],
         file_logs_dir_path=VLE_TRAIN_CONFIG['file_logs_dir_path'],
         tb_logs_dir_path=VLE_TRAIN_CONFIG['tb_logs_dir_path']
     )
@@ -37,10 +39,9 @@ def train_loop(
         train_dl: DataLoader,
         val_dl: DataLoader,
         criterion: Callable,
-        metrics_dict: dict[dict, tm.Metric],
         checkpoint_dict: Optional[dict] = None
 ) -> torch.Tensor:
-
+    
     # optimizer
     exclude = lambda n, p: p.ndim < 2 or "bn" in n or "ln" in n or "bias" in n or 'logit_scale' in n
     include = lambda n, p: not exclude(n, p)
@@ -60,67 +61,137 @@ def train_loop(
     )
     optimizer = torch.optim.AdamW(vle.model.parameters(), lr=1e-4)
     optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict']) if VLE_TRAIN_CONFIG['resume'] else None
+    optimizer.zero_grad()
     
     # AMP scaler
     scaler = GradScaler() if VLE_TRAIN_CONFIG['precision'] == "amp" else None
-    scaler.load_state_dict(checkpoint_dict["scaler_state_dict"]) if (VLE_TRAIN_CONFIG['resume'] and VLE_TRAIN_CONFIG['precision'] == "amp") else None
+    scaler.load_state_dict(checkpoint_dict["scaler_state_dict"]) if (VLE_TRAIN_CONFIG['resume'] and VLE_TRAIN_CONFIG['precision'] in {'amp', 'amp_bfloat16'}) else None
 
     vle.model = compile_torch_model(vle.model) # effective only with GPUs with compute capability >= 7.0
 
     log_manager.log_title("Initial Validation")
-    val_loss, val_metrics_score = vle.evaluate(val_dl, criterion, metrics_dict)
-    log_manager.log_scores(f"Before any weight update, VALIDATION", val_loss, val_metrics_score, 0, "val", None, "val_")
+    val_loss = vle.evaluate(val_dl, criterion)
+    log_manager.log_scores(f"Before any weight update, VALIDATION", val_loss, None, 0, "val", None, "val_")
     log_manager.log_title("Training Start")
 
     autocast = get_autocast(VLE_TRAIN_CONFIG['precision'])
+
+    num_batches = len(train_dl) // VLE_TRAIN_CONFIG['grad_accum_steps']
+
+    if VLE_TRAIN_CONFIG['grad_accum_steps'] > 1:
+        accum_images, accum_texts, accum_features = [], [], {}
     
     for epoch in range(VLE_TRAIN_CONFIG["num_epochs"]):
 
         global_epoch = checkpoint_dict['global_epoch'] + epoch if VLE_TRAIN_CONFIG['resume'] else epoch
 
         for step, (images, texts) in enumerate(train_dl):
+
+            step_accum = step // VLE_TRAIN_CONFIG['grad_accum_steps']
+            step_counter = epoch*num_batches + step_accum
+            global_step_counter = checkpoint_dict['global_step_counter'] + step_counter if VLE_TRAIN_CONFIG['resume'] else step_counter
             
             vle.model.train()
 
             optimizer.zero_grad()
 
-            with autocast():
-                vle_output = vle.encode_and_project(images, texts, broadcast=False)
+            if VLE_TRAIN_CONFIG['grad_accum_steps'] == 1:
+                with autocast():
 
-                losses = criterion(
-                        image_features=vle_output.global_image_token,
-                        image_tokens=vle_output.local_image_tokens.clone(),
-                        text_features=vle_output.global_text_token.squeeze(1),
-                        logit_scale=vle.model.logit_scale.exp(),
-                        visual_proj=vle.model.visual_proj,
-                        logit_bias=vle.model.logit_bias,
-                        output_dict=True
-                )
-                total_loss = sum(losses.values()) # in our case, we only have losses has only the 'constrastive loss' key.
+                    vle_output = vle.encode_and_project(images, texts, broadcast=False)
 
-            backward(total_loss, scaler)
+                    losses = criterion(
+                            image_features=vle_output.global_image_token,
+                            image_tokens=vle_output.local_image_tokens.clone(),
+                            text_features=vle_output.global_text_token.squeeze(1),
+                            logit_scale=vle.model.logit_scale.exp(),
+                            logit_bias=vle.model.logit_bias,
+                            visual_proj=vle.model.visual_proj,
+                            output_dict=True
+                    )
+                    total_loss = sum(losses.values()) # in our case, we only have losses has only the 'constrastive loss' key.
 
-            grad_clip_norm = 5
-            grad_norm = 0.0
-            if grad_clip_norm:
-                grad_norm = torch.nn.utils.clip_grad_norm_(vle.model.parameters(), grad_clip_norm, norm_type=2.0)
-            
-            optimizer.step()
+                backward(total_loss, scaler)
+            else:
+                # First, cache the features without any gradient tracking.
+                with torch.no_grad():
+                    with autocast():
+                        vle_output = vle.encode_and_project(images, texts, broadcast=False)
+                        vle_output_dict = {f.name: getattr(vle_output, f.name) for f in dataclasses.fields(vle_output) if f.name in ['global_image_token', 'global_text_token', 'local_image_tokens']}
 
-            step_counter = epoch*len(train_dl) + step + 1
-            global_step_counter = checkpoint_dict['global_step_counter'] + step_counter if VLE_TRAIN_CONFIG['resume'] else step_counter
+                        for key, val in vle_output_dict.items():
+                            if key in accum_features:
+                                accum_features[key].append(val)
+                            else:
+                                accum_features[key] = [val]
 
-            if (step+1) % CONFIG['vle']['train']['log_every'] == 0:
-                log_manager.log_scores(f"epoch: {epoch+1}/{VLE_TRAIN_CONFIG['num_epochs']} ({global_epoch}), step: {step+1}/{len(train_dl)} ({global_step_counter})", total_loss, train_metrics_score, global_step_counter, "train", f", lr: {optimizer.param_groups[0]['lr']:.2e}, grad_norm: {grad_norm:.2f}" ,"batch_")
+                    accum_images.append(images)
+                    accum_texts.append(texts)
+
+                # If (i + 1) % grad_accum_steps is not zero, move on to the next batch.
+                if ((step + 1) % VLE_TRAIN_CONFIG['grad_accum_steps']) > 0:
+                    continue
+
+                # Now, ready to take gradients for the last accum_freq batches.
+                # Re-do the forward pass for those batches, and use the cached features from the other batches as negatives.
+                # Call backwards each time, but only step optimizer at the end.
+                optimizer.zero_grad()
+                for j in range(VLE_TRAIN_CONFIG['grad_accum_steps']):
+                    images = accum_images[j]
+                    texts = accum_texts[j]
+                    with autocast():
+                        vle_output = vle.encode_and_project(images, texts, broadcast=False)
+                        vle_output_dict = {f.name: getattr(vle_output, f.name) for f in dataclasses.fields(vle_output) if f.name in ['global_image_token', 'global_text_token', 'local_image_tokens']}
+
+                        inputs = {}
+                        for key, val in accum_features.items():
+                            accumulated = accum_features[key]
+                            inputs[key] = torch.cat(accumulated[:j] + [vle_output_dict[key]] + accumulated[j + 1:])
+
+                        losses = criterion(
+                                image_features=inputs['global_image_token'],
+                                image_tokens=inputs['local_image_tokens'].clone(),
+                                text_features=inputs['global_text_token'].squeeze(1),
+                                logit_scale=vle.model.logit_scale.exp(),
+                                logit_bias=vle.model.logit_bias,
+                                visual_proj=vle.model.visual_proj,
+                                output_dict=True,
+                        )
+                        del inputs
+                        total_loss = sum(losses.values())
+                        losses["loss"] = total_loss
+
+                    backward(total_loss, scaler)
+
+            if scaler:
+                if VLE_TRAIN_CONFIG['grad_clip_norm']:
+                    scaler.unscale_(optimizer)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(vle.model.parameters(), VLE_TRAIN_CONFIG['grad_clip_norm'], norm_type=2.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                if VLE_TRAIN_CONFIG['grad_clip_norm']:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(vle.model.parameters(), VLE_TRAIN_CONFIG['grad_clip_norm'], norm_type=2.0)
+                optimizer.step()
+
+            if VLE_TRAIN_CONFIG['grad_clip_norm'] is None:
+                grad_norm = torch.nn.utils.clip_grad_norm_(vle.model.parameters(), float('inf'), norm_type=2.0)
+
+            # reset gradient accum, if enabled
+            if VLE_TRAIN_CONFIG['grad_accum_steps'] > 1:
+                accum_images, accum_texts, accum_features = [], [], {}
 
             with torch.no_grad():
                 vle.model.logit_scale.clamp_(0, math.log(100))
+            
+            if (step_accum+1) % CONFIG['vle']['train']['log_every'] == 0:
+                log_manager.log_scores(f"epoch: {epoch+1}/{VLE_TRAIN_CONFIG['num_epochs']} ({global_epoch+1}), step: {step_accum+1}/{num_batches} ({global_step_counter+1})", total_loss, None, global_step_counter+1, "train", f", lr: {optimizer.param_groups[0]['lr']:.2e}, grad_norm: {grad_norm:.2f}" ,"batch_")
 
             torch.cuda.synchronize() if CONFIG["device"] == "cuda" else None
             
         val_loss = vle.evaluate(val_dl, criterion)
 
-        log_manager.log_scores(f"epoch: {epoch+1}/{VLE_TRAIN_CONFIG['num_epochs']} ({global_epoch}), VALIDATION", val_loss, val_metrics_score, global_epoch+1, "val", None,"val_")
+        log_manager.log_scores(f"epoch: {epoch+1}/{VLE_TRAIN_CONFIG['num_epochs']} ({global_epoch}), VALIDATION", val_loss, None, global_epoch+1, "val", None,"val_")
 
     log_manager.log_title("Training Finished")
 
@@ -133,18 +204,16 @@ def train_loop(
                 'optimizer_state_dict': optimizer.state_dict(),
         }
         new_checkpoint_dict |= {'scaler_state_dict': scaler.state_dict()} if scaler else None
-        # 'scheduler_state_dict': scheduler.state_dict(),
+        # 'scheduler_state_dict': scheduler.state_dict(), # TODO implement scheduler
 
-        ckp_filename = f"flair-{vle.checkpoint}-{VLE_TRAIN_CONFIG['exp_name']}"
+        ckp_filename = f"flair-{vle.version}-{VLE_TRAIN_CONFIG['exp_name']}"
         torch.save(vle.model.state_dict(), TORCH_WEIGHTS_CHECKPOINTS / 'vle' / f"{ckp_filename}.pth")
         log_manager.log_line(f"Model '{ckp_filename}.pth' successfully saved.")
 
     # final logs
     log_manager.log_title("Final Evaluation")
 
-    train_loss, train_metrics_score = vle.evaluate(train_dl, criterion)
-    log_manager.log_scores(f"After {VLE_TRAIN_CONFIG['num_epochs']} epochs of training, TRAINING", train_loss, train_metrics_score, step_counter, "train", None, "train_")
-    log_manager.log_scores(f"After {VLE_TRAIN_CONFIG['num_epochs']} epochs of training, VALIDATION", val_loss, val_metrics_score, None, None, None, "val_")
+    log_manager.log_scores(f"After {VLE_TRAIN_CONFIG['num_epochs']} epochs of training, VALIDATION", val_loss, None, None, None, None, "val_")
 
 
 def main() -> None:
@@ -157,15 +226,18 @@ def main() -> None:
         JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/train/captions.jsonl'))
     )
     val_image_text_ds = ImageCaptionDataset(
-        ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/VOC2012/train/images_{mask_color}')),
-        JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/train/captions.jsonl'))
+        ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/VOC2012/val/images_{mask_color}'), img_idxs=slice(None, 50, None)),
+        JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/val/captions.jsonl'), line_idxs=slice(None, 50, None))
     )
 
     # Vision-Language Encoder
     vle: VLEncoder = VLE_REGISTRY.get("flair", device=CONFIG['device'], vision_adapter=True)
 
-    checkpoint_dict = torch.load(TORCH_WEIGHTS_CHECKPOINTS / 'vle' / (... + ".pth"))
-    # vle.model.load_state_dict(checkpoint_dict['model_state_dict']) # load my weights
+    if VLE_TRAIN_CONFIG['resume']:
+        checkpoint_dict = torch.load(TORCH_WEIGHTS_CHECKPOINTS / 'vle' / (... + ".pth"))
+        vle.model.load_state_dict(checkpoint_dict['model_state_dict']) # load my weights
+    else:
+        checkpoint_dict = None
     vle.set_vision_trainable_params(['proj', 'visual_proj', 'vision_adapter'])
 
     # TODO try to set the weights of 'vision_adapter' to 0 and see what happens.
@@ -206,8 +278,6 @@ def main() -> None:
     )
 
     log_manager.log_intro(
-        exp_name=VLE_TRAIN_CONFIG['exp_name'],
-        exp_desc=VLE_TRAIN_CONFIG['exp_desc'],
         config=CONFIG,
         train_ds=train_image_text_ds,
         val_ds=val_image_text_ds,

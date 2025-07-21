@@ -8,16 +8,16 @@ datasets:
 seg:
   image_size: 520
   train:
-    exp_name: "TEST"
+    exp_name: "COCO test"
     exp_desc: "" #  Optional
     train_decoder_only: False
-    batch_size: 16
-    num_epochs: 45
-    log_only_to_stdout: True
+    batch_size: 8
+    num_epochs: 50
+    log_only_to_stdout: False
     file_logs_dir_path: "/home/olivieri/exp/logs/segnet"
     tb_logs_dir_path: "/home/olivieri/exp/logs_tb/segnet"
     log_every: 10
-    save_weights: False
+    save_weights: True
 
 vle:
   image_size: 224
@@ -27,13 +27,15 @@ vle:
     batch_size: 16
     num_epochs: 32
     mask_color: 'RB' # 'RB' (red-blue) or 'L' (black-white)
+    precision: 'amp_bfloat16' # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
+    resume: False
+    grad_clip_norm: 10.0 # optional
+    grad_accum_steps: 2 # 1 for no gradient accumuluation
     log_only_to_stdout: True
-    file_logs_dir_path: "/home/olivieri/exp/logs/segnet"
-    tb_logs_dir_path: "/home/olivieri/exp/logs_tb/segnet"
+    file_logs_dir_path: "/home/olivieri/exp/logs/vle"
+    tb_logs_dir_path: "/home/olivieri/exp/logs_tb/vle"
     log_every: 10
     save_weights: False
-    precision: None # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
-    resume: False
 
 vlm:
   image_size: 224
@@ -43,9 +45,9 @@ vlm:
 
 data_gen:
   data_root: "/home/olivieri/exp/data/data_gen/COCO2017"
-  exp_name: "first_val"
+  exp_name: "first_train"
   batch_size: 1
-  offset: 160 # img-text idx from which to start the generation
+  offset: 0 # img-text idx from which to start the generation
   alpha: 0.55 # the greater, the less scene is visible
   print_every: 100
   temperature: 0.7 # null for default values

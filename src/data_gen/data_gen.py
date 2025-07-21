@@ -84,7 +84,7 @@ async def main() -> None:
 
     seg_dataset = COCO2017SegDataset(
         root_path=Path(CONFIG['datasets']['COCO2017_root_path']),
-        split='val',
+        split='train',
         img_idxs=slice(offset, None, None),
         resize_size=CONFIG['seg']['image_size'],
         center_crop=True,
@@ -173,7 +173,7 @@ async def main() -> None:
             
             cs_prompts = fast_prompt_builder.build_cs_inference_prompts(gts_down, prs_down, scs_down)
 
-            batch_idxs = [offset + dl.batch_size*step + i for i in range(len(scs_down))]
+            batch_idxs = [dl.batch_size*step + i for i in range(len(scs_down))]
             batch_image_uids = seg_dataset.image_UIDs[batch_idxs]
 
             cs_answer_list = await vlm.predict_many_class_splitted(
@@ -199,7 +199,7 @@ async def main() -> None:
                 
                 for pos_c in sign_classes:
 
-                    append_many_to_jsonl(captions_path, [{'img_idx': img_idx, "img_uid": str(img_uid), "pos_class": pos_c, "content": cs_ans["content"][pos_c]}])
+                    append_many_to_jsonl(captions_path, [{'img_idx': img_idx + offset, "img_uid": str(img_uid), "pos_class": pos_c, "content": cs_ans["content"][pos_c]}])
 
                     pos_class_gt = (gt == pos_c)
                     pos_class_pr = (pr == pos_c)

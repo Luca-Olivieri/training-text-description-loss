@@ -16,9 +16,9 @@ class LogManager():
     def __init__(
             self,
             exp_name: str,
-            exp_desc: Optional[str],
-            file_logs_dir_path: Optional[Path],
-            tb_logs_dir_path: Optional[Path],
+            exp_desc: Optional[str] = None,
+            file_logs_dir_path: Optional[Path] = None,
+            tb_logs_dir_path: Optional[Path] = None,
     ) -> None:
         
         self.exp_name = exp_name
@@ -27,15 +27,15 @@ class LogManager():
         # logs to StdOut and (optionally) to .log file.
         self.main_logger: Logger = self.get_logger(
             file_logs_dir_path=file_logs_dir_path,
-            exp_name=self.exp_name
         )
 
         # logs to TensorBoad
         if tb_logs_dir_path:
             self.tb_logger: SummaryWriter = self.get_tb_logger(
                 tb_logs_dir_path=tb_logs_dir_path,
-                exp_name=self.exp_name
             )
+        else:
+            self.tb_logger = None
 
     def get_logger(
             self,
