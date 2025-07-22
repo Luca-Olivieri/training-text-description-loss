@@ -91,7 +91,7 @@ async def main() -> None:
     append_many_to_jsonl(captions_path, [{"state": fast_prompt_builder.get_state()} | {"vlm": f"{vlm.__class__.__name__}:{vlm.model}"}])
 
     segnet = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
-    segnet.load_state_dict(torch.load(TORCH_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-full-pt" + ".pth")))
+    segnet.load_state_dict(torch.load(TORCH_WEIGHTS_ROOT / 'seg' / 'lraspp_mobilenet_v3_large' / ("lraspp_mobilenet_v3_large-full-pt" + ".pth")))
     segnet.requires_grad_(False)
     segnet = segnet.eval()
 

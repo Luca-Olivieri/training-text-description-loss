@@ -130,7 +130,6 @@ class LogManager():
         log_str += suffix if suffix else ""
         self.main_logger.info(log_str, stacklevel=_stacklevel)
 
-
     def close_loggers(self) -> None:
         
         # close StdOut and file loggers.

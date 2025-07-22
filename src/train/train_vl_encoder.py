@@ -51,16 +51,17 @@ def train_loop(
     gain_or_bias_params = [p for n, p in named_parameters if exclude(n, p) and p.requires_grad]
     rest_params = [p for n, p in named_parameters if include(n, p) and p.requires_grad]
 
+    # the following optimizer settings are take straight from FLAIR authors.
     optimizer = torch.optim.AdamW(
         [
             {"params": gain_or_bias_params, "weight_decay": 0.},
-            {"params": rest_params, "weight_decay": 0.5}, # authors use 0.5, seems to high
+            {"params": rest_params, "weight_decay": 0.5}, # authors use 0.5, seems quite high
         ],
         lr=VLE_TRAIN_CONFIG['lr_schedule']['base_lr'],
         betas=(0.9, 0.98),
         eps=1e-8,
     )
-    optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict']) if VLE_TRAIN_CONFIG['resume'] else None
+    optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict']) if VLE_TRAIN_CONFIG['resume_path'] else None
     optimizer.zero_grad()
 
     num_batches = len(train_dl) // VLE_TRAIN_CONFIG['grad_accum_steps']
@@ -81,13 +82,15 @@ def train_loop(
     
     # AMP scaler
     scaler = GradScaler() if VLE_TRAIN_CONFIG['precision'] == "amp" else None
-    scaler.load_state_dict(checkpoint_dict["scaler_state_dict"]) if (VLE_TRAIN_CONFIG['resume'] and VLE_TRAIN_CONFIG['precision'] in {'amp', 'amp_bfloat16'}) else None
+    scaler.load_state_dict(checkpoint_dict["scaler_state_dict"]) if (scaler and VLE_TRAIN_CONFIG['resume_path']) else None
 
     vle.model = compile_torch_model(vle.model) # effective only with GPUs with compute capability >= 7.0
 
     log_manager.log_title("Initial Validation")
     val_loss = vle.evaluate(val_dl, criterion)
     log_manager.log_scores(f"Before any weight update, VALIDATION", val_loss, None, 0, "val", None, "val_")
+    best_val_loss = val_loss
+
     log_manager.log_title("Training Start")
 
     autocast = get_autocast(VLE_TRAIN_CONFIG['precision'])
@@ -97,13 +100,13 @@ def train_loop(
     
     for epoch in range(VLE_TRAIN_CONFIG["num_epochs"]):
 
-        global_epoch = checkpoint_dict['global_epoch'] + epoch if VLE_TRAIN_CONFIG['resume'] else epoch
+        global_epoch = checkpoint_dict['global_epoch'] + epoch if VLE_TRAIN_CONFIG['resume_path'] else epoch
 
         for step, (images, texts) in enumerate(train_dl):
 
             step_accum = step // VLE_TRAIN_CONFIG['grad_accum_steps']
             step_counter = epoch*num_batches + step_accum
-            global_step_counter = checkpoint_dict['global_step_counter'] + step_counter if VLE_TRAIN_CONFIG['resume'] else step_counter
+            global_step_counter = checkpoint_dict['global_step_counter'] + step_counter if VLE_TRAIN_CONFIG['resume_path'] else step_counter
 
             vle.model.train()
 
@@ -208,28 +211,26 @@ def train_loop(
         val_loss = vle.evaluate(val_dl, criterion)
 
         log_manager.log_scores(f"epoch: {epoch+1}/{VLE_TRAIN_CONFIG['num_epochs']} ({global_epoch+1}), VALIDATION", val_loss, None, global_epoch+1, "val", None,"val_")
+        
+        if val_loss > best_val_loss:
+            best_val_loss = val_loss
+            
+            # best checkpoint saving
+            if VLE_TRAIN_CONFIG['save_weights_path']:
+                new_checkpoint_dict = {
+                        'global_epoch': global_epoch,
+                        'global_step_counter': global_step_counter,
+                        'model_state_dict': vle.model.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                }
+                new_checkpoint_dict |= {'scaler_state_dict': scaler.state_dict()} if scaler else {}
+
+                ckp_filename = f"flair-{vle.version}-{VLE_TRAIN_CONFIG['exp_name']}-e{global_epoch}"
+                full_ckp_path = Path(VLE_TRAIN_CONFIG['save_weights_path']) / f"{ckp_filename}.pth"
+                torch.save(new_checkpoint_dict, full_ckp_path)
+                log_manager.log_line(f"Model {full_ckp_path} successfully saved.")
 
     log_manager.log_title("Training Finished")
-
-    # checkpoint saving
-    if VLE_TRAIN_CONFIG['save_weights_path']:
-        new_checkpoint_dict = {
-                'global_epoch': global_epoch,
-                'global_step': global_step_counter,
-                'model_state_dict': vle.model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-        }
-        new_checkpoint_dict |= {'scaler_state_dict': scaler.state_dict()} if scaler else None
-
-        ckp_filename = f"flair-{vle.version}-{VLE_TRAIN_CONFIG['exp_name']}"
-        torch.save(vle.model.state_dict(), VLE_TRAIN_CONFIG['save_weights_path'] / f"{ckp_filename}.pth")
-        log_manager.log_line(f"Model '{ckp_filename}.pth' successfully saved.")
-
-    # final logs
-    log_manager.log_title("Final Evaluation")
-
-    log_manager.log_scores(f"After {VLE_TRAIN_CONFIG['num_epochs']} epochs of training, VALIDATION", val_loss, None, None, None, None, "val_")
-
 
 def main() -> None:
 
@@ -254,8 +255,8 @@ def main() -> None:
     # Vision-Language Encoder
     vle: VLEncoder = VLE_REGISTRY.get("flair", device=CONFIG['device'], vision_adapter=True)
 
-    if VLE_TRAIN_CONFIG['resume']:
-        checkpoint_dict = torch.load(TORCH_WEIGHTS_CHECKPOINTS / 'vle' / (... + ".pth"))
+    if VLE_TRAIN_CONFIG['resume_path']:
+        checkpoint_dict = torch.load(Path(VLE_TRAIN_CONFIG['resume_path']))
         vle.model.load_state_dict(checkpoint_dict['model_state_dict']) # load my weights
     else:
         checkpoint_dict = None
@@ -280,10 +281,9 @@ def main() -> None:
     train_image_text_dl = DataLoader(
         train_image_text_ds,
         batch_size=VLE_TRAIN_CONFIG["batch_size"],
-        shuffle=False,
+        shuffle=True,
         generator=get_torch_gen(),
         collate_fn=train_collate_fn,
-        num_workers=2
     )
     
     val_image_text_dl = DataLoader(
@@ -292,7 +292,6 @@ def main() -> None:
         shuffle=False,
         generator=get_torch_gen(),
         collate_fn=val_collate_fn,
-        num_workers=2
     )
 
     criterion = vle.create_loss(
