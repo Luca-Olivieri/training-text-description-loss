@@ -212,11 +212,11 @@ def train_loop(
 
         log_manager.log_scores(f"epoch: {epoch+1}/{VLE_TRAIN_CONFIG['num_epochs']} ({global_epoch+1}), VALIDATION", val_loss, None, global_epoch+1, "val", None,"val_")
         
-        if val_loss > best_val_loss:
+        if val_loss < best_val_loss:
             best_val_loss = val_loss
             
             # best checkpoint saving
-            if VLE_TRAIN_CONFIG['save_weights_path']:
+            if VLE_TRAIN_CONFIG['save_weights_root_path']:
                 new_checkpoint_dict = {
                         'global_epoch': global_epoch,
                         'global_step_counter': global_step_counter,
@@ -225,8 +225,8 @@ def train_loop(
                 }
                 new_checkpoint_dict |= {'scaler_state_dict': scaler.state_dict()} if scaler else {}
 
-                ckp_filename = f"flair-{vle.version}-{VLE_TRAIN_CONFIG['exp_name']}-e{global_epoch}"
-                full_ckp_path = Path(VLE_TRAIN_CONFIG['save_weights_path']) / f"{ckp_filename}.pth"
+                ckp_filename = f"flair-{vle.version}-{VLE_TRAIN_CONFIG['exp_name']}"
+                full_ckp_path = Path(VLE_TRAIN_CONFIG['save_weights_root_path']) / f"{ckp_filename}.pth"
                 torch.save(new_checkpoint_dict, full_ckp_path)
                 log_manager.log_line(f"Model {full_ckp_path} successfully saved.")
 

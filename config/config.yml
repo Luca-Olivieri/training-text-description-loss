@@ -14,8 +14,8 @@ seg:
     batch_size: 8
     num_epochs: 50
     log_only_to_stdout: False
-    file_logs_dir_path: "/home/olivieri/exp/logs/segnet"
-    tb_logs_dir_path: "/home/olivieri/exp/logs_tb/segnet"
+    file_logs_dir_path: '/home/olivieri/exp/logs/segnet'
+    tb_logs_dir_path: '/home/olivieri/exp/logs_tb/segnet'
     log_every: 10
     save_weights: True
 
@@ -23,7 +23,7 @@ vle:
   pretrained_weights_root_path: '/home/olivieri/exp/data/torch_weights/vle/flair'
   image_size: 224
   train:
-    exp_name: "cosine_baseline"
+    exp_name: "TEST_SAVE"
     exp_desc: null # optional
     batch_size: 128 # WITH ALL IMAGES, SET TO 256
     num_epochs: 16
@@ -40,10 +40,10 @@ vle:
     grad_accum_steps: 1 # 1 for no gradient accumuluation
     resume_path: null # optional if no resume
     log_only_to_stdout: False
-    file_logs_dir_path: "/home/olivieri/exp/logs/vle"
-    tb_logs_dir_path: "/home/olivieri/exp/logs_tb/vle"
+    file_logs_dir_path: '/home/olivieri/exp/logs/vle'
+    tb_logs_dir_path: '/home/olivieri/exp/logs_tb/vle'
     log_every: 10
-    save_weights_path: null # optional when no saving
+    save_weights_root_path: '/home/olivieri/exp/data/torch_weights/vle/flair' # optional when no saving
 
 vlm:
   image_size: 224
@@ -52,7 +52,7 @@ vlm:
   temperature: 0.1
 
 data_gen:
-  data_root: "/home/olivieri/exp/data/data_gen/COCO2017"
+  data_root: '/home/olivieri/exp/data/data_gen/COCO2017'
   exp_name: "second_train"
   batch_size: 1
   offset: 15594 # img-text idx from which to start the generation
