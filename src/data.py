@@ -608,12 +608,12 @@ class ImageDataset(Dataset):
             path: Path,
             resize_size: Optional[int | list[int, int]] = None,
             resize_mode: Optional[str] = None,
-            img_idxs: Optional[list[int] | slice] = None,
+            idxs: Optional[list[int] | slice] = None,
             center_crop: bool = False,
     ) -> None:
         self.image_paths = np.array(sorted(glob(str(path / "*.png"))))
-        if img_idxs:
-            self.image_paths = self.image_paths[img_idxs]
+        if idxs:
+            self.image_paths = self.image_paths[idxs]
         self.resize_size = resize_size
         self.resize_mode = resize_mode
         self.center_crop = center_crop
@@ -633,6 +633,7 @@ class ImageDataset(Dataset):
             img = get_image(path=self.image_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
             return img
 
+
 class ImageCaptionDataset(Dataset):
     """
     A dataset that merges a segmentation dataset and a JSONL dataset.
@@ -647,8 +648,23 @@ class ImageCaptionDataset(Dataset):
         self.img_dataset = img_dataset
         self.jsonl_dataset = jsonl_dataset
 
+        # sort in the same order found in the jsonl dataset
+        uidposc_2_i = {f'{d["img_uid"]}-{d["pos_class"]}': i for i, d in enumerate(self.jsonl_dataset)}
+        self.img_dataset.image_paths = sorted(self.img_dataset.image_paths, key=lambda x: self.sort_fn(x, uidposc_2_i))
+
         if len(self.img_dataset) != len(self.jsonl_dataset):
             raise AttributeError(f"The segmentation and JSONL datasets have different lengths.\nImageDataset: {len(self.img_dataset)}, JSONLDataset: {len(self.jsonl_dataset)}.")
+        
+        if any(str(Path(img).stem) != f'{jsl["img_uid"]}-{jsl["pos_class"]}' for img, jsl in zip(self.img_dataset.image_paths, self.jsonl_dataset)):
+            raise AttributeError("The images and JSONL samples are in a different order.")
+    
+    def sort_fn(
+            self,
+            p: str,
+            uidposc_2_i: dict
+    ):
+        p = Path(p).stem
+        return uidposc_2_i[p]
 
     def __len__(self) -> int:
         return min(len(self.img_dataset), len(self.jsonl_dataset))
@@ -670,6 +686,7 @@ class ImageCaptionDataset(Dataset):
             # ...
             # jsonl_data is a dict
             return (img_data, jsonl_data)
+
 
 def get_image(
         path: Path,

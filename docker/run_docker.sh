@@ -17,9 +17,9 @@ echo "CODE_FOLDER is $CODE_FOLDER"
 # IMAGE_NAME is not set initially
 TAG=latest
 
-STORAGE_FOLDER=/multiverse/storage/$(whoami)/
+STORAGE_FOLDER=/megaverse/storage/$(whoami)/
 SHARED_DATASET_FOLDER=/multiverse/datasets/shared/
-PRIVATE_DATASET_FOLDER=/multiverse/datasets/$(whoami)/
+PRIVATE_DATASET_FOLDER=/megaverse/datasets/$(whoami)/
 
 WORKING_DIR=/home/$(whoami)/exp 
 MEMORY_LIMIT=32g
