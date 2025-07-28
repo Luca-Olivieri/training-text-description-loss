@@ -260,18 +260,24 @@ def main() -> None:
             JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/train/captions.jsonl')),
         ),
         ImageCaptionDataset(
+            ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/COCO2017/train/images_{mask_color}')),
+            JSONLDataset(Path('/home/olivieri/exp/data/data_gen/COCO2017/train/captions.jsonl'))
+        )
+    ])
+
+    val_image_text_ds = ConcatDataset([
+        ImageCaptionDataset(
+            ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/VOC2012/val/images_{mask_color}')),
+            JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/val/captions.jsonl'))
+        ),
+        ImageCaptionDataset(
             ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/COCO2017/val/images_{mask_color}')),
             JSONLDataset(Path('/home/olivieri/exp/data/data_gen/COCO2017/val/captions.jsonl'))
         )
     ])
 
-    val_image_text_ds = ImageCaptionDataset(
-        ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/VOC2012/val/images_{mask_color}')),
-        JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/val/captions.jsonl'))
-    )
-
     # Vision-Language Encoder
-    vle: VLEncoder = VLE_REGISTRY.get("flair", device=CONFIG['device'], vision_adapter=True)
+    vle: VLEncoder = VLE_REGISTRY.get("flair", version='flair-cc3m-recap.pt', device=CONFIG['device'], vision_adapter=False, text_adapter=True)
 
     checkpoint_dict = None
     if VLE_TRAIN_CONFIG['resume_path']:
@@ -282,7 +288,8 @@ def main() -> None:
         else:
             raise AttributeError(f"ERROR: Resume path '{resume_path}' not found. ")
     
-    vle.set_vision_trainable_params(['proj', 'visual_proj', 'vision_adapter'])
+    # vle.set_vision_trainable_params(['proj', 'visual_proj', 'vision_adapter'])
+    vle.set_vision_trainable_params(['text_adapter'])
 
     # DataLoaders
     train_collate_fn = partial(

@@ -134,7 +134,7 @@ class VLEncoder(ABC):
             upsample_size: Optional[int | tuple[int]] = None,
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
             broadcast: bool = False,
-            attn_heads_idx: Optional[list[int]] = None # [0, 3, 5, 7]
+            attn_heads_idx: Optional[list[int]] = None # [0, 3, 5, 7] are selected by the authors for FLAIR
     ) -> torch.Tensor:
         """
         Encodes image and text and returns the attention maps from the visual projection layer.
@@ -261,7 +261,8 @@ class FLAIRAdapter(VLEncoder):
                              'flair-yfcc15m-recap.pt',
                              'flair-merged30m.pt'] = 'flair-cc3m-recap.pt',
             device: str = 'cuda',
-            vision_adapter: bool = False
+            vision_adapter: bool = False,
+            text_adapter: bool = False
     ) -> None:
         self.device = device
         self.version = version
@@ -270,10 +271,13 @@ class FLAIRAdapter(VLEncoder):
         # pretrained = flair.download_weights_from_hf(model_repo='xiaorui638/flair', filename=version)
         pretrained = hf_hub_download(repo_id='xiaorui638/flair', filename=version, cache_dir=CONFIG['vle']['pretrained_weights_root_path'])
         model, _, preprocess_fn = flair.create_model_and_transforms('ViT-B-16-FLAIR', pretrained=pretrained, device=self.device)
+        # NOTE the authors do not use a bias nor an activation function, I won't use them either.
         if vision_adapter:
-            # NOTE the authors do not use a bias nor an activation function, I won't use them either, but I should experiment anyway.
             vision_adapter = nn.Linear(512, 512, bias=False, device=self.device)
             model.add_module('vision_adapter', vision_adapter)
+        if text_adapter:
+            text_adapter = nn.Linear(512, 512, bias=False, device=self.device)
+            model.add_module('text_adapter', text_adapter)
         self.model: FLAIR = model
         self.init_weights()
         self.model.requires_grad_(False)
@@ -293,6 +297,12 @@ class FLAIRAdapter(VLEncoder):
             # Initialise the bias to zeros
             if self.model.vision_adapter.bias is not None:
                 nn.init.zeros_(self.model.vision_adapter.bias)
+        if hasattr(self.model, 'text_adapter'):
+            # Use Xavier Uniform initialisation for the weight matrix
+            nn.init.xavier_uniform_(self.model.text_adapter.weight)
+            # Initialise the bias to zeros
+            if self.model.text_adapter.bias is not None:
+                nn.init.zeros_(self.model.text_adapter.bias)
 
     @torch.inference_mode()
     def preprocess_images(
@@ -334,6 +344,10 @@ class FLAIRAdapter(VLEncoder):
         if hasattr(self.model, 'vision_adapter'):
             global_image_token = self.model.vision_adapter(global_image_token) # [B_i, D]
             local_image_tokens = self.model.vision_adapter(local_image_tokens) # [B_i, n_i, D]
+        
+        if hasattr(self.model, 'text_adapter'):
+            global_text_token = self.model.text_adapter(global_text_token) # [B_i, D]
+            local_text_tokens = self.model.text_adapter(local_text_tokens) # [B_i, n_i, D]
 
         image_batch_size = local_image_tokens.shape[0] # B_i, n_i
 
@@ -388,15 +402,21 @@ class FLAIRAdapter(VLEncoder):
     def set_vision_trainable_params(
             self,
             trainable_modules: list[Literal['vision_adapter',
+                                            'text_adapter',
                                             'proj',
                                             'visual_proj']],
     ) -> None:
         # LUT: module name -> module
         train_modules_lut = {
-            'vision_adapter': self.model.vision_adapter,
             'proj': self.model.image_post,
             'visual_proj': self.model.visual_proj
         }
+
+        if hasattr(self.model, 'vision_adapter'):
+            train_modules_lut |= {'vision_adapter': self.model.vision_adapter}
+        
+        if hasattr(self.model, 'text_adapter'):
+            train_modules_lut |= {'text_adapter': self.model.text_adapter}
 
         # first, gradients are disabled for all modules.
         self.model.requires_grad_(False)

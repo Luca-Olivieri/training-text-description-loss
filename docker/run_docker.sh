@@ -99,7 +99,7 @@ fi
 
 # Prefix IMAGE_NAME with the username
 # CONTAINER_NAME=$(whoami)_{$IMAGE_NAME}_$(date +%Y%m%d)
-CONTAINER_NAME=$(whoami)_${IMAGE_NAME}_GPU${GPU_DEVICE//,/.}_$(date +%F_%H.%M)
+CONTAINER_NAME=$(whoami)_${IMAGE_NAME}_GPU${GPU_DEVICE//,/.}_CPU${CPU_SET}_$(date +%F_%H.%M)
 
 echo "WORKING_DIR     = ${WORKING_DIR}"
 echo "GPU_DEVICE      = ${GPU_DEVICE}"

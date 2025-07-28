@@ -59,8 +59,8 @@ def overlay_map(
     mask_expanded = pos_mask.unsqueeze(0) # Unsqueeze the mask to [1, H, W] to allow broadcasting with [3, 1, 1] for RGB values
 
     # Unsqueeze the RGB fill values to [3, 1, 1]
-    pos_rgb_fill_expanded = (torch.tensor(pos_rgb_fill)*alpha/255.).unsqueeze(1).unsqueeze(2)
-    neg_rgb_fill_expanded = (torch.tensor(neg_rgb_fill)*alpha/255.).unsqueeze(1).unsqueeze(2)
+    pos_rgb_fill_expanded = (torch.tensor(pos_rgb_fill)/255.).unsqueeze(1).unsqueeze(2)
+    neg_rgb_fill_expanded = (torch.tensor(neg_rgb_fill)/255.).unsqueeze(1).unsqueeze(2)
 
     # Use torch.where to select values based on the mask
     # This will broadcast mask_expanded to [3, H, W] and then apply the condition
@@ -69,7 +69,7 @@ def overlay_map(
     if normalize:
         map = normalize_sim_maps(map)
 
-    overlay_tensor = torch.concat([output_rgb.cpu(), map.abs().cpu()], dim=0) # [4, H, W]
+    overlay_tensor = torch.concat([output_rgb.cpu(), map.abs().cpu()*(alpha)], dim=0) # [4, H, W]
     overlay_img = to_pil_image(overlay_tensor).convert('RGBA')
     return Image.alpha_composite(background_img, overlay_img).convert('RGB')
 
@@ -124,16 +124,17 @@ def display_prompt(full_prompt: str | Prompt) -> None:
                 display(Markdown(prompt))
     
 def write_html_multi_row_image_caption(
+        title: str,
         rows: dict[str: list[Image.Image]],
         captions: list[str]
 ) -> None:
     row_labels = list(rows.keys())
     column_data = [list(x) for x in list(zip(*list(rows.values())))]
 
-    generated_html = create_multi_row_gallery(row_labels, column_data, captions)
+    generated_html = create_multi_row_gallery(title, row_labels, column_data, captions)
 
     try:
-        with open("sim_viz.html", "w") as file:
+        with open(f"{title}.html", "w") as file:
             file.write(generated_html)
         print("Successfully created index.html. Open it in your browser to see the result.")
     except IOError as e:
@@ -167,6 +168,7 @@ def get_image_base64_data(image):
         return None, None
 
 def create_multi_row_gallery(
+        title: str,
         row_labels: list[str],
         column_data: list[list[Image.Image]],
         captions: list[str]
@@ -235,7 +237,7 @@ def create_multi_row_gallery(
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Multi-Row Image Gallery</title>
+    <title>{title}</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
     <style>
@@ -277,7 +279,7 @@ def create_multi_row_gallery(
 <body class="min-h-screen flex flex-col items-center justify-center p-4 sm:p-8">
 
     <div class="w-full max-w-screen-xl mx-auto">
-        <h1 class="text-3xl font-bold text-center text-gray-800 mb-8">Multi-Row Comparison Gallery</h1>
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-8">{title}</h1>
         
         <!-- The horizontally scrolling container -->
         <div class="horizontal-scroll-container overflow-x-auto pb-4">

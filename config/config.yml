@@ -23,29 +23,27 @@ vle:
   pretrained_weights_root_path: '/home/olivieri/exp/data/torch_weights/vle/flair'
   image_size: 224
   train:
-    exp_name: "baseline_cosine_grad_accum"
-    exp_desc: null # optional
-    batch_size: 64 # WITH ALL IMAGES, SET TO 256
+    exp_name: 'l-adapters_L'
+    exp_desc: "Training text adapters, L masks, with the cc3m-recap pretraining." # optional
+    batch_size: 256
     num_epochs: 16
-    mask_color: 'RB' # 'RB' (red-blue) or 'L' (black-white)
+    mask_color: 'L' # 'RB' (red-blue) or 'L' (black-white)
     precision: 'amp_bfloat16' # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
     lr_schedule:
-      policy: 'const'
+      policy: 'cosine'
       base_lr: 5.0e-4 # 5e-4
       warmup_length: 100 # 0 for no warmup
       epochs_cooldown: null
       lr_cooldown_power: null
       lr_cooldown_end: null
     grad_clip_norm: 10.0 # optional
-    grad_accum_steps: 2 # 1 for no gradient accumuluation
-    # resume_path: '/home/olivieri/exp/data/torch_weights/vle/flair/flair-flair-cc3m-recap.pt-baseline_const_250723_1902.pth' # optional if no resume
+    grad_accum_steps: 1 # 1 for no gradient accumuluation
     resume_path: null # optional if no resume
     log_only_to_stdout: False
     file_logs_dir_path: '/home/olivieri/exp/logs/vle'
     tb_logs_dir_path: '/home/olivieri/exp/logs_tb/vle'
     log_every: 10
     save_weights_root_path: '/home/olivieri/exp/data/torch_weights/vle/flair' # optional (no weight saving)
-    # save_weights_root_path: null
 
 vlm:
   image_size: 224
@@ -55,9 +53,9 @@ vlm:
 
 data_gen:
   data_root: '/home/olivieri/exp/data/data_gen/COCO2017'
-  exp_name: "last_train"
+  exp_name: "l2_train"
   batch_size: 1
-  offset: 19392 # img-text idx from which to start the generation
+  offset: 34098 # img-text idx from which to start the generation
   alpha: 0.55 # the greater, the less scene is visible
   print_every: 100
   temperature: 0.7 # null for default values
