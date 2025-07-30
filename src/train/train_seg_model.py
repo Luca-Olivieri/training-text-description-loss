@@ -97,40 +97,49 @@ def train_loop(
             model.train()
 
             scs = scs.to(CONFIG["device"])
-            gts = gts.to(CONFIG["device"]) # shape [N, H, W]
-
-            optimizer.zero_grad()
+            gts = gts.to(CONFIG["device"]) # shape [B, H, W]
 
             logits = model(scs)
             logits: torch.Tensor = logits["out"] if isinstance(logits, OrderedDict) else logits # shape [N, C, H, W]
 
-            batch_loss = criterion(logits, gts)
+            batch_loss = criterion(logits, gts) / grad_accum_steps
             batch_loss.backward()
 
+            train_metrics.update(logits.detach().argmax(dim=1), gts)
+
+            is_last_batch = (step + 1) == num_batches_per_epoch
+            is_accum_step = (step + 1) % grad_accum_steps == 0
+
             # --- Optimizer Step and Scheduler Update ---
-            if scheduler:
-                scheduler(global_step)
+            if is_accum_step or is_last_batch:
+                
+                if scheduler:
+                    scheduler(global_step)
 
-            grad_norm = 0.0
-            if SEG_TRAIN_CONFIG['grad_clip_norm']:
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), SEG_TRAIN_CONFIG['grad_clip_norm'], norm_type=2.0)
-            optimizer.step()
-
-            if not SEG_TRAIN_CONFIG['grad_clip_norm']:
-                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf'), norm_type=2.0)
-
-            global_step += 1 # Increment global step *only* after an optimizer step
-
-            # --- Logging ---
-            if global_step % SEG_TRAIN_CONFIG['log_every'] == 0:
-                train_metrics_score = train_metrics(logits.argmax(dim=1), gts)
-                current_lr = optimizer.param_groups[0]['lr']
-                step_in_epoch = (step // grad_accum_steps) + 1
-                log_manager.log_scores(
-                    f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, step: {step_in_epoch}/{num_steps_per_epoch} (global_step: {global_step})",
-                    batch_loss, train_metrics_score, global_step, "train",
-                    f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}", "batch_"
+                max_grad_norm = SEG_TRAIN_CONFIG['grad_clip_norm']
+                grad_norm = torch.nn.utils.clip_grad_norm_(
+                    model.parameters(),
+                    max_grad_norm if max_grad_norm else float('inf'),
+                    norm_type=2.0
                 )
+                
+                optimizer.step()
+                optimizer.zero_grad()
+
+                global_step += 1 # Increment global step *only* after an optimizer step
+
+                # --- Logging ---
+                if global_step % SEG_TRAIN_CONFIG['log_every'] == 0:
+                    train_metrics_score = train_metrics.compute()
+                    # Reset metrics after logging to measure stats for the next interval
+                    train_metrics.reset()
+                    current_lr = optimizer.param_groups[0]['lr']
+                    step_in_epoch = (step // grad_accum_steps) + 1
+                    log_manager.log_scores(
+                        f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, step: {step_in_epoch}/{num_steps_per_epoch} (global_step: {global_step})",
+                        batch_loss * grad_accum_steps, train_metrics_score, global_step, "train",
+                        f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}", "batch_"
+                    )
 
             torch.cuda.synchronize() if CONFIG['device'] == 'cuda' else None
 
