@@ -13,19 +13,23 @@ import torchvision.transforms.v2 as T
 from torchvision.transforms._presets import SemanticSegmentation
 from torchmetrics.classification import MulticlassAccuracy, MulticlassJaccardIndex
 import torchmetrics as tm
+from open_clip_train.scheduler import cosine_lr, const_lr, const_lr_cooldown
+import math
 
-from typing import Callable
+from typing import Callable, Optional
 
 SEG_CONFIG = CONFIG['seg']
 SEG_TRAIN_CONFIG = SEG_CONFIG['train']
 
 if SEG_TRAIN_CONFIG['log_only_to_stdout']:
     log_manager = LogManager(
-        exp_name=SEG_TRAIN_CONFIG['exp_name']
+        exp_name=SEG_TRAIN_CONFIG['exp_name'],
+        exp_desc=SEG_TRAIN_CONFIG['exp_desc'],
     )
 else:
     log_manager = LogManager(
         exp_name=SEG_TRAIN_CONFIG['exp_name'],
+        exp_desc=SEG_TRAIN_CONFIG['exp_desc'],
         file_logs_dir_path=SEG_TRAIN_CONFIG['file_logs_dir_path'],
         tb_logs_dir_path=SEG_TRAIN_CONFIG['tb_logs_dir_path']
     )
@@ -36,22 +40,55 @@ def train_loop(
         val_dl: DataLoader,
         criterion: Callable,
         metrics_dict: dict[dict, tm.Metric],
+        checkpoint_dict: Optional[dict] = None
 ) -> None:
     
-    train_metrics = tm.MetricCollection(metrics_dict)
+    # --- 1. Initialization and State Restoration ---
+    start_epoch = 0
+    global_step = 0
+    if checkpoint_dict:
+        start_epoch = checkpoint_dict['epoch'] + 1
+        global_step = checkpoint_dict['global_step']
+        log_manager.log_line(f"Resuming training from epoch {start_epoch}, global step {global_step}.")
 
-    lr = 1e-4
+    grad_accum_steps = SEG_TRAIN_CONFIG['grad_accum_steps']
+    num_batches_per_epoch = len(train_dl)
+    # The number of optimizer steps per epoch
+    num_steps_per_epoch = math.ceil(num_batches_per_epoch / grad_accum_steps)
+
+    # --- 2. Optimizer Setup ---
+    lr=SEG_TRAIN_CONFIG['lr_schedule']['base_lr']
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    if checkpoint_dict:
+        optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict'])
 
-    log_manager.log_title("Initial Validation")
+    # --- 3. Scheduler Setup ---
+    total_steps = num_steps_per_epoch * SEG_TRAIN_CONFIG['num_epochs']
+    sched_config = SEG_TRAIN_CONFIG['lr_schedule']
     
-    # initial val. logs log to file and TensorBoard
+    scheduler = None
+    if sched_config['policy'] == 'const':
+        scheduler = const_lr(optimizer, sched_config['base_lr'], sched_config['warmup_length'], total_steps)
+    elif sched_config['policy'] == 'const-cooldown':
+        cooldown_steps = num_steps_per_epoch * sched_config['epochs_cooldown']
+        scheduler = const_lr_cooldown(optimizer, sched_config['base_lr'], sched_config['warmup_length'], total_steps, cooldown_steps, sched_config['lr_cooldown_power'], sched_config['lr_cooldown_end'])
+    elif sched_config['policy'] == 'cosine':
+        scheduler = cosine_lr(optimizer, sched_config['base_lr'], sched_config['warmup_length'], total_steps)
+
+    # --- 4. AMP and Model Compilation Setup ---
+    ...
+
+    # --- 5. Initial Validation ---
+    log_manager.log_title("Initial Validation")
     val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
-    log_manager.log_scores(f"Before any weight update, VALIDATION", val_loss, val_metrics_score, 0, "val", None, "val_")
+    log_manager.log_scores(f"Before any weight update, VALIDATION", val_loss, val_metrics_score, start_epoch, "val", None, "val_")
+    best_val_mIoU = val_metrics_score['mIoU']
 
     log_manager.log_title("Training Start")
     
-    for epoch in range(SEG_TRAIN_CONFIG["num_epochs"]):
+    # --- 6. Main Training Loop ---
+    train_metrics = tm.MetricCollection(metrics_dict)
+    for epoch in range(start_epoch, SEG_TRAIN_CONFIG["num_epochs"]):
 
         train_metrics.reset()
 
@@ -70,29 +107,57 @@ def train_loop(
             batch_loss = criterion(logits, gts)
             batch_loss.backward()
 
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 10.0) # clip gradients
+            # --- Optimizer Step and Scheduler Update ---
+            if scheduler:
+                scheduler(global_step)
+
+            grad_norm = 0.0
+            if SEG_TRAIN_CONFIG['grad_clip_norm']:
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), SEG_TRAIN_CONFIG['grad_clip_norm'], norm_type=2.0)
             optimizer.step()
 
-            train_metrics_score = train_metrics(logits.argmax(dim=1), gts)
+            if not SEG_TRAIN_CONFIG['grad_clip_norm']:
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), float('inf'), norm_type=2.0)
 
-            tb_log_counter = epoch*len(train_dl) + step + 1
+            global_step += 1 # Increment global step *only* after an optimizer step
 
-            # train. logs to file and TensorBoard
-            if (step+1) % SEG_TRAIN_CONFIG['log_every'] == 0:
-                log_manager.log_scores(f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, step: {step+1}/{len(train_dl)}", batch_loss, train_metrics_score, tb_log_counter, "train", f", lr: {lr:.2e}, grad_norm: {grad_norm:.2f}" ,"batch_")
+            # --- Logging ---
+            if global_step % SEG_TRAIN_CONFIG['log_every'] == 0:
+                train_metrics_score = train_metrics(logits.argmax(dim=1), gts)
+                current_lr = optimizer.param_groups[0]['lr']
+                step_in_epoch = (step // grad_accum_steps) + 1
+                log_manager.log_scores(
+                    f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, step: {step_in_epoch}/{num_steps_per_epoch} (global_step: {global_step})",
+                    batch_loss, train_metrics_score, global_step, "train",
+                    f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}", "batch_"
+                )
 
             torch.cuda.synchronize() if CONFIG['device'] == 'cuda' else None
 
+        # --- End of Epoch Validation and Checkpointing ---
         val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)
+        log_manager.log_scores(f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, VALIDATION", val_loss, val_metrics_score, epoch+1, "val", None, "val_")
 
-        log_manager.log_scores(f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, VALIDATION", val_loss, val_metrics_score, epoch+1, "val", None,"val_")
+        if val_metrics_score['mIoU'] > best_val_mIoU:
+            best_val_mIoU = val_metrics_score['mIoU']
+            
+            if SEG_TRAIN_CONFIG['save_weights_root_path']:
+                # Note: 'epoch' is saved, so on resume we start from 'epoch + 1'
+                new_checkpoint_dict = {
+                    'epoch': epoch,
+                    'global_step': global_step,
+                    'model_state_dict': model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                }
+
+                save_dir = Path(SEG_TRAIN_CONFIG['save_weights_root_path'])
+                save_dir.mkdir(parents=True, exist_ok=True)
+                ckp_filename = f"lraspp_mobilenet_v3_large_{SEG_TRAIN_CONFIG['exp_name']}.pth"
+                full_ckp_path = save_dir / ckp_filename
+                torch.save(new_checkpoint_dict, full_ckp_path)
+                log_manager.log_line(f"New best model saved to {full_ckp_path} with validation mIoU: {best_val_mIoU:.4f}")
     
     log_manager.log_title("Training Finished")
-    
-    # final train. logs to file
-    train_loss, train_metrics_score = evaluate(model, train_dl, criterion, metrics_dict)
-    log_manager.log_scores(f"After {SEG_TRAIN_CONFIG['num_epochs']} epochs of training, TRAINING", train_loss, train_metrics_score, tb_log_counter, "train", None, "train_")
-    log_manager.log_scores(f"After {SEG_TRAIN_CONFIG['num_epochs']} epochs of training, VALIDATION", val_loss, val_metrics_score, None, None, None, "val_")
 
 def main() -> None:
 
@@ -102,27 +167,34 @@ def main() -> None:
         resize_size=SEG_CONFIG['image_size'],
         center_crop=True,
         with_unlabelled=True,
-        uids_to_exclude=['2007_000256']
     )
 
     val_ds = VOC2012SegDataset(
         root_path=Path("/home/olivieri/exp/data/VOCdevkit"),
-        split='train',
+        split='val',
         resize_size=SEG_CONFIG['image_size'],
         center_crop=True,
         with_unlabelled=True,
-        uids_to_exclude=['2007_000256']
     )
 
     model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
-    model.load_state_dict(torch.load(TORCH_WEIGHTS_CHECKPOINTS / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
+    model.load_state_dict(torch.load(Path(SEG_CONFIG['pretrained_weights_root_path']) / ("lraspp_mobilenet_v3_large-enc-pt" + ".pth")))
     model.eval()
+
+    checkpoint_dict = None
+    if SEG_TRAIN_CONFIG['resume_path']:
+        resume_path = Path(SEG_TRAIN_CONFIG['resume_path'])
+        if resume_path.exists():
+            checkpoint_dict = torch.load(resume_path, map_location=CONFIG['device'])
+            model.load_state_dict(checkpoint_dict['model_state_dict'])
+        else:
+            raise AttributeError(f"ERROR: Resume path '{resume_path}' not found. ")
 
     set_trainable_params(model, train_decoder_only=SEG_TRAIN_CONFIG['train_decoder_only'])
     
     preprocess_fn = partial(SemanticSegmentation, resize_size=SEG_CONFIG['image_size'])() # same as original one, but with custom resizing
 
-    # cropping functions
+    # training cropping functions
     center_crop_fn = T.CenterCrop(SEG_CONFIG['image_size'])
     random_crop_fn = T.RandomCrop(SEG_CONFIG['image_size'])
     
@@ -169,11 +241,8 @@ def main() -> None:
         "acc": MulticlassAccuracy(num_classes=train_ds.get_num_classes(with_unlabelled=True), top_k=1, average="micro", multidim_average="global", ignore_index=21).to(CONFIG["device"]),
         "mIoU": MulticlassJaccardIndex(num_classes=train_ds.get_num_classes(with_unlabelled=True), average="macro", ignore_index=21).to(CONFIG["device"]),
     }
-
-    # TODO speed up things
-    # TODO check if the pre-processing can in be coded better.
-    # TODO integrate callbacks such as save the best model, etc.
-    # TODO Excluding the VOID during training worsen the segmentation visual quality since the borders can be fucked up, it it correct to exclude it?.
+    
+    # NOTE Excluding the VOID during training worsen the segmentation visual quality since the borders can be fucked up, ii it correct to exclude it?.
 
     log_manager.log_intro(
         config=CONFIG,
@@ -193,14 +262,11 @@ def main() -> None:
         train_dl,
         val_dl,
         criterion,
-        metrics_dict
+        metrics_dict,
+        checkpoint_dict
     )
     except KeyboardInterrupt:
-        log_manager.log_title("Training Interrupted")
-    
-    if SEG_TRAIN_CONFIG['save_weights']:
-        torch.save(model.state_dict(), TORCH_WEIGHTS_CHECKPOINTS / f"lraspp_mobilenet_v3_large-{SEG_TRAIN_CONFIG['exp_name']}.pth")
-        log_manager.log_line(f"Model 'lraspp_mobilenet_v3_large-{SEG_TRAIN_CONFIG['exp_name']}.pth' successfully saved.")
+        log_manager.log_title("Training Interrupted", pad_symbol='~')
 
     log_manager.close_loggers()
 

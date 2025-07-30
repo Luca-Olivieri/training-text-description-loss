@@ -403,12 +403,14 @@ class FLAIRAdapter(VLEncoder):
             self,
             trainable_modules: list[Literal['vision_adapter',
                                             'text_adapter',
-                                            'proj',
+                                            'image_proj',
+                                            'text_proj',
                                             'visual_proj']],
     ) -> None:
         # LUT: module name -> module
         train_modules_lut = {
-            'proj': self.model.image_post,
+            'image_proj': self.model.image_post,
+            'text_proj': self.model.text_post,
             'visual_proj': self.model.visual_proj
         }
 

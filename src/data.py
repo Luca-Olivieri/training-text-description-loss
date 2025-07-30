@@ -141,9 +141,13 @@ class VOC2012SegDataset(SegDataset):
         if self.img_idxs:
             self.image_UIDs = self.image_UIDs[self.img_idxs]
 
+        self.sc_root_path = root_path / 'VOC2012' / 'JPEGImages'
+        self.gt_root_path = root_path / 'VOC2012' / 'SegmentationClass'
+
         self.scs_paths = np.array([root_path / 'VOC2012' / 'JPEGImages' / f"{uid}.jpg" for uid in self.image_UIDs])
         self.gts_paths = np.array([root_path / 'VOC2012' / 'SegmentationClass' / f"{uid}.png" for uid in self.image_UIDs])
 
+        self.mask_prs_path = mask_prs_path
         if mask_prs_path:
             if self.img_idxs:
                 self.prs_paths = np.array([mask_prs_path / f'mask_pr_{img_i}.png' for img_i in img_idxs])
@@ -202,11 +206,18 @@ class VOC2012SegDataset(SegDataset):
             self,
             idx: int | list[int] | slice
     ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
+        scs_paths = np.array([self.sc_root_path / f"{uid}.jpg" for uid in self.image_UIDs])
+        gts_paths = np.array([self.gt_root_path / f"{uid}.png" for uid in self.image_UIDs])
+        if self.mask_prs_path:
+            if self.img_idxs:
+                prs_paths = np.array([self.mask_prs_path / f'mask_pr_{img_i}.png' for img_i in self.img_idxs])
+            else:
+                prs_paths = np.array([self.mask_prs_path / f'mask_pr_{i}.png' for i, uid in enumerate(self.image_UIDs)])
         if isinstance(idx, int):
-            sc = self.get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
-            gt = self.get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
+            sc = self.get_sc(path=scs_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
+            gt = self.get_gt(path=gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
             if self.mask_prs_path:
-                pr = self.get_pr(path=self.prs_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
+                pr = self.get_pr(path=prs_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
                 return sc, gt, pr
             else:
                 return sc, gt
@@ -214,10 +225,10 @@ class VOC2012SegDataset(SegDataset):
             indices = range(*idx.indices(len(self)))
         elif isinstance(idx, list):
             indices = idx
-        scs = [self.get_sc(path=self.scs_paths[i], resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
-        gts = [self.get_gt(path=self.gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+        scs = [self.get_sc(path=scs_paths[i], resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+        gts = [self.get_gt(path=gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
         if self.mask_prs_path:
-            prs = [self.get_pr(path=self.prs_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+            prs = [self.get_pr(path=prs_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
             return scs, gts, prs
         else:
             return scs, gts
@@ -438,7 +449,7 @@ class COCO2017SegDataset(SegDataset):
             idx: int | list[int] | slice
     ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
             if isinstance(idx, int):
-                sc_dict = self.coco.loadImgs([self.image_UIDs[idx]])[0] # the output is a singleton list
+                sc_dict = self.coco.loadImgs([int(self.image_UIDs[idx])])[0] # the output is a singleton list
                 sc = self.get_sc(self.scs_root_path / sc_dict["file_name"], resize_size=self.resize_size, resize_mode=self.sc_resize_mode, center_crop=self.center_crop)
                 gt = self.get_gt(sc_dict, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop)
                 return sc, gt
@@ -447,7 +458,7 @@ class COCO2017SegDataset(SegDataset):
             elif isinstance(idx, list):
                 indices = idx
             
-            scs_dict = self.coco.loadImgs(self.image_UIDs[indices])
+            scs_dict = self.coco.loadImgs([int(uid) for uid in self.image_UIDs[indices]])
             scs = [self.get_sc(self.scs_root_path / sc_d["file_name"], resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]            
             gts = [self.get_gt(sc_d, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]
 
@@ -642,21 +653,26 @@ class ImageCaptionDataset(Dataset):
     """
     def __init__(
             self,
-            img_dataset: ImageDataset,
+            img_dataset: ImageDataset | SegDataset,
             jsonl_dataset: JSONLDataset
     ) -> None:
-        self.img_dataset = img_dataset
         self.jsonl_dataset = jsonl_dataset
-
-        # sort in the same order found in the jsonl dataset
-        uidposc_2_i = {f'{d["img_uid"]}-{d["pos_class"]}': i for i, d in enumerate(self.jsonl_dataset)}
-        self.img_dataset.image_paths = sorted(self.img_dataset.image_paths, key=lambda x: self.sort_fn(x, uidposc_2_i))
-
-        if len(self.img_dataset) != len(self.jsonl_dataset):
-            raise AttributeError(f"The segmentation and JSONL datasets have different lengths.\nImageDataset: {len(self.img_dataset)}, JSONLDataset: {len(self.jsonl_dataset)}.")
         
-        if any(str(Path(img).stem) != f'{jsl["img_uid"]}-{jsl["pos_class"]}' for img, jsl in zip(self.img_dataset.image_paths, self.jsonl_dataset)):
-            raise AttributeError("The images and JSONL samples are in a different order.")
+        if isinstance(img_dataset, ImageDataset):
+            self.img_dataset = img_dataset
+            
+            # sort in the same order found in the jsonl dataset
+            uidposc_2_i = {f'{d["img_uid"]}-{d["pos_class"]}': i for i, d in enumerate(self.jsonl_dataset)}
+            self.img_dataset.image_paths = sorted(self.img_dataset.image_paths, key=lambda x: self.sort_fn(x, uidposc_2_i))
+
+            if len(self.img_dataset) != len(self.jsonl_dataset):
+                raise AttributeError(f"The segmentation and JSONL datasets have different lengths.\nImageDataset: {len(self.img_dataset)}, JSONLDataset: {len(self.jsonl_dataset)}.")
+            
+            if any(str(Path(img).stem) != f'{jsl["img_uid"]}-{jsl["pos_class"]}' for img, jsl in zip(self.img_dataset.image_paths, self.jsonl_dataset)):
+                raise AttributeError("The images and JSONL samples are in a different order.")
+        elif isinstance(img_dataset, SegDataset):
+            img_dataset.image_UIDs = [d["img_uid"] for d in self.jsonl_dataset]
+            self.img_dataset = img_dataset
     
     def sort_fn(
             self,
@@ -679,11 +695,13 @@ class ImageCaptionDataset(Dataset):
         jsonl_data = self.jsonl_dataset[idx]
 
         if isinstance(idx, slice):
-            # ...
+            if isinstance(self.img_dataset, SegDataset):
+                img_data, _ = zip(*img_data)
             # jsonl_data is a list of dicts
             return [(id, jd) for id, jd in zip(img_data, jsonl_data)]
         else:
-            # ...
+            if isinstance(self.img_dataset, SegDataset):
+                img_data, _ = img_data
             # jsonl_data is a dict
             return (img_data, jsonl_data)
 
