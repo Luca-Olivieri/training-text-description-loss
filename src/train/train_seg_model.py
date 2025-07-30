@@ -12,6 +12,7 @@ from torchvision.models import segmentation as segmodels
 import torchvision.transforms.v2 as T
 from torchvision.transforms._presets import SemanticSegmentation
 from torchmetrics.classification import MulticlassAccuracy, MulticlassJaccardIndex
+from torch.nn.modules.loss import _Loss
 import torchmetrics as tm
 from open_clip_train.scheduler import cosine_lr, const_lr, const_lr_cooldown
 import math
@@ -38,7 +39,7 @@ def train_loop(
         model: nn.Module,
         train_dl: DataLoader,
         val_dl: DataLoader,
-        criterion: Callable,
+        criterion: _Loss,
         metrics_dict: dict[dict, tm.Metric],
         checkpoint_dict: Optional[dict] = None
 ) -> None:
@@ -90,7 +91,7 @@ def train_loop(
     train_metrics = tm.MetricCollection(metrics_dict)
     for epoch in range(start_epoch, SEG_TRAIN_CONFIG["num_epochs"]):
 
-        train_metrics.reset()
+        train_metrics.reset() # in theory, this can be removed
 
         for step, (scs, gts) in enumerate(train_dl):
 
@@ -102,7 +103,7 @@ def train_loop(
             logits = model(scs)
             logits: torch.Tensor = logits["out"] if isinstance(logits, OrderedDict) else logits # shape [N, C, H, W]
 
-            batch_loss = criterion(logits, gts) / grad_accum_steps
+            batch_loss: torch.Tensor = criterion(logits, gts) / grad_accum_steps
             batch_loss.backward()
 
             train_metrics.update(logits.detach().argmax(dim=1), gts)
@@ -130,9 +131,7 @@ def train_loop(
 
                 # --- Logging ---
                 if global_step % SEG_TRAIN_CONFIG['log_every'] == 0:
-                    train_metrics_score = train_metrics.compute()
-                    # Reset metrics after logging to measure stats for the next interval
-                    train_metrics.reset()
+                    train_metrics_score = train_metrics.compute()                    
                     current_lr = optimizer.param_groups[0]['lr']
                     step_in_epoch = (step // grad_accum_steps) + 1
                     log_manager.log_scores(
@@ -141,7 +140,9 @@ def train_loop(
                         f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}", "batch_"
                     )
 
-            torch.cuda.synchronize() if CONFIG['device'] == 'cuda' else None
+                train_metrics.reset() # only the batch metrics are logged
+
+            # torch.cuda.synchronize() if CONFIG['device'] == 'cuda' else None
 
         # --- End of Epoch Validation and Checkpointing ---
         val_loss, val_metrics_score = evaluate(model, val_dl, criterion, metrics_dict)

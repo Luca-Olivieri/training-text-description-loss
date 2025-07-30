@@ -220,7 +220,7 @@ def train_loop(
                     f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}", "batch_"
                 )
 
-            torch.cuda.synchronize() if CONFIG["device"] == "cuda" else None
+            # torch.cuda.synchronize() if CONFIG["device"] == "cuda" else None
 
         # --- End of Epoch Validation and Checkpointing ---
         val_loss = vle.evaluate(val_dl, criterion)

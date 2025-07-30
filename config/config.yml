@@ -9,7 +9,7 @@ seg:
   pretrained_weights_root_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large'
   image_size: 520
   train:
-    exp_name: "baseline_cosine_b8"
+    exp_name: "test"
     exp_desc: "" #  Optional
     train_decoder_only: False
     batch_size: 8
@@ -22,7 +22,7 @@ seg:
       lr_cooldown_power: null
       lr_cooldown_end: null
     grad_clip_norm: 10.0 # optional
-    grad_accum_steps: 1 # 1 for no gradient accumuluation
+    grad_accum_steps: 2 # 1 for no gradient accumuluation
     resume_path: null # optional (no resume)
     log_only_to_stdout: False
     file_logs_dir_path: '/home/olivieri/exp/logs/seg'
