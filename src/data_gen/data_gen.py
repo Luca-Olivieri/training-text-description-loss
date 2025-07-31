@@ -22,7 +22,6 @@ import asyncio
 
 import torch
 
-
 async def main() -> None:
 
     exp_path = create_directory(Path(CONFIG['data_gen']['data_root']), CONFIG['data_gen']['exp_name'])
@@ -130,7 +129,7 @@ async def main() -> None:
             logits: torch.Tensor = logits["out"] if isinstance(logits, OrderedDict) else logits # shape [N, C, H, W]
             prs = logits.argmax(dim=1, keepdim=True)
 
-            # only for COCO
+            # NOTE only for COCO
             if hasattr(seg_dataset, 'only_VOC_labels') and seg_dataset.only_VOC_labels:
                 prs = apply_classmap(prs, seg_dataset.voc_idx_to_coco_idx)
                 prs = apply_classmap(prs, seg_dataset.get_class_map())

@@ -48,15 +48,15 @@ class VLEncoderOutput:
         local_text_tokens: Local text tokens [B_t, n_t, D]
         
     """
-    global_image_token: torch.Tensor    # [B_i, D]
-    global_text_token: torch.Tensor     # [B_i, B_t, D]
-    local_image_tokens: torch.Tensor    # [B_i, n_i, D]
-    local_text_tokens: torch.Tensor     # [B_t, n_t, D]
+    global_image_token: Optional[torch.Tensor] = None   # [B_i, D]
+    global_text_token: Optional[torch.Tensor] = None    # [B_i, B_t, D]
+    local_image_tokens: Optional[torch.Tensor] = None   # [B_i, n_i, D]
+    local_text_tokens: Optional[torch.Tensor] = None    # [B_t, n_t, D]
 
 
 @dataclass
 class VLEncoderOutputWithAttn(VLEncoderOutput):
-    attn_maps_flat: torch.Tensor # [B_i, B_t, n_i+1]
+    attn_maps_flat: Optional[torch.Tensor] = None # [B_i, B_t, n_i+1]
 
 
 class VLEncoder(ABC):
@@ -90,8 +90,8 @@ class VLEncoder(ABC):
     @abstractmethod
     def encode_and_project(
             self,
-            images: torch.Tensor,
-            texts: torch.Tensor,
+            images: Optional[torch.Tensor],
+            texts: Optional[torch.Tensor],
             broadcast: bool = False,
             **kwargs
     ) -> VLEncoderOutput:
@@ -247,7 +247,7 @@ class VLEncoder(ABC):
 
 @dataclass
 class FLAIROutput(VLEncoderOutputWithAttn):
-    local_image_features: torch.Tensor = None # [B_i, B_t, D]
+    local_image_features: Optional[torch.Tensor] = None # [B_i, B_t, D]
 
 @VLE_REGISTRY.register("flair")
 class FLAIRAdapter(VLEncoder):
@@ -326,58 +326,66 @@ class FLAIRAdapter(VLEncoder):
     
     def encode_and_project(
             self,
-            images: torch.Tensor,
-            texts: torch.Tensor,
+            images: Optional[torch.Tensor],
+            texts: Optional[torch.Tensor],
             broadcast: bool = False
     ) -> FLAIROutput:
-
-        # get the raw embeddings from the encoders
-        global_image_token, local_image_tokens = self.model.encode_image(images)    # [B_i, d_i], [B_i, n_i, d_i]
-        global_text_token, local_text_tokens = self.model.encode_text(texts)        # [B_t, d_t], [B_t, n_t, d_t]
-
-        # project the raw embeddings into the same space
-        global_image_token: torch.Tensor = self.model.image_post(global_image_token)    # [B_i, D]
-        local_image_tokens: torch.Tensor = self.model.image_post(local_image_tokens)    # [B_i, n_i, D]
-        global_text_token: torch.Tensor = self.model.text_post(global_text_token)       # [B_t, D]
-        local_text_tokens: torch.Tensor = self.model.text_post(local_text_tokens)       # [B_t, n_t, D]
         
-        if hasattr(self.model, 'vision_adapter'):
-            global_image_token = self.model.vision_adapter(global_image_token) # [B_i, D]
-            local_image_tokens = self.model.vision_adapter(local_image_tokens) # [B_i, n_i, D]
+        flair_output = FLAIROutput()
         
-        if hasattr(self.model, 'text_adapter'):
-            global_text_token = self.model.text_adapter(global_text_token) # [B_i, D]
-            local_text_tokens = self.model.text_adapter(local_text_tokens) # [B_i, n_i, D]
+        if images is not None:
+            # get the raw embeddings from the encoders
+            global_image_token, local_image_tokens = self.model.encode_image(images)    # [B_i, d_i], [B_i, n_i, d_i]
+            # project the raw embeddings into the same space
+            global_image_token: torch.Tensor = self.model.image_post(global_image_token)    # [B_i, D]
+            local_image_tokens: torch.Tensor = self.model.image_post(local_image_tokens)    # [B_i, n_i, D]
+            # apply vision adapter
+            if hasattr(self.model, 'vision_adapter'):
+                global_image_token = self.model.vision_adapter(global_image_token) # [B_i, D]
+                local_image_tokens = self.model.vision_adapter(local_image_tokens) # [B_i, n_i, D]
+            
+            flair_output.global_image_token = global_image_token        # [B_i, D]
+            flair_output.local_image_tokens = local_image_tokens  # [B_i, n_i, D]
 
-        image_batch_size = local_image_tokens.shape[0] # B_i, n_i
+        if texts is not None:
+            # get the raw embeddings from the encoders
+            global_text_token, local_text_tokens = self.model.encode_text(texts)        # [B_t, d_t], [B_t, n_t, d_t]
+            # project the raw embeddings into the same space
+            global_text_token: torch.Tensor = self.model.text_post(global_text_token)       # [B_t, D]
+            local_text_tokens: torch.Tensor = self.model.text_post(local_text_tokens)       # [B_t, n_t, D]
+            # apply text adapter
+            if hasattr(self.model, 'text_adapter'):
+                global_text_token = self.model.text_adapter(global_text_token) # [B_t, D]
+                local_text_tokens = self.model.text_adapter(local_text_tokens) # [B_t, n_t, D]
 
-        if broadcast:
-            # adapt text token for broadcasting
-            global_text_token = global_text_token.unsqueeze(0).expand(image_batch_size, -1, -1) # [B_i, B_t, D]
-        else:
-            if images.shape[0] != texts.shape[0]:
-                raise AttributeError(f"When not broadcasting, 'images' and 'texts' should contain the same number of elements, but got {images.shape[0]=} and {texts.shape[0]=} instead.")
-            # from now on, B_t = 1
-            global_text_token = global_text_token.unsqueeze(1) # [B_i, 1, D]
-
-        # perform the attention pooling: condition the 'global_text_token' (Q) on the 'local_image_tokens' (K and V)
-        local_image_features, attn_maps_flat = self.model.visual_proj(
-            global_text_token,      # [B_i, B_t, D]
-            local_image_tokens,     # [B_i, n_i, D]
-            local_image_tokens,     # [B_i, n_i, D]
-            output_attn_weights=True,
-            average_attn_weights=False
-        ) # [B_i, B_t, D], [B_i, B_t, n_i+1] (the +1 is there for the added 'cls' token)
+            flair_output.global_text_token = global_text_token # [B_i, B_t, D]
+            flair_output.local_text_tokens = local_text_tokens # [B_t, n_t, D]
         
-        flair_output = FLAIROutput(
-            global_image_token, # [B_i, D]
-            global_text_token, # [B_i, B_t, D]
-            local_image_tokens, # [B_i, n_i, D]
-            local_text_tokens, # [B_t, n_t, D]
-            attn_maps_flat, # [B_i, B_t, n_i+1]
-            local_image_features, # [B_i, B_t, D]
-        )
+        if (images is not None) and (texts is not None):
 
+            image_batch_size = local_image_tokens.shape[0] # B_i, n_i
+
+            if broadcast:
+                # adapt text token for broadcasting
+                global_text_token = global_text_token.unsqueeze(0).expand(image_batch_size, -1, -1) # [B_i, B_t, D]
+            else:
+                if images.shape[0] != texts.shape[0]:
+                    raise AttributeError(f"When not broadcasting, 'images' and 'texts' should contain the same number of elements, but got {images.shape[0]=} and {texts.shape[0]=} instead.")
+                # from now on, B_t = 1
+                global_text_token = global_text_token.unsqueeze(1) # [B_i, 1, D]
+
+            # perform the attention pooling: condition the 'global_text_token' (Q) on the 'local_image_tokens' (K and V)
+            local_image_features, attn_maps_flat = self.model.visual_proj(
+                global_text_token,      # [B_i, B_t, D]
+                local_image_tokens,     # [B_i, n_i, D]
+                local_image_tokens,     # [B_i, n_i, D]
+                output_attn_weights=True,
+                average_attn_weights=False
+            ) # [B_i, B_t, D], [B_i, B_t, n_i+1] (the +1 is there for the added 'cls' token)
+
+            flair_output.attn_maps_flat = attn_maps_flat                # [B_i, B_t, n_i+1]
+            flair_output.local_image_features = local_image_features    # [B_i, B_t, D]
+        
         return flair_output
     
     @torch.inference_mode()
@@ -389,23 +397,26 @@ class FLAIRAdapter(VLEncoder):
     ) -> torch.Tensor:
         if broadcast:
             flair_output = self.encode_and_project(images, texts, broadcast=True)
-            image_features, text_features = F.normalize(flair_output.global_image_token, dim=-1), F.normalize(flair_output.global_text_token, dim=-1)
+            image_features, text_features = F.normalize(flair_output.local_image_features, dim=-1), F.normalize(flair_output.global_text_token, dim=-1)
+            # NOTE to me it seems that these squeezes should not be here
             text_features = text_features.squeeze(1)
+            image_features = image_features.squeeze(1)
             sim = torch.einsum('bf,bif->bi', image_features, text_features)
         else:
             flair_output = self.encode_and_project(images, texts, broadcast=False)
-            image_features, text_features = F.normalize(flair_output.global_image_token, dim=-1), F.normalize(flair_output.global_text_token, dim=-1)
+            image_features, text_features = F.normalize(flair_output.local_image_features, dim=-1), F.normalize(flair_output.global_text_token, dim=-1)
+            image_features = image_features.squeeze(1)
             text_features = text_features.squeeze(1)
             sim = torch.einsum('bf,bf->b', image_features, text_features)
         return sim
     
     def set_vision_trainable_params(
             self,
-            trainable_modules: list[Literal['vision_adapter',
-                                            'text_adapter',
-                                            'image_proj',
-                                            'text_proj',
-                                            'visual_proj']],
+            trainable_modules: Optional[list[Literal['vision_adapter',
+                                                     'text_adapter',
+                                                     'image_proj',
+                                                     'text_proj',
+                                                     'visual_proj']]] = None,
     ) -> None:
         # LUT: module name -> module
         train_modules_lut = {
@@ -423,10 +434,11 @@ class FLAIRAdapter(VLEncoder):
         # first, gradients are disabled for all modules.
         self.model.requires_grad_(False)
 
-        # access the right modules with the LUT
-        train_params: list[nn.Module] = [train_modules_lut[m].requires_grad_(True) for m in trainable_modules]
-        # enable the gradiens in the accessed modules
-        [p.requires_grad_(True) for p in train_params]
+        if trainable_modules:
+            # access the right modules with the LUT
+            train_params: list[nn.Module] = [train_modules_lut[m].requires_grad_(True) for m in trainable_modules]
+            # enable the gradiens in the accessed modules
+            [p.requires_grad_(True) for p in train_params]
     
     def create_loss(
             self,
@@ -456,7 +468,7 @@ class SimSegAdapter(VLEncoder):
     """
     TODO
     """
-    # too much integration work likely for unimpressive results, I would skip this.
+    # NOTE too much integration work likely for unimpressive results, I would skip this.
 
 
 @VLE_REGISTRY.register("fg-clip")

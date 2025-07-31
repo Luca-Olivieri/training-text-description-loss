@@ -2,6 +2,7 @@ from config import *
 from path import PRIVATE_DATASETS_PATH
 
 import torch
+from torch import nn
 from torchvision.datasets import VOCSegmentation
 import re
 import ast
@@ -17,6 +18,7 @@ from tqdm import tqdm
 from typing import Any, TypeVar
 import torchmetrics as tm
 import json
+import gc
 
 from typing import Callable, TypeVar, Any, Iterable, Self
 from abc import ABC
@@ -603,6 +605,32 @@ def create_directory(
     # The 'exist_ok=True' argument prevents an error if the directory already exists.
     (parent_path / folder_name).mkdir(parents=False, exist_ok=True)
     return parent_path / folder_name
+
+def clear_memory(
+        ram: bool = True,
+        gpu: bool = True,
+) -> None:
+    gc.collect() if ram else None
+    try:
+        torch.cuda.empty_cache() if gpu else None
+    except MemoryError:
+        ...
+
+def get_activation(
+        name: str
+) -> Callable:
+    """
+    This function returns another function (a hook) that will be registered
+    to a layer. The hook will save the output of the layer in the
+    `activation` dictionary.
+    """
+    def hook(
+            model: nn.Module,
+            input: torch.Tensor,
+            output: torch.Tensor,
+    ) -> None:
+        model.activations[name] = output
+    return hook
 
 def main() -> None:
     ...

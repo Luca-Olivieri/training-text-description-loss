@@ -12,12 +12,12 @@ from torchvision.models import segmentation as segmodels
 import torchvision.transforms.v2 as T
 from torchvision.transforms._presets import SemanticSegmentation
 from torchmetrics.classification import MulticlassAccuracy, MulticlassJaccardIndex
-from torch.nn.modules.loss import _Loss
 import torchmetrics as tm
 from open_clip_train.scheduler import cosine_lr, const_lr, const_lr_cooldown
 import math
 
-from typing import Callable, Optional
+from typing import Optional
+from torch.nn.modules.loss import _Loss
 
 SEG_CONFIG = CONFIG['seg']
 SEG_TRAIN_CONFIG = SEG_CONFIG['train']
@@ -175,7 +175,7 @@ def main() -> None:
         root_path=Path("/home/olivieri/exp/data/VOCdevkit"),
         split='train',
         resize_size=SEG_CONFIG['image_size'],
-        center_crop=True,
+        center_crop=False,
         with_unlabelled=True,
     )
 
@@ -183,7 +183,7 @@ def main() -> None:
         root_path=Path("/home/olivieri/exp/data/VOCdevkit"),
         split='val',
         resize_size=SEG_CONFIG['image_size'],
-        center_crop=True,
+        center_crop=False,
         with_unlabelled=True,
     )
 
@@ -198,7 +198,7 @@ def main() -> None:
             checkpoint_dict = torch.load(resume_path, map_location=CONFIG['device'])
             model.load_state_dict(checkpoint_dict['model_state_dict'])
         else:
-            raise AttributeError(f"ERROR: Resume path '{resume_path}' not found. ")
+            raise AttributeError(f"ERROR: Resume path '{resume_path}' not found.")
 
     set_trainable_params(model, train_decoder_only=SEG_TRAIN_CONFIG['train_decoder_only'])
     

@@ -6,10 +6,10 @@ datasets:
   VOC2012_root_path: '/home/olivieri/exp/data/VOCdevkit'
 
 seg:
-  pretrained_weights_root_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large'
+  pretrained_weights_root_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/no_text'
   image_size: 520
   train:
-    exp_name: "test"
+    exp_name: "baseline_cosine_b8"
     exp_desc: "" #  Optional
     train_decoder_only: False
     batch_size: 8
@@ -22,22 +22,24 @@ seg:
       lr_cooldown_power: null
       lr_cooldown_end: null
     grad_clip_norm: 10.0 # optional
-    grad_accum_steps: 2 # 1 for no gradient accumuluation
+    grad_accum_steps: 1 # 1 for no gradient accumuluation
     resume_path: null # optional (no resume)
     log_only_to_stdout: False
-    file_logs_dir_path: '/home/olivieri/exp/logs/seg'
-    tb_logs_dir_path: '/home/olivieri/exp/logs_tb/seg'
+    file_logs_dir_path: '/home/olivieri/exp/logs/seg/no_text'
+    tb_logs_dir_path: '/home/olivieri/exp/logs_tb/seg/no_text'
     log_every: 10
-    save_weights_root_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large' # optional (no weight saving)
+    save_weights_root_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/no_text' # optional (no weight saving)
     with_text:
-      vle_weights_path: ...
+      vle_weights_path: '/home/olivieri/exp/data/torch_weights/vle/flair/flair-flair-cc3m-recap.pt-image_proj_L_250730_1824.pth'
+      vlm_temperature: 0.1
+      loss_lam: 1.0
 
 vle:
   pretrained_weights_root_path: '/home/olivieri/exp/data/torch_weights/vle/flair'
   image_size: 224
   train:
-    exp_name: 'text_proj_N'
-    exp_desc: "Training text_proj, N masks, with the cc3m-recap pretraining." # optional
+    exp_name: 'visual_proj_N'
+    exp_desc: "Training visual_proj, N masks, with the cc3m-recap pretraining." # optional
     batch_size: 256
     num_epochs: 16
     mask_color: 'L' # 'RB' (red-blue) or 'L' (black-white)

@@ -285,10 +285,10 @@ def main() -> None:
             checkpoint_dict = torch.load(resume_path, map_location=CONFIG['device'])
             vle.model.load_state_dict(checkpoint_dict['model_state_dict'])
         else:
-            raise AttributeError(f"ERROR: Resume path '{resume_path}' not found. ")
+            raise AttributeError(f"ERROR: Resume path '{resume_path}' not found.")
     
     # vle.set_vision_trainable_params(['proj', 'visual_proj', 'vision_adapter'])
-    vle.set_vision_trainable_params(['text_proj'])
+    vle.set_vision_trainable_params(['visual_proj'])
 
     # DataLoaders
     train_collate_fn = partial(

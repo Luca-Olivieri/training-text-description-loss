@@ -1,10 +1,9 @@
 from config import *
 from utils import blend_tensors, flatten_list
-from data import VOC2012SegDataset, read_txt, get_one_answer_gt, get_one_sup_set_answer_gt, get_significant_classes_, read_json
-from color_map import pil_to_class_array
+from data import VOC2012SegDataset, read_txt, get_one_answer_gt, get_one_sup_set_answer_gt, get_significant_classes_, read_json, apply_classmap
 # from data import VOC2012SegDataset, read_txt, get_image_UIDs, get_one_answer_gt, get_one_sup_set_answer_gt, get_significant_classes_, read_json
 from path import get_prompts_path, get_data_gen_prompts_path, LOCAL_ANNOT_IMGS_PATH, MISC_PATH, SPLITS_PATH
-from color_map import get_color_map_as, apply_colormap
+from color_map import get_color_map_as, apply_colormap, pil_to_class_array
 
 from PIL import Image, ImageFont, ImageDraw, ImageOps
 from pathlib import Path
@@ -1297,14 +1296,6 @@ class FastPromptBuilder:
         # This way, the color mapping can be computed in parallel (faster) and the code is simpler.
         # This method works only if the sup sets have disjointed classes. Ideally, each support example would have its own color map.
         color_map = {pos_c: (255, 255, 255) for pos_c in img_idx_to_class_.values()}
-
-        # image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval", shuffle=True)
-
-        # sup_set_uids = [uid for uid in self.seg_dataset.image_UIDs[sup_set_img_idxs]]
-        # sup_set_uids = image_UIDs[sup_set_img_idxs]
-        # gts_paths = [GTS_PATH / (UID + ".png") for UID in sup_set_uids]
-        # prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in sup_set_img_idxs]
-        # scs_paths = [SCS_PATH / (UID + ".jpg") for UID in sup_set_uids]
         
         scs, gts, prs = self.sup_set_seg_dataset[sup_set_img_idxs]
 
@@ -1315,10 +1306,6 @@ class FastPromptBuilder:
         scs = TF.resize(scs, self.image_size, TF.InterpolationMode.BILINEAR)
         gts = TF.resize(gts, self.image_size, TF.InterpolationMode.NEAREST)
         prs = TF.resize(prs, self.image_size, TF.InterpolationMode.NEAREST)
-        
-        # gts = torch.stack([get_gt(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in gts_paths])
-        # prs = torch.stack([get_pr(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in prs_paths]) # tensors (3, H, W)
-        # scs = torch.stack([get_sc(p, resize_size=self.image_size, center_crop=True) for p in scs_paths])
 
         gts = apply_colormap(gts, color_map)
         prs = apply_colormap(prs, color_map)
@@ -1397,6 +1384,9 @@ class FastPromptBuilder:
         prs_tensor = TF.resize(prs_tensor, self.image_size, TF.InterpolationMode.NEAREST)
         scs_tensor = TF.resize(scs_tensor, self.image_size, TF.InterpolationMode.BILINEAR)
 
+        gts_tensor = apply_classmap(gts_tensor, self.class_map)
+        prs_tensor = apply_classmap(prs_tensor, self.class_map)
+
         splitted_elements_dict = [self.expand_head_to_cs(gt, pr, sc, self.alpha) for gt, pr, sc in zip(gts_tensor, prs_tensor, scs_tensor)]
 
         cs_gts_imgs_list = [[gt for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict]
@@ -1414,21 +1404,12 @@ class FastPromptBuilder:
             self,
             query_idxs: list[int]
     ) -> list[Prompt]:
-        # image_UIDs = get_image_UIDs(SPLITS_PATH, split="trainval", shuffle=True)
-        # query_uids = image_UIDs[query_idxs]
         
         scs, gts, prs = self.seg_dataset[query_idxs]
 
         scs = torch.stack(scs)
         gts = torch.stack(gts)
         prs = torch.stack(prs)
-
-        # gts_paths = [GTS_PATH / (UID + ".png") for UID in query_uids]
-        # prs_paths = [self.prs_mask_paths / f"mask_pr_{i}.png" for i in query_idxs]
-        # scs_paths = [SCS_PATH / (UID + ".jpg") for UID in query_uids]
-        # gts = torch.stack([get_gt(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in gts_paths])
-        # prs = torch.stack([get_pr(p, class_map=self.class_map, resize_size=self.image_size, center_crop=True) for p in prs_paths]) # tensors (3, H, W)
-        # scs = torch.stack([get_sc(p, resize_size=self.image_size, center_crop=True) for p in scs_paths])
         
         cs_prompts_list =  self.build_cs_inference_prompts(gts, prs, scs)
 
