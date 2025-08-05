@@ -358,7 +358,7 @@ class FLAIRAdapter(VLEncoder):
                 global_text_token = self.model.text_adapter(global_text_token) # [B_t, D]
                 local_text_tokens = self.model.text_adapter(local_text_tokens) # [B_t, n_t, D]
 
-            flair_output.global_text_token = global_text_token # [B_i, B_t, D]
+            flair_output.global_text_token = global_text_token # [B_t, D]
             flair_output.local_text_tokens = local_text_tokens # [B_t, n_t, D]
         
         if (images is not None) and (texts is not None):
@@ -383,6 +383,7 @@ class FLAIRAdapter(VLEncoder):
                 average_attn_weights=False
             ) # [B_i, B_t, D], [B_i, B_t, n_i+1] (the +1 is there for the added 'cls' token)
 
+            flair_output.global_text_token = global_text_token          # [B_i, B_t, D]
             flair_output.attn_maps_flat = attn_maps_flat                # [B_i, B_t, n_i+1]
             flair_output.local_image_features = local_image_features    # [B_i, B_t, D]
         

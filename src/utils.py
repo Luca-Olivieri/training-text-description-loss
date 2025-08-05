@@ -617,7 +617,8 @@ def clear_memory(
         ...
 
 def get_activation(
-        name: str
+        name: str,
+        activations: dict[str, torch.Tensor]
 ) -> Callable:
     """
     This function returns another function (a hook) that will be registered
@@ -629,7 +630,7 @@ def get_activation(
             input: torch.Tensor,
             output: torch.Tensor,
     ) -> None:
-        model.activations[name] = output
+        activations[name] = output
     return hook
 
 def main() -> None:

@@ -1,5 +1,6 @@
 from config import *
 from models.vl_models import GenParams, OllamaMLLM
+from models.seg_models import SegModelWrapper, SEGMODELS_REGISTRY
 from prompter import FastPromptBuilder
 from data import VOC2012SegDataset, COCO2017SegDataset, append_many_to_jsonl, crop_augment_preprocess_batch, apply_classmap
 from color_map import apply_colormap
@@ -15,16 +16,17 @@ from torchvision.transforms._presets import SemanticSegmentation
 import torchvision.transforms.v2 as T
 import torchvision.transforms.functional as TF
 from torch.utils.data import DataLoader
-from torchvision import tv_tensors
 from collections import OrderedDict
 
 import asyncio
 
 import torch
 
+DATA_GEN_CONFIG = CONFIG['data_gen']
+
 async def main() -> None:
 
-    exp_path = create_directory(Path(CONFIG['data_gen']['data_root']), CONFIG['data_gen']['exp_name'])
+    exp_path = create_directory(Path(DATA_GEN_CONFIG['data_root']), DATA_GEN_CONFIG['exp_name'])
     images_RB_path = create_directory(exp_path,  "images_RB")
     images_L_path = create_directory(exp_path,  "images_L")
     captions_path = exp_path / "captions.jsonl"
@@ -37,8 +39,8 @@ async def main() -> None:
 
     gen_params = GenParams(
         seed=CONFIG["seed"],
-        temperature=CONFIG['data_gen']['temperature'],
-        top_p=CONFIG['data_gen']['top_p']
+        temperature=DATA_GEN_CONFIG['temperature'],
+        top_p=DATA_GEN_CONFIG['top_p']
     )
 
     prompt_blueprint={
@@ -52,7 +54,7 @@ async def main() -> None:
             "query": "default",
     }
     
-    offset = CONFIG['data_gen']['offset']
+    offset = DATA_GEN_CONFIG['offset']
 
     seg_dataset = COCO2017SegDataset(
         root_path=Path(CONFIG['datasets']['COCO2017_root_path']),
@@ -90,7 +92,7 @@ async def main() -> None:
     append_many_to_jsonl(captions_path, [{"state": fast_prompt_builder.get_state()} | {"vlm": f"{vlm.__class__.__name__}:{vlm.model}"}])
 
     segnet = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(CONFIG["device"])
-    segnet.load_state_dict(torch.load(TORCH_WEIGHTS_ROOT / 'seg' / 'lraspp_mobilenet_v3_large' / ("lraspp_mobilenet_v3_large-full-pt" + ".pth")))
+    segnet.load_state_dict(torch.load(Path(DATA_GEN_CONFIG['pretrained_weights_path'])))
     segnet.requires_grad_(False)
     segnet = segnet.eval()
 
@@ -133,7 +135,7 @@ async def main() -> None:
             if hasattr(seg_dataset, 'only_VOC_labels') and seg_dataset.only_VOC_labels:
                 prs = apply_classmap(prs, seg_dataset.voc_idx_to_coco_idx)
                 prs = apply_classmap(prs, seg_dataset.get_class_map())
-            
+
             scs_img = (scs_img*255).to(torch.uint8)
 
             gts = gts.unsqueeze(1)
@@ -179,20 +181,20 @@ async def main() -> None:
                     diff_mask = create_diff_mask(pos_class_gt, pos_class_pr)
 
                     # L overlay image
-                    ovr_diff_mask_L = blend_tensors(sc_img, diff_mask*255, CONFIG['data_gen']['alpha'])
+                    ovr_diff_mask_L = blend_tensors(sc_img, diff_mask*255, DATA_GEN_CONFIG['alpha'])
                     torchvision.utils.save_image(ovr_diff_mask_L/255., images_L_path / f"{img_uid}-{pos_c}.png", normalize=True)
 
                     # RB overlay image
-                    diff_mask += (diff_mask*pos_class_gt) # sets to 2 the false negatives
-                    diff_mask_col_RB = apply_colormap([diff_mask], {0: (0, 0, 0), 1: (255, 0, 0), 2: (0, 0, 255)})
-                    ovr_diff_mask_RB = blend_tensors(sc_img, diff_mask_col_RB, CONFIG['data_gen']['alpha'])
-                    torchvision.utils.save_image(ovr_diff_mask_RB/255., images_RB_path / f"{img_uid}-{pos_c}.png", normalize=True)
+                    # diff_mask += (diff_mask*pos_class_gt) # sets to 2 the false negatives
+                    # diff_mask_col_RB = apply_colormap([diff_mask], {0: (0, 0, 0), 1: (255, 0, 0), 2: (0, 0, 255)})
+                    # ovr_diff_mask_RB = blend_tensors(sc_img, diff_mask_col_RB, DATA_GEN_CONFIG['alpha'])
+                    # torchvision.utils.save_image(ovr_diff_mask_RB/255., images_RB_path / f"{img_uid}-{pos_c}.png", normalize=True)
 
                     cs_img_idx_count += 1
 
                 img_idx_count += 1
 
-                if img_idx_count % CONFIG['data_gen']['print_every'] == 0:
+                if img_idx_count % DATA_GEN_CONFIG['print_every'] == 0:
                     print(f"Generated {img_idx_count} unique photos ({cs_img_idx_count} class-splitted photos).")
                     
 

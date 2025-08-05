@@ -1331,8 +1331,11 @@ class FastPromptBuilder:
             query_pr: torch.Tensor,
     ) -> list[int]:
         gt_sign_classes = get_significant_classes(query_gt)
-        pr_sign_classes = get_significant_classes(query_pr)
-        sign_classes = list(set(gt_sign_classes + pr_sign_classes))
+        
+        # pr_sign_classes = get_significant_classes(query_pr)
+        # sign_classes = list(set(gt_sign_classes + pr_sign_classes)) # TODO remove when testing with all sign_classes
+
+        sign_classes = gt_sign_classes
 
         # Remove the BACKGROUND class only if it is not the only one.
         # Cropping can leave out all meaningful classes: in this case, the BACKGROUND class is considered positive
@@ -1384,8 +1387,8 @@ class FastPromptBuilder:
         prs_tensor = TF.resize(prs_tensor, self.image_size, TF.InterpolationMode.NEAREST)
         scs_tensor = TF.resize(scs_tensor, self.image_size, TF.InterpolationMode.BILINEAR)
 
-        gts_tensor = apply_classmap(gts_tensor, self.class_map)
-        prs_tensor = apply_classmap(prs_tensor, self.class_map)
+        # gts_tensor = apply_classmap(gts_tensor, self.class_map)
+        # prs_tensor = apply_classmap(prs_tensor, self.class_map)
 
         splitted_elements_dict = [self.expand_head_to_cs(gt, pr, sc, self.alpha) for gt, pr, sc in zip(gts_tensor, prs_tensor, scs_tensor)]
 

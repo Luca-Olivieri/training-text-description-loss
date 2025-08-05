@@ -6,13 +6,13 @@ datasets:
   VOC2012_root_path: '/home/olivieri/exp/data/VOCdevkit'
 
 seg:
-  pretrained_weights_root_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/no_text'
+  pretrained_weights_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/no_text/lraspp_mobilenet_v3_large-enc-pt.pth'
   image_size: 520
   train:
-    exp_name: "baseline_cosine_b8"
+    exp_name: "test_b24"
     exp_desc: "" #  Optional
     train_decoder_only: False
-    batch_size: 8
+    batch_size: 24
     num_epochs: 50
     lr_schedule:
       policy: 'cosine'
@@ -25,25 +25,26 @@ seg:
     grad_accum_steps: 1 # 1 for no gradient accumuluation
     resume_path: null # optional (no resume)
     log_only_to_stdout: False
-    file_logs_dir_path: '/home/olivieri/exp/logs/seg/no_text'
-    tb_logs_dir_path: '/home/olivieri/exp/logs_tb/seg/no_text'
+    file_logs_dir_path: '/home/olivieri/exp/logs/seg/with_text'
+    tb_logs_dir_path: '/home/olivieri/exp/logs_tb/seg/with_text'
     log_every: 10
-    save_weights_root_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/no_text' # optional (no weight saving)
+    save_weights_root_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/with_text' # optional (no weight saving)
     with_text:
-      vle_weights_path: '/home/olivieri/exp/data/torch_weights/vle/flair/flair-flair-cc3m-recap.pt-image_proj_L_250730_1824.pth'
+      with_text: True
+      vle_weights_path: '/home/olivieri/exp/data/torch_weights/vle/flair/flair-flair-cc3m-recap.pt-text_proj_L_250730_1248.pth'
       vlm_temperature: 0.1
-      loss_lam: 1.0
+      loss_lam: 0.2
 
 vle:
   pretrained_weights_root_path: '/home/olivieri/exp/data/torch_weights/vle/flair'
   image_size: 224
   train:
-    exp_name: 'visual_proj_N'
-    exp_desc: "Training visual_proj, N masks, with the cc3m-recap pretraining." # optional
+    exp_name: 'vl-adapters_N'
+    exp_desc: "Training vl-adapters, N masks, with the cc3m-recap pretraining." # optional
     batch_size: 256
     num_epochs: 16
     mask_color: 'L' # 'RB' (red-blue) or 'L' (black-white)
-    precision: 'amp_bfloat16' # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
+    precision: null # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
     lr_schedule:
       policy: 'cosine'
       base_lr: 5.0e-4 # 5e-4
@@ -69,8 +70,9 @@ vlm:
 data_gen:
   data_root: '/home/olivieri/exp/data/data_gen/COCO2017'
   exp_name: "l2_train"
+  pretrained_weights_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/no_text/lraspp_mobilenet_v3_large-full-pt.pth'
   batch_size: 1
-  offset: 34098 # img-text idx from which to start the generation
+  offset: 56643 # img-text idx from which to start the generation
   alpha: 0.55 # the greater, the less scene is visible
   print_every: 100
   temperature: 0.7 # null for default values

@@ -15,6 +15,11 @@ pandas
 ollama
 seaborn
 xarray
+nltk
+tensorboard
+transformers
+einops
+pycocotools
 
 # IPy notebooks
 ipykernel
@@ -24,3 +29,6 @@ notebook
 # PyTorch dependencies
 torch
 torchvision
+torchmetrics
+segmentation-models-pytorch
+open_clip_torch
