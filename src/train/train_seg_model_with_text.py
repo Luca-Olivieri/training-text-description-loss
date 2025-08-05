@@ -110,12 +110,14 @@ async def train_loop(
     for epoch in range(start_epoch, SEG_TRAIN_CONFIG["num_epochs"]):
 
         train_metrics.reset() # in theory, this can be removed
+        segmodel.model.train()
+
+        accum_img_features, accum_txt_features = [], []
+        seg_batch_loss = None
 
         for step, (scs_img, gts) in enumerate(train_dl):
 
             # --- Seg --- #
-
-            segmodel.model.train()
 
             # TODO implement autocast
 
@@ -129,7 +131,10 @@ async def train_loop(
             
             train_metrics.update(logits.detach().argmax(dim=1), gts)
 
-            seg_batch_loss: torch.Tensor = criterion(logits, gts) / grad_accum_steps
+            if seg_batch_loss is None:
+                seg_batch_loss: torch.Tensor = criterion(logits, gts) / grad_accum_steps
+            else:
+                seg_batch_loss += criterion(logits, gts) / grad_accum_steps
 
             if SEG_TRAIN_CONFIG['with_text']['with_text']:
 
@@ -174,30 +179,39 @@ async def train_loop(
                 
                 bottleneck_out: torch.Tensor = segmodel.activations['bottleneck']
                 bottleneck_out = segmodel.adapt_tensor(bottleneck_out)
-                
-                aux_batch_loss: torch.Tensor = aux_criterion(
-                    image_features=bottleneck_out,
-                    text_features=global_text_tokens,
-                    logit_scale=vle.model.logit_scale/vle.model.logit_scale,
-                    logit_bias=vle.model.logit_bias*0,
-                    output_dict=False
-                ) * SEG_TRAIN_CONFIG['with_text']['loss_lam'] # lambda coefficient
-                
-                batch_loss: torch.Tensor = seg_batch_loss + aux_batch_loss # multi-task loss
-            else:
-                aux_batch_loss = 0
-                batch_loss = seg_batch_loss
 
-            del scs_img, scs, gts, prs, logits, bottleneck_out, global_text_tokens
+                accum_img_features.append(bottleneck_out)
+                accum_txt_features.append(global_text_tokens)
 
-            batch_loss.backward()
+            # del scs_img, scs, gts, prs, logits, bottleneck_out, global_text_tokens
+
+            # seg_batch_loss.backward()
             
             is_last_batch = (step + 1) == num_batches_per_epoch
             is_accum_step = (step + 1) % grad_accum_steps == 0
 
             # --- Optimizer Step and Scheduler Update ---
             if is_accum_step or is_last_batch:
-                
+
+                if SEG_TRAIN_CONFIG['with_text']['with_text']:
+
+                    bottleneck_out = torch.concat(accum_img_features, dim=0)
+                    global_text_tokens = torch.concat(accum_txt_features, dim=0)
+                    
+                    aux_batch_loss: torch.Tensor = aux_criterion(
+                        image_features=bottleneck_out,
+                        text_features=global_text_tokens,
+                        logit_scale=vle.model.logit_scale/vle.model.logit_scale,
+                        logit_bias=vle.model.logit_bias*0,
+                        output_dict=False
+                    ) * SEG_TRAIN_CONFIG['with_text']['loss_lam'] # lambda coefficient
+
+                    batch_loss = seg_batch_loss + aux_batch_loss
+                else:
+                    batch_loss = seg_batch_loss
+
+                batch_loss.backward()
+
                 if scheduler:
                     scheduler(global_step)
 
@@ -216,14 +230,18 @@ async def train_loop(
                 # --- Logging ---
                 if global_step % SEG_TRAIN_CONFIG['log_every'] == 0:
                     train_metrics_score = train_metrics.compute()                    
-                    # train_metrics_score = {'aux_loss': aux_batch_loss} | train_metrics_score # add the aux. loss to the logged metrics
+                    train_metrics_score = {'aux_loss': aux_batch_loss} | train_metrics_score # add the aux. loss to the logged metrics
                     current_lr = optimizer.param_groups[0]['lr']
                     step_in_epoch = (step // grad_accum_steps) + 1
                     log_manager.log_scores(
                         f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, step: {step_in_epoch}/{num_steps_per_epoch} (global_step: {global_step})",
-                        seg_batch_loss * grad_accum_steps, train_metrics_score, global_step, "train",
-                        f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}", "seg_batch_"
+                        seg_batch_loss, train_metrics_score, global_step, "train",
+                        f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}", "batch_"
                     )
+                
+                if SEG_TRAIN_CONFIG['with_text']['with_text']:
+                    accum_img_features, accum_txt_features = [], []
+                seg_batch_loss = None
 
                 train_metrics.reset() # only the batch metrics are logged
 

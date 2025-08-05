@@ -9,10 +9,10 @@ seg:
   pretrained_weights_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/no_text/lraspp_mobilenet_v3_large-enc-pt.pth'
   image_size: 520
   train:
-    exp_name: "test_b24"
+    exp_name: "test_no_accum"
     exp_desc: "" #  Optional
     train_decoder_only: False
-    batch_size: 24
+    batch_size: 16
     num_epochs: 50
     lr_schedule:
       policy: 'cosine'
