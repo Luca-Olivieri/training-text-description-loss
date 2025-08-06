@@ -3,6 +3,7 @@ from data import VOC2012SegDataset, crop_augment_preprocess_batch, apply_classma
 from models.seg_models import SegModelWrapper, SEGMODELS_REGISTRY
 from models.vl_models import GenParams, OllamaMLLM
 from models.vl_encoders import VLE_REGISTRY, VLEncoder
+from loss import SigLipLossMultiText
 from prompter import FastPromptBuilder
 from logger import LogManager
 from path import get_mask_prs_path
@@ -20,7 +21,7 @@ from torchvision.transforms._presets import SemanticSegmentation
 from torchmetrics.classification import MulticlassAccuracy, MulticlassJaccardIndex
 import torchmetrics as tm
 from open_clip_train.scheduler import cosine_lr, const_lr, const_lr_cooldown
-from open_clip.loss import SigLipLoss, ClipLoss
+from open_clip.loss import SigLipLoss
 import math
 
 import asyncio
@@ -112,14 +113,12 @@ async def train_loop(
         train_metrics.reset() # in theory, this can be removed
         segmodel.model.train()
 
-        accum_img_features, accum_txt_features = [], []
+        accum_img_features, accum_cs_global_text_tokens = [], []
         seg_batch_loss = None
 
         for step, (scs_img, gts) in enumerate(train_dl):
 
             # --- Seg --- #
-
-            # TODO implement autocast
 
             scs = seg_preprocess_fn(scs_img)
 
@@ -165,23 +164,20 @@ async def train_loop(
                 # --- VLE --- #
 
                 # aggregate the class-splitted global text tokens
-                global_text_tokens = list()
                 for i, img_idx in enumerate(batch_idxs):
                     cs_texts = list(cs_answer_list[i]['content'].values()) # gather the text for each pos. class of this image
                     cs_texts = vle.preprocess_texts(cs_texts)
                     cs_vle_output = vle.encode_and_project(images=None, texts=cs_texts, broadcast=False)
 
-                    global_text_token = cs_vle_output.global_text_token
-                    aggr_global_text_token = global_text_token.mean(dim=0) # aggregating the class-splitted text vectors by averaging.
-                    global_text_tokens.append(aggr_global_text_token)
-                global_text_tokens = torch.stack(global_text_tokens)
-                global_text_tokens = segmodel.model.bottleneck_adapter.mlp(global_text_tokens)
+                    cs_global_text_token = cs_vle_output.global_text_token # [M, D]
+                    # aggr_global_text_token = global_text_token.mean(dim=0) # aggregating the class-splitted text vectors by averaging.
+                    accum_cs_global_text_tokens.append(cs_global_text_token)
+                # global_text_tokens = torch.stack(global_text_tokens)
+                # global_text_tokens = segmodel.model.bottleneck_adapter.mlp(global_text_tokens)
                 
                 bottleneck_out: torch.Tensor = segmodel.activations['bottleneck']
                 bottleneck_out = segmodel.adapt_tensor(bottleneck_out)
-
                 accum_img_features.append(bottleneck_out)
-                accum_txt_features.append(global_text_tokens)
 
             # del scs_img, scs, gts, prs, logits, bottleneck_out, global_text_tokens
 
@@ -196,15 +192,20 @@ async def train_loop(
                 if SEG_TRAIN_CONFIG['with_text']['with_text']:
 
                     bottleneck_out = torch.concat(accum_img_features, dim=0)
-                    global_text_tokens = torch.concat(accum_txt_features, dim=0)
-                    
-                    aux_batch_loss: torch.Tensor = aux_criterion(
-                        image_features=bottleneck_out,
-                        text_features=global_text_tokens,
-                        logit_scale=vle.model.logit_scale/vle.model.logit_scale,
-                        logit_bias=vle.model.logit_bias*0,
-                        output_dict=False
-                    ) * SEG_TRAIN_CONFIG['with_text']['loss_lam'] # lambda coefficient
+
+                    aux_batch_loss = torch.tensor(0.0, device=CONFIG['device'])
+                    for i, cs_global_text_token in enumerate(accum_cs_global_text_tokens):
+
+                        cs_global_text_token = segmodel.model.bottleneck_adapter.mlp(cs_global_text_token)
+
+                        aux_batch_loss += aux_criterion(
+                            image_features=bottleneck_out,
+                            text_features=cs_global_text_token,
+                            positive_image_idx=i,
+                            logit_scale=vle.model.logit_scale/vle.model.logit_scale,
+                            logit_bias=vle.model.logit_bias*0,
+                            output_dict=False
+                        )/(len(cs_global_text_token)*len(bottleneck_out)*grad_accum_steps) * SEG_TRAIN_CONFIG['with_text']['loss_lam'] # lambda coefficient
 
                     batch_loss = seg_batch_loss + aux_batch_loss
                 else:
@@ -240,7 +241,7 @@ async def train_loop(
                     )
                 
                 if SEG_TRAIN_CONFIG['with_text']['with_text']:
-                    accum_img_features, accum_txt_features = [], []
+                    accum_img_features, accum_cs_global_text_tokens = [], []
                 seg_batch_loss = None
 
                 train_metrics.reset() # only the batch metrics are logged
@@ -405,7 +406,8 @@ async def main() -> None:
     )
 
     criterion = nn.CrossEntropyLoss(ignore_index=21)
-    aux_criterion = SigLipLoss()
+    # aux_criterion = SigLipLoss()
+    aux_criterion = SigLipLossMultiText()
 
     train_dl = DataLoader(
         train_ds,
