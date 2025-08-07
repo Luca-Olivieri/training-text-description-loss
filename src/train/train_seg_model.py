@@ -252,8 +252,6 @@ def main() -> None:
         "acc": MulticlassAccuracy(num_classes=train_ds.get_num_classes(with_unlabelled=True), top_k=1, average="micro", multidim_average="global", ignore_index=21).to(CONFIG["device"]),
         "mIoU": MulticlassJaccardIndex(num_classes=train_ds.get_num_classes(with_unlabelled=True), average="macro", ignore_index=21).to(CONFIG["device"]),
     }
-    
-    # NOTE Excluding the VOID during training worsen the segmentation visual quality since the borders can be fucked up, ii it correct to exclude it?.
 
     log_manager.log_intro(
         config=CONFIG,

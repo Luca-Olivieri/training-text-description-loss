@@ -6,14 +6,15 @@ datasets:
   VOC2012_root_path: '/home/olivieri/exp/data/VOCdevkit'
 
 seg:
-  pretrained_weights_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/no_text/lraspp_mobilenet_v3_large-enc-pt.pth'
+  pretrained_weights_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/with_text/lraspp_mobilenet_v3_large_start_b64_250806_1222.pth'
   image_size: 520
   train:
-    exp_name: "test_cs_loss"
+    exp_name: "contr_glob_b64_from_start"
     exp_desc: "" #  Optional
     train_decoder_only: False
     batch_size: 16
     num_epochs: 50
+    precision: 'amp_bfloat16' # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
     lr_schedule:
       policy: 'cosine'
       base_lr: 1.0e-4
@@ -22,12 +23,12 @@ seg:
       lr_cooldown_power: null
       lr_cooldown_end: null
     grad_clip_norm: 10.0 # optional
-    grad_accum_steps: 1 # 1 for no gradient accumuluation
+    grad_accum_steps: 4 # 1 for no gradient accumuluation
     resume_path: null # optional (no resume)
     log_only_to_stdout: False
     file_logs_dir_path: '/home/olivieri/exp/logs/seg/with_text'
     tb_logs_dir_path: '/home/olivieri/exp/logs_tb/seg/with_text'
-    log_every: 10
+    log_every: 5
     save_weights_root_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/with_text' # optional (no weight saving)
     with_text:
       with_text: True

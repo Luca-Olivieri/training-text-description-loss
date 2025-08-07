@@ -1331,11 +1331,10 @@ class FastPromptBuilder:
             query_pr: torch.Tensor,
     ) -> list[int]:
         gt_sign_classes = get_significant_classes(query_gt)
-        
-        # pr_sign_classes = get_significant_classes(query_pr)
-        # sign_classes = list(set(gt_sign_classes + pr_sign_classes)) # TODO remove when testing with all sign_classes
+        pr_sign_classes = get_significant_classes(query_pr)
+        sign_classes = list(set(gt_sign_classes + pr_sign_classes))
 
-        sign_classes = gt_sign_classes
+        # sign_classes = gt_sign_classes
 
         # Remove the BACKGROUND class only if it is not the only one.
         # Cropping can leave out all meaningful classes: in this case, the BACKGROUND class is considered positive
