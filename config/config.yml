@@ -9,21 +9,22 @@ seg:
   pretrained_weights_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/with_text/lraspp_mobilenet_v3_large_start_b64_250806_1222.pth'
   image_size: 520
   train:
-    exp_name: "contr_glob_b64_from_start"
+    exp_name: "contr_glob_b32_c0_lam0.1_lr3.16e-05_from_start"
     exp_desc: "" #  Optional
     train_decoder_only: False
-    batch_size: 16
+    batch_size: 32
     num_epochs: 50
     precision: 'amp_bfloat16' # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
     lr_schedule:
       policy: 'cosine'
-      base_lr: 1.0e-4
+      # base_lr: 1.0e-4
+      base_lr: 3.162278e-05
       warmup_length: 200 # 0 for no warmup
       epochs_cooldown: null
       lr_cooldown_power: null
       lr_cooldown_end: null
     grad_clip_norm: 10.0 # optional
-    grad_accum_steps: 4 # 1 for no gradient accumuluation
+    grad_accum_steps: 1 # 1 for no gradient accumuluation
     resume_path: null # optional (no resume)
     log_only_to_stdout: False
     file_logs_dir_path: '/home/olivieri/exp/logs/seg/with_text'
@@ -34,7 +35,7 @@ seg:
       with_text: True
       vle_weights_path: '/home/olivieri/exp/data/torch_weights/vle/flair/flair-flair-cc3m-recap.pt-text_proj_L_250730_1248.pth'
       vlm_temperature: 0.1
-      loss_lam: 0.2
+      loss_lam: 0.1
 
 vle:
   pretrained_weights_root_path: '/home/olivieri/exp/data/torch_weights/vle/flair'
@@ -70,10 +71,10 @@ vlm:
 
 data_gen:
   data_root: '/home/olivieri/exp/data/data_gen/COCO2017'
-  exp_name: "l2_train"
+  exp_name: "l3_train"
   pretrained_weights_path: '/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/no_text/lraspp_mobilenet_v3_large-full-pt.pth'
   batch_size: 1
-  offset: 56643 # img-text idx from which to start the generation
+  offset: 82018 # img-text idx from which to start the generation
   alpha: 0.55 # the greater, the less scene is visible
   print_every: 100
   temperature: 0.7 # null for default values

@@ -633,6 +633,17 @@ def get_activation(
         activations[name] = output
     return hook
 
+def subsample_sign_classes(
+        data_list: list,
+        k: int
+) -> list:
+    if len(data_list) > k:
+        if 0 in data_list and data_list != [0]:
+            data_list.remove(0)
+        if len(data_list) > k:
+            return random.sample(data_list, k)
+    return data_list
+
 def main() -> None:
     ...
 

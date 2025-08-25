@@ -8,7 +8,7 @@ from prompter import FastPromptBuilder
 from logger import LogManager
 from path import get_mask_prs_path
 from viz import get_layer_numel_str
-from utils import clear_memory, compile_torch_model
+from utils import clear_memory, compile_torch_model, subsample_sign_classes
 
 from functools import partial
 from collections import OrderedDict
@@ -22,13 +22,12 @@ from torchvision.transforms._presets import SemanticSegmentation
 from torchmetrics.classification import MulticlassAccuracy, MulticlassJaccardIndex
 import torchmetrics as tm
 from open_clip_train.scheduler import cosine_lr, const_lr, const_lr_cooldown
-from open_clip.loss import SigLipLoss
 from vendors.flair.src.flair.train import backward
 import math
 
 import asyncio
 
-from typing import Optional
+from typing import Optional, Callable
 from torch.nn.modules.loss import _Loss
 
 SEG_CONFIG = CONFIG['seg']
@@ -62,7 +61,8 @@ async def train_loop(
         criterion: _Loss,
         aux_criterion: nn.Module,
         metrics_dict: dict[dict, tm.Metric],
-        checkpoint_dict: Optional[dict] = None
+        checkpoint_dict: Optional[dict] = None,
+        sign_classes_filter: Optional[Callable[[list[int]], list[int]]] = None,
 ) -> None:
     
     # --- 1. Initialization and State Restoration ---
@@ -120,6 +120,7 @@ async def train_loop(
 
         accum_img_features, accum_cs_global_text_tokens = [], []
         seg_batch_loss = None
+        cs_counter = 0
 
         for step, (scs_img, gts) in enumerate(train_dl):
 
@@ -152,7 +153,7 @@ async def train_loop(
                 gts_down = TF.resize(gts, fast_prompt_builder.image_size, TF.InterpolationMode.NEAREST)
                 prs_down = TF.resize(prs, fast_prompt_builder.image_size, TF.InterpolationMode.NEAREST)
                 scs_down = TF.resize(scs_img, fast_prompt_builder.image_size, TF.InterpolationMode.BILINEAR)
-                cs_prompts = fast_prompt_builder.build_cs_inference_prompts(apply_classmap(gts_down, fast_prompt_builder.class_map), apply_classmap(prs_down, fast_prompt_builder.class_map), scs_down)
+                cs_prompts = fast_prompt_builder.build_cs_inference_prompts(apply_classmap(gts_down, fast_prompt_builder.class_map), apply_classmap(prs_down, fast_prompt_builder.class_map), scs_down, sign_classes_filter)
 
                 batch_idxs = [train_dl.batch_size*step + i for i in range(len(scs_down))]
                 
@@ -171,7 +172,6 @@ async def train_loop(
 
                 with autocast():
 
-                    cs_counter = 0
                     # aggregate the class-splitted global text tokens
                     for i, img_idx in enumerate(batch_idxs):
                         cs_texts = list(cs_answer_list[i]['content'].values()) # gather the text for each pos. class of this image
@@ -218,14 +218,15 @@ async def train_loop(
                                 logit_scale=vle.model.logit_scale/vle.model.logit_scale,
                                 logit_bias=vle.model.logit_bias*0,
                                 output_dict=False
-                            )/(len(cs_global_text_token)*len(bottleneck_out)*grad_accum_steps) * SEG_TRAIN_CONFIG['with_text']['loss_lam'] # lambda coefficient
+                            )/(len(cs_global_text_token)*train_dl.batch_size*grad_accum_steps)
 
-                        batch_loss = seg_batch_loss + aux_batch_loss
+                        batch_loss = seg_batch_loss + aux_batch_loss*SEG_TRAIN_CONFIG['with_text']['loss_lam'] # lambda coefficient
                         
-                    cs_mult = cs_counter/(len(bottleneck_out)*grad_accum_steps)
+                    cs_mult = cs_counter/(train_dl.batch_size*grad_accum_steps)
                 else:
+                    aux_batch_loss = torch.tensor(-1.0, device=CONFIG['device'])
                     batch_loss = seg_batch_loss
-                    cs_mult = 1.0
+                    cs_mult = -1.0
 
                 # batch_loss.backward()
                 backward(batch_loss, scaler)
@@ -273,12 +274,14 @@ async def train_loop(
                     log_manager.log_scores(
                         f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, step: {step_in_epoch}/{num_steps_per_epoch} (global_step: {global_step})",
                         seg_batch_loss, train_metrics_score, global_step, "train",
-                        f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}", "batch_", f"cs_mult: {cs_mult:.2f}"
+                        f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}, cs_mult: {cs_mult:.2f}", "batch_"
                     )
                 
+                # reset accumulated values
                 if SEG_TRAIN_CONFIG['with_text']['with_text']:
                     accum_img_features, accum_cs_global_text_tokens = [], []
                 seg_batch_loss = None
+                cs_counter = 0
 
                 train_metrics.reset() # only the batch metrics are logged
 
@@ -448,6 +451,8 @@ async def main() -> None:
     # aux_criterion = SigLipLoss()
     aux_criterion = SigLipLossMultiText()
 
+    sign_classes_filter = partial(subsample_sign_classes, k=3)
+
     train_dl = DataLoader(
         train_ds,
         batch_size=SEG_TRAIN_CONFIG["batch_size"],
@@ -493,7 +498,8 @@ async def main() -> None:
             criterion,
             aux_criterion,
             metrics_dict,
-            checkpoint_dict
+            checkpoint_dict,
+            sign_classes_filter
     )
     except KeyboardInterrupt:
         log_manager.log_title("Training Interrupted", pad_symbol='~')

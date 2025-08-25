@@ -15,7 +15,7 @@ import torchvision.transforms.functional as TF
 from collections import OrderedDict
 import re
 
-from typing import Self, Any, List, Optional
+from typing import Self, Any, List, Optional, Callable
 
 # TODO check if it's better to use 'transforms.v2' instead of plain 'transforms'
 
@@ -1329,11 +1329,15 @@ class FastPromptBuilder:
             self,
             query_gt: torch.Tensor,
             query_pr: torch.Tensor,
+            sign_classes_filter: Optional[Callable[[list[int]], list[int]]] = None
     ) -> list[int]:
         gt_sign_classes = get_significant_classes(query_gt)
         pr_sign_classes = get_significant_classes(query_pr)
-        sign_classes = list(set(gt_sign_classes + pr_sign_classes))
 
+        if sign_classes_filter:
+            pr_sign_classes = sign_classes_filter(pr_sign_classes)
+        
+        sign_classes = list(set(gt_sign_classes + pr_sign_classes))
         # sign_classes = gt_sign_classes
 
         # Remove the BACKGROUND class only if it is not the only one.
@@ -1349,10 +1353,11 @@ class FastPromptBuilder:
             query_gt: torch.Tensor,
             query_pr: torch.Tensor,
             query_sc: Optional[torch.Tensor],
-            alpha: Optional[float]
+            alpha: Optional[float],
+            sign_classes_filter: Optional[Callable[[list[int]], list[int]]] = None
     ) -> list[Prompt]:
         
-        sign_classes = self.extract_significant_classes(query_gt, query_pr)
+        sign_classes = self.extract_significant_classes(query_gt, query_pr, sign_classes_filter)
 
         concat_masks = torch.stack([query_gt, query_pr], dim=0)
 
@@ -1380,6 +1385,7 @@ class FastPromptBuilder:
             gts_tensor: torch.Tensor,
             prs_tensor: torch.Tensor,
             scs_tensor: torch.Tensor,
+            sign_classes_filter: Optional[Callable[[list[int]], list[int]]] = None,
     ) -> list[Prompt]:
         
         gts_tensor = TF.resize(gts_tensor, self.image_size, TF.InterpolationMode.NEAREST)
@@ -1389,7 +1395,7 @@ class FastPromptBuilder:
         # gts_tensor = apply_classmap(gts_tensor, self.class_map)
         # prs_tensor = apply_classmap(prs_tensor, self.class_map)
 
-        splitted_elements_dict = [self.expand_head_to_cs(gt, pr, sc, self.alpha) for gt, pr, sc in zip(gts_tensor, prs_tensor, scs_tensor)]
+        splitted_elements_dict = [self.expand_head_to_cs(gt, pr, sc, self.alpha, sign_classes_filter) for gt, pr, sc in zip(gts_tensor, prs_tensor, scs_tensor)]
 
         cs_gts_imgs_list = [[gt for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict]
         cs_prs_imgs_list = [[pr for pos_c, (gt, pr) in cs_elements.items()] for cs_elements in splitted_elements_dict]
