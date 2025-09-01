@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional
+from typing import Optional, Callable
 
 class SigLipLossSingleText(nn.Module):
     """
@@ -179,3 +179,20 @@ class SigLipLossMultiText(nn.Module):
         if output_dict:
             return {"contrastive_loss": loss}
         return loss
+
+lin_rescale_fn = lambda x: x
+log_rescale_fn = lambda x: torch.log(1 + x)
+exp_rescale_fn = lambda x: torch.exp(x) - 1
+pow_rescale_fn = lambda x, exp: torch.pow(x, exponent=exp)
+
+def xen_rescaler(
+        loss: torch.Tensor,
+        weights: torch.Tensor,
+        alpha: float,
+        normalise: bool = False,
+) -> torch.Tensor:
+    loss_rescaled = loss*(1 + alpha*weights)
+    if normalise:
+        loss_rescaled *= loss.sum().detach()/loss_rescaled.sum().detach() # normalise to have the same value of original loss
+    loss_rescaled = loss_rescaled.mean()
+    return loss_rescaled

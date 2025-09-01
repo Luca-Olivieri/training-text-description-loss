@@ -417,7 +417,7 @@ class FLAIRAdapter(VLEncoder):
                                                      'text_adapter',
                                                      'image_proj',
                                                      'text_proj',
-                                                     'visual_proj']]] = None,
+                                                     'visual_proj']]],
     ) -> None:
         # LUT: module name -> module
         train_modules_lut = {

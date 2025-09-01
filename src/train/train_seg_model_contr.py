@@ -32,6 +32,8 @@ from torch.nn.modules.loss import _Loss
 
 SEG_CONFIG = CONFIG['seg']
 SEG_TRAIN_CONFIG = SEG_CONFIG['train']
+SEG_WITH_TEXT_CONFIG = SEG_TRAIN_CONFIG['with_text']
+SEG_CONTR_CONFIG = SEG_WITH_TEXT_CONFIG['contr']
 
 VLE_CONFIG = CONFIG['vle']
 VLE_TRAIN_CONFIG = VLE_CONFIG['train']
@@ -142,7 +144,7 @@ async def train_loop(
 
             train_metrics.update(logits.detach().argmax(dim=1), gts)
 
-            if SEG_TRAIN_CONFIG['with_text']['with_text']:
+            if SEG_WITH_TEXT_CONFIG['with_text']:
 
                 # --- VLM --- #
 
@@ -200,7 +202,7 @@ async def train_loop(
             # --- Optimizer Step and Scheduler Update ---
             if is_accum_step or is_last_batch:
 
-                if SEG_TRAIN_CONFIG['with_text']['with_text']:
+                if SEG_WITH_TEXT_CONFIG['with_text']:
 
                     bottleneck_out = torch.concat(accum_img_features, dim=0)
 
@@ -220,7 +222,7 @@ async def train_loop(
                                 output_dict=False
                             )/(len(cs_global_text_token)*train_dl.batch_size*grad_accum_steps)
 
-                        batch_loss = seg_batch_loss + aux_batch_loss*SEG_TRAIN_CONFIG['with_text']['loss_lam'] # lambda coefficient
+                        batch_loss = seg_batch_loss + aux_batch_loss*SEG_CONTR_CONFIG['loss_lam'] # lambda coefficient
                         
                     cs_mult = cs_counter/(train_dl.batch_size*grad_accum_steps)
                 else:
@@ -278,7 +280,7 @@ async def train_loop(
                     )
                 
                 # reset accumulated values
-                if SEG_TRAIN_CONFIG['with_text']['with_text']:
+                if SEG_WITH_TEXT_CONFIG['with_text']:
                     accum_img_features, accum_cs_global_text_tokens = [], []
                 seg_batch_loss = None
                 cs_counter = 0
@@ -358,7 +360,7 @@ async def main() -> None:
 
     gen_params = GenParams(
         seed=CONFIG["seed"],
-        temperature=SEG_TRAIN_CONFIG['with_text']['vlm_temperature'],
+        temperature=SEG_WITH_TEXT_CONFIG['vlm_temperature'],
     )
 
     prompt_blueprint={
@@ -406,13 +408,13 @@ async def main() -> None:
 
     # Vision-Language Encoder
     vle: VLEncoder = VLE_REGISTRY.get("flair", version='flair-cc3m-recap.pt', device=CONFIG['device'], vision_adapter=False, text_adapter=False)
-    seg_weights_path = Path(SEG_TRAIN_CONFIG['with_text']['vle_weights_path'])
-    if seg_weights_path.exists():
-        vle.model.load_state_dict(torch.load(seg_weights_path, map_location=CONFIG['device'])['model_state_dict'])
+    vle_weights_path = Path(SEG_WITH_TEXT_CONFIG['vle_weights_path'])
+    if vle_weights_path.exists():
+        vle.model.load_state_dict(torch.load(vle_weights_path, map_location=CONFIG['device'])['model_state_dict'])
     else:
-        raise AttributeError(f"ERROR: VLE weights path '{seg_weights_path}' not found.")
-
-    vle.set_vision_trainable_params()
+        raise AttributeError(f"ERROR: VLE weights path '{vle_weights_path}' not found.")
+    
+    vle.set_vision_trainable_params(None)
 
     # NOTE deleting vision layers only if encoding text only.
     del vle.model.visual, vle.model.visual_proj, vle.model.image_post
@@ -451,7 +453,7 @@ async def main() -> None:
     # aux_criterion = SigLipLoss()
     aux_criterion = SigLipLossMultiText()
 
-    sign_classes_filter = partial(subsample_sign_classes, k=3)
+    sign_classes_filter = partial(subsample_sign_classes, k=0)
 
     train_dl = DataLoader(
         train_ds,
