@@ -116,7 +116,7 @@ async def train_loop(
     # --- 6. Main Training Loop ---
     train_metrics = tm.MetricCollection(metrics_dict)
     for epoch in range(start_epoch, SEG_TRAIN_CONFIG["num_epochs"]):
-
+        
         train_metrics.reset() # in theory, this can be removed
         segmodel.model.train()
 
@@ -222,7 +222,7 @@ async def train_loop(
                                 output_dict=False
                             )/(len(cs_global_text_token)*train_dl.batch_size*grad_accum_steps)
 
-                        batch_loss = seg_batch_loss + aux_batch_loss*SEG_CONTR_CONFIG['loss_lam'] # lambda coefficient
+                        batch_loss = seg_batch_loss*(1. - SEG_CONTR_CONFIG['loss_lam']) + aux_batch_loss*SEG_CONTR_CONFIG['loss_lam'] # lambda coefficient
                         
                     cs_mult = cs_counter/(train_dl.batch_size*grad_accum_steps)
                 else:
@@ -341,6 +341,11 @@ async def main() -> None:
 
     segmodel.adapt()
 
+    if True:
+        state_dict: OrderedDict = torch.load('/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/with_text/synth_contr/lraspp_mobilenet_v3_large_phase_2_synth_text_e5_250903_1711.pth')
+        model_state_dict = state_dict.get('model_state_dict', state_dict)
+        segmodel.model.load_state_dict(model_state_dict)
+
     segmodel.set_trainable_params(train_decoder_only=False)
 
     checkpoint_dict = None
@@ -360,7 +365,7 @@ async def main() -> None:
 
     gen_params = GenParams(
         seed=CONFIG["seed"],
-        temperature=SEG_WITH_TEXT_CONFIG['vlm_temperature'],
+        temperature=SEG_WITH_TEXT_CONFIG['vlm_temperature']
     )
 
     prompt_blueprint={
@@ -453,7 +458,8 @@ async def main() -> None:
     # aux_criterion = SigLipLoss()
     aux_criterion = SigLipLossMultiText()
 
-    sign_classes_filter = partial(subsample_sign_classes, k=0)
+    # sign_classes_filter = partial(subsample_sign_classes, k=0)
+    sign_classes_filter = None
 
     train_dl = DataLoader(
         train_ds,

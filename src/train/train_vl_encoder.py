@@ -255,28 +255,32 @@ def main() -> None:
 
     train_image_text_ds = ConcatDataset([
         ImageCaptionDataset(
-            VOC2012SegDataset(root_path=Path(CONFIG['datasets']['VOC2012_root_path']), split='train', resize_size=CONFIG['seg']['image_size'], center_crop=True, with_unlabelled=False),
+            ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/VOC2012/train/images_{mask_color}')),
             JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/train/captions.jsonl')),
         ),
         ImageCaptionDataset(
-            COCO2017SegDataset(root_path=Path(CONFIG['datasets']['COCO2017_root_path']), split='train', resize_size=CONFIG['seg']['image_size'], center_crop=True, only_VOC_labels=True),
+            ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/COCO2017/train/images_{mask_color}')),
             JSONLDataset(Path('/home/olivieri/exp/data/data_gen/COCO2017/train/captions.jsonl'))
+        ),
+        ImageCaptionDataset(
+            ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/COCO2017/l1_train/images_{mask_color}')),
+            JSONLDataset(Path('/home/olivieri/exp/data/data_gen/COCO2017/l1_train/captions.jsonl'))
         )
     ])
 
     val_image_text_ds = ConcatDataset([
         ImageCaptionDataset(
-            VOC2012SegDataset(root_path=Path(CONFIG['datasets']['VOC2012_root_path']), split='val', resize_size=CONFIG['seg']['image_size'], center_crop=True, with_unlabelled=False),
+            ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/VOC2012/val/images_{mask_color}')),
             JSONLDataset(Path('/home/olivieri/exp/data/data_gen/VOC2012/val/captions.jsonl'))
         ),
         ImageCaptionDataset(
-            COCO2017SegDataset(root_path=Path(CONFIG['datasets']['COCO2017_root_path']), split='val', resize_size=CONFIG['seg']['image_size'], center_crop=True, only_VOC_labels=True),
+            ImageDataset(Path(f'/home/olivieri/exp/data/data_gen/COCO2017/val/images_{mask_color}')),
             JSONLDataset(Path('/home/olivieri/exp/data/data_gen/COCO2017/val/captions.jsonl'))
         )
     ])
 
     # Vision-Language Encoder
-    vle: VLEncoder = VLE_REGISTRY.get("flair", version='flair-cc3m-recap.pt', device=CONFIG['device'], vision_adapter=True, text_adapter=True)
+    vle: VLEncoder = VLE_REGISTRY.get("flair", version='flair-cc3m-recap.pt', device=CONFIG['device'], vision_adapter=False, text_adapter=False)
 
     checkpoint_dict = None
     if VLE_TRAIN_CONFIG['resume_path']:
@@ -288,7 +292,7 @@ def main() -> None:
             raise AttributeError(f"ERROR: Resume path '{resume_path}' not found.")
     
     # vle.set_vision_trainable_params(['proj', 'visual_proj', 'vision_adapter'])
-    vle.set_vision_trainable_params(['vision_adapter', 'text_adapter'])
+    vle.set_vision_trainable_params(['text_proj'])
 
     # DataLoaders
     train_collate_fn = partial(
