@@ -1348,6 +1348,13 @@ class FastPromptBuilder:
 
         return sorted(sign_classes)
     
+    def get_cs_splitted_masks(
+            self,
+            full_mask: torch.Tensor
+    ) -> dict[int, torch.Tensor]:
+        sign_classes = self.extract_significant_classes(full_mask, full_mask, None)
+        return {pos_c: full_mask == pos_c for pos_c in sign_classes}
+    
     def expand_head_to_cs(
             self,
             query_gt: torch.Tensor,
@@ -1456,6 +1463,39 @@ def save_formatted_images(
         sc, gt, pr = promptBuilder.read_sc_gt_pr(img_idx, promptBuilder.image_size)
         formatted_image = _format_images(sc, gt, pr, img_idx, promptBuilder.layout, promptBuilder.scene_mode, promptBuilder.align, promptBuilder.alpha)[0]
         formatted_image.save(LOCAL_ANNOT_IMGS_PATH / f"annot_image_{img_idx}.png")
+
+def make_synthetic_diff_text(
+        templates_filepath: Path,
+        gts: torch.Tensor,
+        prs: torch.Tensor,
+        pos_class_name: str
+) -> list[str]:
+    # Ensure tensors are boolean type for logical operations
+    gts_bool = gts.bool()
+    prs_bool = prs.bool()
+    
+    TP = torch.any(prs_bool * gts_bool) # True Positives (TP): Prediction is 1, and Target is 1
+    TN = torch.any((~prs_bool) & (~gts_bool)) # True Negatives (TN): Prediction is 0, and Target is 0
+    FP = torch.any(prs_bool * (gts_bool == False)) # False Positives (FP): Prediction is 1, and Target is 0
+    FN = torch.any((prs_bool == False) * gts_bool) # False Negatives (FN): Prediction is 0, and Target is 1
+    
+    # populate computed cases string
+    case = []
+    if TP.item():
+        case.append("TP")
+    if TN.item():
+        case.append("TN")
+    if FP.item():
+        case.append("FP")
+    if FN.item():
+        case.append("FN")
+    case_str = "+".join(case)
+    
+    # populate template cases string
+    templates_d: dict[str, str] = read_json(templates_filepath)
+    template = templates_d[case_str].format(POS_CLASS=pos_class_name)
+
+    return template
 
 def main() -> None:
     ...

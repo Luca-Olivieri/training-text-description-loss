@@ -2,13 +2,14 @@ from config import *
 from data import VOC2012SegDataset, crop_augment_preprocess_batch, apply_classmap
 from models.seg_models import SegModelWrapper, SEGMODELS_REGISTRY
 from models.vl_models import GenParams, OllamaMLLM
-from models.vl_encoders import VLE_REGISTRY, VLEncoder, MapComputeMode
-from loss import xen_rescaler, lin_rescale_fn, log_rescale_fn, exp_rescale_fn, pow_rescale_fn
+from models.vl_encoders import VLE_REGISTRY, VLEncoder
+from loss import SigLipLossMultiText
 from prompter import FastPromptBuilder
 from logger import LogManager
 from path import get_mask_prs_path
-from viz import get_layer_numel_str, create_diff_mask, overlay_map
-from utils import clear_memory, compile_torch_model, subsample_sign_classes, blend_tensors
+from viz import get_layer_numel_str
+from utils import clear_memory, compile_torch_model, subsample_sign_classes, nanstd
+from core.cache import Cache, BatchedPercentilePolicy, MaskTextCache
 
 from functools import partial
 from collections import OrderedDict
@@ -19,7 +20,7 @@ from torch.amp import GradScaler # for AMP
 import torchvision.transforms.v2 as T
 import torchvision.transforms.functional as TF
 from torchvision.transforms._presets import SemanticSegmentation
-from torchmetrics.classification import MulticlassAccuracy, MulticlassJaccardIndex
+from torchmetrics.classification import MulticlassAccuracy, MulticlassJaccardIndex, BinaryJaccardIndex, BinaryAccuracy
 import torchmetrics as tm
 from open_clip_train.scheduler import cosine_lr, const_lr, const_lr_cooldown
 from vendors.flair.src.flair.train import backward
@@ -30,12 +31,12 @@ import asyncio
 from typing import Optional, Callable
 from torch.nn.modules.loss import _Loss
 
-import torchvision
-
 SEG_CONFIG = CONFIG['seg']
 SEG_TRAIN_CONFIG = SEG_CONFIG['train']
 SEG_WITH_TEXT_CONFIG = SEG_TRAIN_CONFIG['with_text']
-SEG_XEN_RESCALE_CONFIG = SEG_WITH_TEXT_CONFIG['xen_rescale']
+SEG_CONTR_CONFIG = SEG_WITH_TEXT_CONFIG['contr']
+
+SEG_TRAIN_CONFIG['lr_schedule']['base_lr'] = 0.0
 
 VLE_CONFIG = CONFIG['vle']
 VLE_TRAIN_CONFIG = VLE_CONFIG['train']
@@ -62,10 +63,10 @@ async def train_loop(
         fast_prompt_builder: FastPromptBuilder,
         seg_preprocess_fn: nn.Module,
         gen_params: GenParams,
-        train_criterion: _Loss,
-        val_criterion: _Loss,
-        weights_trend_fn: Callable[[torch.Tensor], torch.Tensor],
-        metrics_dict: dict[dict, tm.Metric],
+        criterion: _Loss,
+        aux_criterion: nn.Module,
+        metrics_dict: dict[str, tm.Metric],
+        mask_text_cache: MaskTextCache,
         checkpoint_dict: Optional[dict] = None,
         sign_classes_filter: Optional[Callable[[list[int]], list[int]]] = None,
 ) -> None:
@@ -85,7 +86,7 @@ async def train_loop(
 
     # --- 2. Optimizer Setup ---
     lr=SEG_TRAIN_CONFIG['lr_schedule']['base_lr']
-    optimizer = torch.optim.AdamW(segmodel.model.parameters(), lr=lr)
+    optimizer = torch.optim.AdamW(segmodel.model.parameters(), lr=lr, weight_decay=math.pow(10, -0.5))
     if checkpoint_dict:
         optimizer.load_state_dict(checkpoint_dict['optimizer_state_dict'])
 
@@ -110,7 +111,7 @@ async def train_loop(
 
     # --- 5. Initial Validation ---
     log_manager.log_title("Initial Validation")
-    val_loss, val_metrics_score = segmodel.evaluate(val_dl, val_criterion, metrics_dict)
+    val_loss, val_metrics_score = segmodel.evaluate(val_dl, criterion, metrics_dict)
     log_manager.log_scores(f"Before any weight update, VALIDATION", val_loss, val_metrics_score, start_epoch, "val", None, "val_")
     best_val_mIoU = val_metrics_score['mIoU']
 
@@ -119,14 +120,18 @@ async def train_loop(
     # --- 6. Main Training Loop ---
     train_metrics = tm.MetricCollection(metrics_dict)
     for epoch in range(start_epoch, SEG_TRAIN_CONFIG["num_epochs"]):
-
+        
         train_metrics.reset() # in theory, this can be removed
         segmodel.model.train()
 
+        accum_img_features, accum_cs_global_text_tokens = [], {}
+        seg_batch_loss = None
         cs_counter = 0
-        accum_rescale_mult = []
+        filtered_cs_counter = 0
 
-        for step, (scs_img, gts) in enumerate(train_dl):
+        print(mask_text_cache)
+
+        for step, (uids, scs_img, gts) in enumerate(train_dl):
 
             # --- Seg --- #
 
@@ -136,10 +141,15 @@ async def train_loop(
             gts = gts.to(CONFIG["device"]) # shape [B, H, W]
             
             with autocast():
+                # segmodel.model.eval() # in eval mode, no dropout
                 logits = segmodel.model(scs)
+                segmodel.model.train()
                 logits: torch.Tensor = logits["out"] if isinstance(logits, OrderedDict) else logits # shape [N, C, H, W]
-
-            batch_loss: torch.Tensor = train_criterion(logits, gts) / grad_accum_steps # [B, H, W]
+            
+                if seg_batch_loss is None:
+                    seg_batch_loss: torch.Tensor = criterion(logits, gts) / grad_accum_steps
+                else:
+                    seg_batch_loss += criterion(logits, gts) / grad_accum_steps
 
             train_metrics.update(logits.detach().argmax(dim=1), gts)
 
@@ -156,10 +166,24 @@ async def train_loop(
                 scs_down = TF.resize(scs_img, fast_prompt_builder.image_size, TF.InterpolationMode.BILINEAR)
                 cs_prompts = fast_prompt_builder.build_cs_inference_prompts(apply_classmap(gts_down, fast_prompt_builder.class_map), apply_classmap(prs_down, fast_prompt_builder.class_map), scs_down, sign_classes_filter)
 
+                cs_prompts_by_uid = {uid: cs_p for uid, cs_p in zip(uids, cs_prompts)}
+                prs_by_uid = {uid: pr for uid, pr in zip(uids, prs_down)}
+
+                cs_dict: dict[str, list[int]] = {uid: list(cs_p.keys()) for uid, cs_p in zip(uids, cs_prompts)}
+
+                cs_counter += sum([1 for uid, sign_classes in cs_dict.items() for pos_c in sign_classes])
+
+                cs_splitted_bool_masks = {uid: {pos_c: prs_by_uid[uid] == pos_c for pos_c in sign_classes} for uid, sign_classes in cs_dict.items()}
+                cs_dict_to_update: dict[str, list[int]] = mask_text_cache.get_cs_keys_to_update(cs_splitted_bool_masks)
+
+                # cs_counter += sum([1 for uid, sign_classes in cs_dict.items() for pos_c in sign_classes])
+
+                filtered_cs_prompts_dict = {uid: {pos_c: cs_prompts_by_uid[uid][pos_c] for pos_c in sign_classes} for uid, sign_classes in cs_dict_to_update.items()}
+
                 batch_idxs = [train_dl.batch_size*step + i for i in range(len(scs_down))]
-                
+
                 cs_answer_list = await vlm.predict_many_class_splitted(
-                    cs_prompts,
+                    list(filtered_cs_prompts_dict.values()),
                     batch_idxs,
                     gen_params=gen_params,
                     jsonl_save_path=None,
@@ -169,57 +193,39 @@ async def train_loop(
                     use_tqdm=False
                 )
 
+                cs_answer_dict: dict[str, dict[int, str]] = {}
+                for uid, cs_a in zip(cs_dict_to_update.keys(), cs_answer_list):
+                    cs_answer_dict |= {uid: cs_a["content"]}
+                
+                # images and texts to update
+                cs_splitted_bool_masks_to_update = {uid: {pos_c: prs_by_uid[uid] == pos_c for pos_c in sign_classes} for uid, sign_classes in cs_dict_to_update.items()}
+                batch = {f"{uid}-{pos_c}": (bool_mask, cs_answer_dict[uid][pos_c]) for uid, cs_bool_mask in cs_splitted_bool_masks_to_update.items() for pos_c, bool_mask in cs_bool_mask.items()}
+                
                 # --- VLE --- #
 
                 with autocast():
 
-                    batch_maps = []
-
                     # aggregate the class-splitted global text tokens
-                    for i, (img_idx, sc, gt, pr) in enumerate(zip(batch_idxs, scs_down, gts_down, prs_down)):
-                        
-                        cs_answers = cs_answer_list[i]['content'] # gather the text for each pos. class of this image
-                        cs_maps = []
+                    for uid, cs_a in cs_answer_dict.items():
+                        cs_texts = list(cs_a.values()) # gather the text for each pos. class of this image
+                        cs_texts = vle.preprocess_texts(cs_texts)
+                        cs_vle_output = vle.encode_and_project(images=None, texts=cs_texts, broadcast=False)
 
-                        for pos_c, ans in cs_answers.items():
+                        cs_global_text_token = cs_vle_output.global_text_token # [N_cs, D]
+                        filtered_cs_counter += len(cs_global_text_token)
 
-                            pos_class_gt = (gt == pos_c)
-                            pos_class_pr = (pr == pos_c)
-
-                            diff_mask = create_diff_mask(pos_class_gt, pos_class_pr)
-
-                            # L overlay image
-                            ovr_diff_mask_L = blend_tensors(sc, diff_mask*255, CONFIG['data_gen']['alpha'])
-                            
-                            img_tensor = vle.preprocess_images([ovr_diff_mask_L], device=CONFIG['device'])
-                            text_tensor = vle.preprocess_texts([ans], device=CONFIG['device'])
-                            map, min_value, max_value = vle.get_maps(
-                                img_tensor, text_tensor,
-                                map_compute_mode=MapComputeMode.ATTENTION,
-                                upsample_size=SEG_CONFIG['image_size'], upsample_mode=TF.InterpolationMode.BILINEAR,
-                                attn_heads_idx=[0, 3, 5, 7] # as done by the authors
-                            ) # [1, 1, H, W], m, M
-                            map = map.squeeze(0).squeeze(0) # [H, W]
-
-                            cs_maps.append(map)
-
-                        reduced_cs_maps = torch.stack(cs_maps, dim=0).mean(dim=0) # [H, W]
+                        # aggr_global_text_token = global_text_token.mean(dim=0) # aggregating the class-splitted text vectors by averaging.
+                        accum_cs_global_text_tokens |= {uid: cs_global_text_token}
+                    # global_text_tokens = torch.stack(global_text_tokens)
+                    # global_text_tokens = segmodel.model.bottleneck_adapter.mlp(global_text_tokens)
                     
-                        batch_maps.append(reduced_cs_maps)
-                        cs_counter += len(cs_answers.keys())
-
-                    batch_maps = torch.stack(batch_maps) # [B, H, W]
-                    batch_maps = weights_trend_fn(batch_maps) # [B, H, W]
-
-                    old_batch_loss = batch_loss.clone()
-                    batch_loss = xen_rescaler(batch_loss, batch_maps, SEG_XEN_RESCALE_CONFIG['rescale_alpha'], normalise=True)
-                    _rescale_mult = batch_loss.mean()/old_batch_loss.mean()
-                    accum_rescale_mult.append(_rescale_mult)
-                    del old_batch_loss
+                    bottleneck_out: torch.Tensor = segmodel.activations['bottleneck']
+                    bottleneck_out = segmodel.adapt_tensor(bottleneck_out)
+                    accum_img_features.append(bottleneck_out)
             
-            backward(batch_loss, scaler)
-
             # del scs_img, scs, gts, prs, logits, bottleneck_out, global_text_tokens
+
+            # seg_batch_loss.backward()
             
             is_last_batch = (step + 1) == num_batches_per_epoch
             is_accum_step = (step + 1) % grad_accum_steps == 0
@@ -228,12 +234,41 @@ async def train_loop(
             if is_accum_step or is_last_batch:
 
                 if SEG_WITH_TEXT_CONFIG['with_text']:
-                    cs_mult = cs_counter/(train_dl.batch_size*grad_accum_steps)
-                    rescale_mult = torch.stack(accum_rescale_mult).mean()
+
+                    bottleneck_out = torch.concat(accum_img_features, dim=0)
+
+                    with autocast():
+
+                        aux_batch_loss = torch.tensor(0.0, device=CONFIG['device'])
+                        for i, uid in enumerate(uids):
+
+                            if uid in accum_cs_global_text_tokens.keys():
+
+                                cs_global_text_token = accum_cs_global_text_tokens[uid]
+                                cs_global_text_token = segmodel.model.bottleneck_adapter.mlp(cs_global_text_token)
+
+                                aux_batch_loss += aux_criterion(
+                                    image_features=bottleneck_out,
+                                    text_features=cs_global_text_token,
+                                    positive_image_idx=i,
+                                    logit_scale=vle.model.logit_scale/vle.model.logit_scale,
+                                    logit_bias=vle.model.logit_bias*0,
+                                    output_dict=False
+                                )/(len(cs_global_text_token)*train_dl.batch_size*grad_accum_steps)
+
+                        batch_loss = seg_batch_loss*(1. - SEG_CONTR_CONFIG['loss_lam']) + aux_batch_loss*SEG_CONTR_CONFIG['loss_lam'] # lambda coefficient
+                        
+                    cs_mult = filtered_cs_counter/(train_dl.batch_size*grad_accum_steps)
+                    filtered_perc = filtered_cs_counter/cs_counter
                 else:
+                    aux_batch_loss = torch.tensor(-1.0, device=CONFIG['device'])
+                    batch_loss = seg_batch_loss
                     cs_mult = -1.0
-                    rescale_mult = -1.0
-                
+                    filtered_perc = -1.0
+
+                # batch_loss.backward()
+                backward(batch_loss, scaler)
+
                 if scheduler:
                     scheduler(global_step)
 
@@ -246,7 +281,7 @@ async def train_loop(
                             max_grad_norm if max_grad_norm else float('inf'),
                             norm_type=2.0
                         )
-                    scaler.step(optimizer)
+                    # scaler.step(optimizer)
                     scaler.update()
                 else:
                     if SEG_TRAIN_CONFIG['grad_clip_norm']:
@@ -255,32 +290,53 @@ async def train_loop(
                             max_grad_norm if max_grad_norm else float('inf'),
                             norm_type=2.0
                         )
-                    optimizer.step()
+                    # optimizer.step()
+
+                #grad_norm = torch.nn.utils.clip_grad_norm_(
+                #    segmodel.model.parameters(),
+                #    max_grad_norm if max_grad_norm else float('inf'),
+                #    norm_type=2.0
+                #)
                 
+                # optimizer.step()
                 optimizer.zero_grad()
 
                 global_step += 1 # Increment global step *only* after an optimizer step
 
                 # --- Logging ---
                 if global_step % SEG_TRAIN_CONFIG['log_every'] == 0:
-                    train_metrics_score = train_metrics.compute()
+                    train_metrics_score = train_metrics.compute()            
+                    metric_diffs_values = torch.stack(list(mask_text_cache.get_metric_diffs(batch).values()))
+                    train_metrics_score = {'aux_loss': aux_batch_loss} | train_metrics_score
+                    train_metrics_score |= {'metric_diff_mean': metric_diffs_values.nanmean(), 'metric_diff_std': nanstd(metric_diffs_values, dim=0)}
+                    train_metrics_score |= {"cs_mult": torch.tensor(cs_mult)}
+                    train_metrics_score |= {"filtered_perc": torch.tensor(filtered_perc)}
                     current_lr = optimizer.param_groups[0]['lr']
                     step_in_epoch = (step // grad_accum_steps) + 1
                     log_manager.log_scores(
                         f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, step: {step_in_epoch}/{num_steps_per_epoch} (global_step: {global_step})",
-                        batch_loss, train_metrics_score, global_step, "train",
-                        f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}, cs_mult: {cs_mult:.2f}, rescale_mult: {rescale_mult:.8f}", "batch_"
+                        seg_batch_loss, train_metrics_score, global_step, "train",
+                        f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}", "batch_"
                     )
                 
+                mask_text_cache.update(batch)
+                
                 # reset accumulated values
+                if SEG_WITH_TEXT_CONFIG['with_text']:
+                    accum_img_features, accum_cs_global_text_tokens = [], {}
+                seg_batch_loss = None
                 cs_counter = 0
-                accum_rescale_mult = []
+                filtered_cs_counter = 0
 
                 train_metrics.reset() # only the batch metrics are logged
 
         # --- End of Epoch Validation and Checkpointing ---
-        val_loss, val_metrics_score = segmodel.evaluate(val_dl, val_criterion, metrics_dict)
+        val_loss, val_metrics_score = segmodel.evaluate(val_dl, criterion, metrics_dict)
         log_manager.log_scores(f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, VALIDATION", val_loss, val_metrics_score, epoch+1, "val", None, "val_")
+
+        mask_text_cache.cache.save(directory_path=Path("/home/olivieri/exp/data/torch_weights/cache/from_start_cache_prefill_all_classes_with_text"))
+
+        break
 
         if val_metrics_score['mIoU'] > best_val_mIoU:
             best_val_mIoU = val_metrics_score['mIoU']
@@ -312,6 +368,8 @@ async def main() -> None:
         resize_size=SEG_CONFIG['image_size'],
         center_crop=False,
         with_unlabelled=True,
+        output_uids=True,
+        # img_idxs=slice(0, 128, 1)
     )
 
     val_ds = VOC2012SegDataset(
@@ -320,6 +378,7 @@ async def main() -> None:
         resize_size=SEG_CONFIG['image_size'],
         center_crop=False,
         with_unlabelled=True,
+        # img_idxs=slice(0, 64, 1)
     )
 
     # Segmentation Model
@@ -331,6 +390,20 @@ async def main() -> None:
     ) # TODO to modify with the actual segnet intermediate checkpoint
 
     segmodel.adapt()
+    
+    cache = Cache(storage_device="cpu", memory_device="cuda")
+    update_policy = BatchedPercentilePolicy(
+        metric=BinaryJaccardIndex().to(CONFIG["device"]),
+        percentile=0.6
+    )
+    mask_text_cache = MaskTextCache(cache, update_policy)
+
+    if True:
+        state_dict: OrderedDict = torch.load('/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/with_text/synth_contr/lraspp_mobilenet_v3_large_phase_2_synth_text_e5_250903_1711.pth')
+        model_state_dict = state_dict.get('model_state_dict', state_dict)
+        segmodel.model.load_state_dict(model_state_dict)
+    else:
+        ...
 
     segmodel.set_trainable_params(train_decoder_only=False)
 
@@ -351,7 +424,7 @@ async def main() -> None:
 
     gen_params = GenParams(
         seed=CONFIG["seed"],
-        temperature=SEG_WITH_TEXT_CONFIG['vlm_temperature'],
+        temperature=SEG_WITH_TEXT_CONFIG['vlm_temperature']
     )
 
     prompt_blueprint={
@@ -371,7 +444,7 @@ async def main() -> None:
         split='train',
         resize_size=CONFIG['seg']['image_size'],
         center_crop=True,
-        with_unlabelled=False,
+        with_unlabelled=False
     )
 
     sup_set_seg_dataset = VOC2012SegDataset(
@@ -404,9 +477,11 @@ async def main() -> None:
         vle.model.load_state_dict(torch.load(vle_weights_path, map_location=CONFIG['device'])['model_state_dict'])
     else:
         raise AttributeError(f"ERROR: VLE weights path '{vle_weights_path}' not found.")
-
+    
     vle.set_vision_trainable_params(None)
 
+    # NOTE deleting vision layers only if encoding text only.
+    del vle.model.visual, vle.model.visual_proj, vle.model.image_post
     clear_memory()
     vle.model = compile_torch_model(vle.model)
 
@@ -418,12 +493,16 @@ async def main() -> None:
 
     # augmentations
     augment_fn = T.Compose([
-        T.RandomHorizontalFlip(p=0.5),
+        T.Identity()
+        # T.RandomHorizontalFlip(p=0.5),
+        # T.RandomAffine(degrees=0, scale=(0.5, 2)), # Zooms in and out of the image.
+        # T.RandomAffine(degrees=[-30, 30], translate=[0.2, 0.2], scale=(0.5, 2), shear=15), # Full affine transform.
+        # T.RandomPerspective(p=0.5, distortion_scale=0.2) # Shears the image
     ])
 
     train_collate_fn = partial(
-        crop_augment_preprocess_batch,
-        crop_fn=random_crop_fn,
+        partial(crop_augment_preprocess_batch, output_uids=True),
+        crop_fn=center_crop_fn,
         augment_fn=augment_fn,
         preprocess_fn=None
     )
@@ -435,12 +514,12 @@ async def main() -> None:
         preprocess_fn=seg_preprocess_fn
     )
 
-    train_criterion = nn.CrossEntropyLoss(ignore_index=21, reduction='none')
-    val_criterion = nn.CrossEntropyLoss(ignore_index=21)
-    # weights_trend_fn = lin_rescale_fn
-    weights_trend_fn = partial(pow_rescale_fn, exp=0.8)
+    criterion = nn.CrossEntropyLoss(ignore_index=21)
+    # aux_criterion = SigLipLoss()
+    aux_criterion = SigLipLossMultiText()
 
-    sign_classes_filter = partial(subsample_sign_classes, k=0)
+    # sign_classes_filter = partial(subsample_sign_classes, k=0)
+    sign_classes_filter = None
 
     train_dl = DataLoader(
         train_ds,
@@ -461,6 +540,7 @@ async def main() -> None:
         "acc": MulticlassAccuracy(num_classes=train_ds.get_num_classes(with_unlabelled=True), top_k=1, average="micro", multidim_average="global", ignore_index=21).to(CONFIG["device"]),
         "mIoU": MulticlassJaccardIndex(num_classes=train_ds.get_num_classes(with_unlabelled=True), average="macro", ignore_index=21).to(CONFIG["device"]),
     }
+
 
     log_manager.log_intro(
         config=CONFIG,
@@ -484,10 +564,10 @@ async def main() -> None:
             fast_prompt_builder,
             seg_preprocess_fn,
             gen_params,
-            train_criterion,
-            val_criterion,
-            weights_trend_fn,
+            criterion,
+            aux_criterion,
             metrics_dict,
+            mask_text_cache,
             checkpoint_dict,
             sign_classes_filter
     )
@@ -501,3 +581,4 @@ async def main() -> None:
 
 if __name__ == '__main__':
     asyncio.run(main())
+                 

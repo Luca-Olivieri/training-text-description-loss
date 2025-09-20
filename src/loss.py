@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Optional, Callable
+from typing import Optional
+from torch.amp import GradScaler # for AMP
 
 class SigLipLossSingleText(nn.Module):
     """
@@ -196,3 +197,13 @@ def xen_rescaler(
         loss_rescaled *= loss.sum().detach()/loss_rescaled.sum().detach() # normalise to have the same value of original loss
     loss_rescaled = loss_rescaled.mean()
     return loss_rescaled
+
+def backward(
+        total_loss: torch.Tensor,
+        scaler: GradScaler,
+        retain_graph: bool = False
+) -> None:
+    if scaler is not None:
+        scaler.scale(total_loss).backward(retain_graph=retain_graph)
+    else:
+        total_loss.backward(retain_graph=retain_graph)

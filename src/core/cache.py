@@ -171,14 +171,14 @@ class Cache:
             KeyError: If any of the requested keys are not found in the cache.
         """
         # First, check for missing keys to ensure atomic failure
-        missing_keys = set(keys) - self.keys()
-        if missing_keys:
-            raise KeyError(f"Keys not found in cache: {', '.join(missing_keys)}")
+        # missing_keys = set(keys) - self.keys()
+        # if missing_keys:
+        #    raise KeyError(f"Keys not found in cache: {', '.join(missing_keys)}")
 
         results = {}
         if self.storage_device in ["cpu", "cuda"]:
             # Retrieve all data first
-            raw_items = {key: self._data[key] for key in keys}
+            raw_items = {key: self._data.get(key, (torch.tensor(torch.nan), None)) for key in keys}
         elif self.storage_device == "disk":
             raw_items = {}
             for key in keys:
@@ -189,7 +189,7 @@ class Cache:
         # Now, batch the device transfer
         for key, (image, text) in raw_items.items():
             results[key] = (image.to(self.memory_device), text)
-
+        
         return results
 
     def __delitem__(
@@ -452,7 +452,7 @@ class MaskTextCache:
     def __init__(
             self,
             cache: Cache,
-            update_policy: UpdatePolicy
+            update_policy: CacheUpdatePolicy
     ) -> None:
         self.cache = cache
         self.update_policy = update_policy
@@ -460,29 +460,26 @@ class MaskTextCache:
     def get_many(
             self,
             img_uids: list[str]
-    ) -> None:
+    ) -> dict[str, tuple[torch.Tensor, str]]:
         return self.cache.get_many(keys=img_uids)
     
     def get_keys_to_update(
             self,
             keys: list[str],
             new_images: torch.Tensor,
-            batched_computation: bool = True
     ) -> list[str]:
-        items = self.cache.get_many(keys)
-        images = [img for img, txt in self.cache.get_many(keys)]
-        filtered_keys = self.update_policy.filter_keys(keys, images, new_images, batched_computation=batched_computation)
+        images = [img for img, txt in self.cache.get_many(keys).values()]
+        filtered_keys = self.update_policy.filter_keys(keys, images, new_images)
         return filtered_keys
     
     def get_cs_keys_to_update(
             self,
             new_cs_images: dict[str, dict[int, torch.Tensor]],
-            batched_computation: bool = True
     ) -> dict[str, list[int]]:
         uids = list(new_cs_images.keys())
         flat_keys = [f'{uid}-{pos_c}' for uid in uids for pos_c in new_cs_images[uid].keys()]
         flat_new_images = torch.cat([torch.stack(list(new_imgs.values()), dim=0) for new_imgs in new_cs_images.values()])
-        keys_to_update = self.get_keys_to_update(flat_keys, flat_new_images, batched_computation=batched_computation)
+        keys_to_update = self.get_keys_to_update(flat_keys, flat_new_images)
         cs_keys_to_update = group_uids(keys_to_update)
         return cs_keys_to_update
         
@@ -495,13 +492,72 @@ class MaskTextCache:
     def get_metric_diffs(
             self,
             batch: dict[str, tuple[torch.Tensor, str]]
-    ) -> list[float]:
+    ) -> dict[str, float]:
         keys = list(batch.keys())
-        cached_masks = self.get_many(img_uids=list(batch.keys()))
+        cached_masks = [img for img, txt in self.cache.get_many(keys).values()]
         new_masks = [img for img, txt in batch.values()]
         return self.update_policy.get_metric_diffs(keys, cached_masks, new_masks)
 
-class UpdatePolicy(ABC):
+    def get_cs_metric_diffs(
+            self,
+            batch: dict[str, dict[int, tuple[torch.Tensor, str]]]
+    ) -> list[float]:
+        uids = list(batch.keys())
+        flat_keys = [f'{uid}-{pos_c}' for uid in uids for pos_c in batch[uid].keys()]
+        cached_masks = self.get_many(img_uids=flat_keys)
+        # new_masks = [img for img, txt in batch.values()]
+        new_masks = [batch[uid][pos_c][0] for uid in uids for pos_c in batch[uid].keys()]
+        return self.update_policy.get_metric_diffs(flat_keys, cached_masks, new_masks)
+    
+    def __repr__(self) -> str:
+        return self.cache.__repr__()
+
+
+class Trend(ABC):
+    def __init__(self) -> None:
+        raise NotImplementedError
+
+    def get_current_value(self) -> float:
+        if self.value is None:
+            raise ValueError("The value has not been initialised.")
+        return self.value
+    
+    def update_value(
+            self,
+            new_value: float
+    ) -> None:
+        raise NotImplementedError
+    
+    def update_and_get_value(
+            self,
+            new_value: float
+    ) -> float:
+        self.update_value(new_value)
+        return self.get_current_value()
+
+class SimpleExpSmoothing(Trend):
+
+    @override
+    def __init__(
+            self,
+            alpha: float,
+    ) -> None:
+        if not (0.0 <= alpha <= 1.0):
+            raise ValueError("Alpha must be between 0 and 1.")
+        self.alpha = alpha
+        self.value: Optional[float] = None
+
+    @override
+    def update_value(
+            self,
+            new_value: float
+    ) -> None:
+        if self.value is None:
+            self.value = new_value
+        else:
+            self.value = self.alpha*self.value + (1. - self.alpha)*new_value
+
+class CacheUpdatePolicy(ABC):
     def __init__(
             self
     ) -> None:
@@ -511,46 +567,23 @@ class UpdatePolicy(ABC):
     def filter_keys(
             self,
             keys: str,
-            images_1: torch.Tensor,
-            images_2: torch.Tensor,
-            batched_computation: bool = True
+            images_1: list[torch.Tensor],
+            images_2: list[torch.Tensor],
     ) -> list[str]:
         raise NotImplementedError
     
     def get_metric_diffs(
             self,
             keys: str,
-            tensor_1: torch.Tensor,
-            tensor_2: torch.Tensor,
+            images_1: list[torch.Tensor],
+            images_2: list[torch.Tensor],
     ) -> dict[str, float]:
-        metric_diffs = {k: float(self.metric(t_1, t_2)) for k, t_1, t_2 in zip(keys, tensor_1, tensor_2)}
-        return metric_diffs
-
-class BatchedFixedThrPolicy(UpdatePolicy):
-    def __init__(
-            self,
-            metric: tm.Metric,
-            thr: float
-    ) -> None:
-        self.thr = thr
-        self.metric = metric
-
-    @override
-    def filter_keys(
-            self,
-            keys: str,
-            images_1: torch.Tensor,
-            images_2: torch.Tensor,
-            batched_computation: bool = True,
-    ) -> list[str]:
-        if batched_computation:
-            keys_to_filter_mask: torch.Tensor[bool] = self.metric(images_1, images_2) > self.thr
-        else:
-            keys_to_filter_mask: list[bool] = [bool(self.metric(img_1, img_2) > self.thr) for img_1, img_2 in zip(images_1, images_2)]
-        filtered_keys = [k for i, k in enumerate(keys) if k in keys_to_filter_mask[i]]
-        return filtered_keys
+        nan_mask: list[bool] = [torch.any(torch.isnan(t)).item() for t in images_1]
+        metrics = {key: self.metric(img_1, img_2) if not nan_mask[i] else torch.tensor(1.).to(img_1.device) for i, (key, img_1, img_2) in enumerate(zip(keys, images_1, images_2))}
+        return metrics
     
-class BatchedPercentilePolicy(UpdatePolicy):
+
+class BatchedPercentilePolicy(CacheUpdatePolicy):
     def __init__(
             self,
             metric: tm.Metric,
@@ -563,20 +596,48 @@ class BatchedPercentilePolicy(UpdatePolicy):
     def filter_keys(
             self,
             keys: str,
-            images_1: torch.Tensor,
-            images_2: torch.Tensor,
-            batched_computation: bool = False,
+            images_1: list[torch.Tensor],
+            images_2: list[torch.Tensor],
     ) -> list[str]:
-        if batched_computation:
-            metrics = self.metric(images_1, images_2)
-            quantile = torch.quantile(metrics, q=self.percentile)
-            keys_to_filter_mask: torch.Tensor[bool] = metrics > quantile
-        else:
-            metrics = torch.tensor([self.metric(img_1, img_2) for img_1, img_2 in zip(images_1, images_2)])
-            quantile = torch.quantile(metrics, q=self.percentile)
-            keys_to_filter_mask: list[bool] = [bool(metrics > quantile) for m in metrics]
-        filtered_keys = [k for i, k in enumerate(keys) if k in keys_to_filter_mask[i]]
+        nan_mask: list[bool] = [torch.any(torch.isnan(t)).item() for t in images_1]
+        metrics = torch.tensor([self.metric(img_1, img_2) if not nan_mask[i] else torch.tensor(1.) for i, (img_1, img_2) in enumerate(zip(images_1, images_2))])
+        quantile = torch.quantile(metrics, q=self.percentile)
+        keys_to_filter_mask: list[bool] = [bool(m >= quantile) for m in metrics]
+        filtered_keys = [k for i, k in enumerate(keys) if keys_to_filter_mask[i] is True]
         return filtered_keys
+
+class DatasetPercentilePolicy(CacheUpdatePolicy):
+    def __init__(
+            self,
+            metric: tm.Metric,
+            percentile: float,
+            trend: Trend
+    ) -> None:
+        self.metric = metric
+        self.percentile = percentile
+        self.trend = trend
+    
+    def get_and_update_state(
+            self,
+            batch_quantile: float
+    ) -> float:
+        return self.trend.update_and_get_value(new_value=batch_quantile)
+
+    @override
+    def filter_keys(
+            self,
+            keys: str,
+            images_1: list[torch.Tensor],
+            images_2: list[torch.Tensor],
+    ) -> list[str]:
+        nan_mask: list[bool] = [torch.any(torch.isnan(t)).item() for t in images_1]
+        metrics = torch.tensor([self.metric(img_1, img_2) if not nan_mask[i] else torch.tensor(1.) for i, (img_1, img_2) in enumerate(zip(images_1, images_2))])
+        batch_quantile = torch.quantile(metrics, q=self.percentile)
+        quantile = self.get_and_update_state(batch_quantile)
+        keys_to_filter_mask: list[bool] = [bool(m >= quantile) for m in metrics]
+        filtered_keys = [k for i, k in enumerate(keys) if keys_to_filter_mask[i] is True]
+        return filtered_keys
+
 
 def group_uids(
         data: list[str]
@@ -729,7 +790,6 @@ def main() -> None:
         print(f"When retrieved, the tensor is on device: {retrieved_img_from_gpu.device}")
     else:
         print("Test skipped because no CUDA available")
-
 
 
 if __name__ == '__main__':

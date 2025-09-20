@@ -1,5 +1,5 @@
 from config import *
-from utils import pretty_metrics
+from utils import pretty_metrics, nanstd
 from viz import format_to_title
 
 from pathlib import Path
@@ -129,6 +129,20 @@ class LogManager():
                     self.tb_logger.add_scalar(f"{tb_phase}/{m}", s, tb_log_counter)  if self.tb_logger else None
         log_str += suffix if suffix else ""
         self.main_logger.info(log_str, stacklevel=_stacklevel)
+
+    def log_metric_diffs(
+            self,
+            title: str,
+            metric_diffs: dict[str, Optional[float]],
+            tb_log_counter: Optional[int],
+    ) -> None:
+        metric_diffs_values = torch.Tensor(list(metric_diffs.values()))
+        mean = metric_diffs_values.nanmean()
+        std = nanstd(metric_diffs_values, dim=0)
+        log_str = f"[{title}] train_metric_diff_mean: {mean:.4f}, train_metric_diff_std: {std:.4f}"
+        self.log_line(log_str)
+        self.tb_logger.add_scalar(f"train/metric_diff_mean", mean, tb_log_counter) if self.tb_logger else None
+        self.tb_logger.add_scalar(f"train/metric_diff_std", std, tb_log_counter) if self.tb_logger else None
 
     def close_loggers(self) -> None:
         

@@ -644,6 +644,21 @@ def subsample_sign_classes(
             return random.sample(data_list, k)
     return data_list
 
+def nanstd(
+        data: torch.Tensor,
+        dim: list[int] | int,
+        keepdim: bool =False
+) -> None:
+    result = torch.sqrt(
+        torch.nanmean(
+            torch.pow(torch.abs(data-torch.nanmean(data, dim=dim).unsqueeze(dim)), 2),
+            dim=dim
+        )
+    )
+    if keepdim:
+        result = result.unsqueeze(dim)
+    return result
+
 def main() -> None:
     ...
 
