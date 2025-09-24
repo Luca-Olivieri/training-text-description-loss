@@ -33,6 +33,9 @@ from typing import Literal, Callable, Optional
 from typing_extensions import deprecated
 from abc import ABC
 
+# TODO push core .py files into a folder named 'core'
+# TODO push cache .py files into a folder named 'cache'
+
 class SegDataset(Dataset, ABC):
     """
     TODO
@@ -129,7 +132,8 @@ class VOC2012SegDataset(SegDataset):
             uids_to_exclude: list[str] = [],
             center_crop: bool = False,
             with_unlabelled: bool = True, # only effective for the masks class mapping
-            mask_prs_path: Path = None
+            mask_prs_path: Path = None,
+            output_uids: bool = False
     ) -> None:
         self.root_path = root_path
         self.mask_prs_path = mask_prs_path
@@ -164,6 +168,7 @@ class VOC2012SegDataset(SegDataset):
         self.sc_resize_mode = sc_resize_mode
         self.mask_resize_mode = mask_resize_mode
         self.center_crop = center_crop
+        self.output_uids = output_uids
 
     @classmethod
     def get_classes(
@@ -218,9 +223,15 @@ class VOC2012SegDataset(SegDataset):
             gt = self.get_gt(path=gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
             if self.mask_prs_path:
                 pr = self.get_pr(path=prs_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
-                return sc, gt, pr
+                if self.output_uids:
+                    return self.image_UIDs[idx], sc, gt, pr
+                else:
+                    return sc, gt, pr
             else:
-                return sc, gt
+                if self.output_uids:
+                    return self.image_UIDs[idx], sc, gt
+                else:
+                    return sc, gt
         elif isinstance(idx, slice):
             indices = range(*idx.indices(len(self)))
         elif isinstance(idx, list):
@@ -229,9 +240,15 @@ class VOC2012SegDataset(SegDataset):
         gts = [self.get_gt(path=gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
         if self.mask_prs_path:
             prs = [self.get_pr(path=prs_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
-            return scs, gts, prs
+            if self.output_uids:
+                return self.image_UIDs[indices], scs, gts, prs
+            else:
+                return scs, gts, prs
         else:
-            return scs, gts
+            if self.output_uids:
+                return self.image_UIDs[indices], scs, gts
+            else:
+                return scs, gts
     
     def get_color_map_dict(
             self,
@@ -1551,10 +1568,14 @@ def crop_augment_preprocess_batch(
         batch: list,
         crop_fn: Callable,
         augment_fn: Callable,
-        preprocess_fn: Callable
+        preprocess_fn: Callable,
+        output_uids: bool = False
 ) -> tuple[torch.Tensor, torch.Tensor]:
     # Has to be made into a 'collate_fn' by fixing the parameters other than 'batch'!
-    x, y = zip(*batch)
+    if output_uids:
+        uids, x, y = zip(*batch)
+    else:
+        x, y = zip(*batch)
 
     # when the images are sampled in the batch, they are:
     #   1. in Float32 in the range [0, 1],
@@ -1571,7 +1592,10 @@ def crop_augment_preprocess_batch(
     if preprocess_fn:
         x = preprocess_fn(x)
 
-    return x, y
+    if output_uids:
+        return uids, x, y
+    else:
+        return x, y
 
 def crop_image_preprocess_image_text_batch(
         batch: list,

@@ -513,51 +513,9 @@ class MaskTextCache:
         return self.cache.__repr__()
 
 
-class Trend(ABC):
-    def __init__(self) -> None:
-        raise NotImplementedError
-
-    def get_current_value(self) -> float:
-        if self.value is None:
-            raise ValueError("The value has not been initialised.")
-        return self.value
-    
-    def update_value(
-            self,
-            new_value: float
-    ) -> None:
-        raise NotImplementedError
-    
-    def update_and_get_value(
-            self,
-            new_value: float
-    ) -> float:
-        self.update_value(new_value)
-        return self.get_current_value()
-
-class SimpleExpSmoothing(Trend):
-
-    @override
-    def __init__(
-            self,
-            alpha: float,
-    ) -> None:
-        if not (0.0 <= alpha <= 1.0):
-            raise ValueError("Alpha must be between 0 and 1.")
-        self.alpha = alpha
-        self.value: Optional[float] = None
-
-    @override
-    def update_value(
-            self,
-            new_value: float
-    ) -> None:
-        if self.value is None:
-            self.value = new_value
-        else:
-            self.value = self.alpha*self.value + (1. - self.alpha)*new_value
 
 class CacheUpdatePolicy(ABC):
+    @abstractmethod
     def __init__(
             self
     ) -> None:
@@ -579,34 +537,11 @@ class CacheUpdatePolicy(ABC):
             images_2: list[torch.Tensor],
     ) -> dict[str, float]:
         nan_mask: list[bool] = [torch.any(torch.isnan(t)).item() for t in images_1]
-        metrics = {key: self.metric(img_1, img_2) if not nan_mask[i] else torch.tensor(1.).to(img_1.device) for i, (key, img_1, img_2) in enumerate(zip(keys, images_1, images_2))}
+        metrics = {key: self.metric(img_1, img_2) if not nan_mask[i] else torch.tensor(0.).to(img_1.device) for i, (key, img_1, img_2) in enumerate(zip(keys, images_1, images_2))}
         return metrics
-    
 
-class BatchedPercentilePolicy(CacheUpdatePolicy):
-    def __init__(
-            self,
-            metric: tm.Metric,
-            percentile: float
-    ) -> None:
-        self.metric = metric
-        self.percentile = percentile
-    
-    @override
-    def filter_keys(
-            self,
-            keys: str,
-            images_1: list[torch.Tensor],
-            images_2: list[torch.Tensor],
-    ) -> list[str]:
-        nan_mask: list[bool] = [torch.any(torch.isnan(t)).item() for t in images_1]
-        metrics = torch.tensor([self.metric(img_1, img_2) if not nan_mask[i] else torch.tensor(1.) for i, (img_1, img_2) in enumerate(zip(images_1, images_2))])
-        quantile = torch.quantile(metrics, q=self.percentile)
-        keys_to_filter_mask: list[bool] = [bool(m >= quantile) for m in metrics]
-        filtered_keys = [k for i, k in enumerate(keys) if keys_to_filter_mask[i] is True]
-        return filtered_keys
 
-class DatasetPercentilePolicy(CacheUpdatePolicy):
+class PercentilePolicy(CacheUpdatePolicy):
     def __init__(
             self,
             metric: tm.Metric,
@@ -630,13 +565,73 @@ class DatasetPercentilePolicy(CacheUpdatePolicy):
             images_1: list[torch.Tensor],
             images_2: list[torch.Tensor],
     ) -> list[str]:
-        nan_mask: list[bool] = [torch.any(torch.isnan(t)).item() for t in images_1]
-        metrics = torch.tensor([self.metric(img_1, img_2) if not nan_mask[i] else torch.tensor(1.) for i, (img_1, img_2) in enumerate(zip(images_1, images_2))])
+        metrics_dict = self.get_metric_diffs(images_1=images_1, images_2=images_2, keys=[str(n) for n in range(len(images_1))])
+        metrics = torch.stack(list(metrics_dict.values()))
         batch_quantile = torch.quantile(metrics, q=self.percentile)
         quantile = self.get_and_update_state(batch_quantile)
-        keys_to_filter_mask: list[bool] = [bool(m >= quantile) for m in metrics]
+        keys_to_filter_mask: list[bool] = [bool(m <= quantile) for m in metrics]
         filtered_keys = [k for i, k in enumerate(keys) if keys_to_filter_mask[i] is True]
         return filtered_keys
+
+
+class Trend(ABC):
+    def __init__(self) -> None:
+        raise NotImplementedError
+
+    def get_current_value(self) -> float:
+        if self.value is None:
+            raise ValueError("The value has not been initialised.")
+        return self.value
+    
+    def update_value(
+            self,
+            new_value: float
+    ) -> None:
+        raise NotImplementedError
+    
+    def update_and_get_value(
+            self,
+            new_value: float
+    ) -> float:
+        self.update_value(new_value)
+        return self.get_current_value()
+
+
+class Identity(Trend):
+
+    @override
+    def __init__(self) -> None:
+        self.value: Optional[float] = None
+
+    @override
+    def update_value(
+            self,
+            new_value: float
+    ) -> None:
+        self.value = new_value
+
+
+class SimpleExpSmoothing(Trend):
+
+    @override
+    def __init__(
+            self,
+            alpha: float,
+    ) -> None:
+        if not (0.0 <= alpha <= 1.0):
+            raise ValueError("Alpha must be between 0 and 1.")
+        self.alpha = alpha
+        self.value: Optional[float] = None
+
+    @override
+    def update_value(
+            self,
+            new_value: float
+    ) -> None:
+        if self.value is None:
+            self.value = new_value
+        else:
+            self.value = self.alpha*self.value + (1. - self.alpha)*new_value
 
 
 def group_uids(
@@ -790,7 +785,6 @@ def main() -> None:
         print(f"When retrieved, the tensor is on device: {retrieved_img_from_gpu.device}")
     else:
         print("Test skipped because no CUDA available")
-
 
 if __name__ == '__main__':
     main()
