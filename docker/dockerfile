@@ -58,7 +58,17 @@ RUN chown $USERNAME /requirements.txt
 USER $USERNAME 
 
 USER 0
-RUN apt install -y libsm6 libxext6 libxrender-dev ffmpeg htop
+# RUN apt install -y libsm6 libxext6 libxrender-dev ffmpeg htop
+
+# Best practice: update, install, and clean up in a single RUN command
+# to avoid cache issues and reduce image size.
+RUN apt-get update && apt-get install -y \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    ffmpeg \
+    htop \
+    && rm -rf /var/lib/apt/lists/*
 
 USER $USERNAME 
 RUN pip install -r /requirements.txt
