@@ -639,7 +639,7 @@ class OllamaMLLM(MLLM):
     def __init__(
             self,
             model_name: str,
-            client: Optional[ollama.AsyncClient] = None
+            container_name: str = "olivieri_ollama"
     ) -> None:
         """
         Initializes OllamaMLLM with model name and optional client.
@@ -649,12 +649,12 @@ class OllamaMLLM(MLLM):
             client: Optional Ollama client.
         """
         self.model = model_name
-        self.client = client or self.get_client(async_=True)
+        self.client = self.get_client(host=f"http://{container_name}:11434", async_=True)
 
     def get_client(
             self,
-            host="http://olivieri_ollama:11434",
-            async_=False
+            host: str = "http://olivieri_ollama:11434",
+            async_: bool = False
     ) -> ollama.Client:
         """
         Gets an Ollama client instance.

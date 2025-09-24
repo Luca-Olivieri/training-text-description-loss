@@ -33,7 +33,7 @@ async def main() -> None:
 
     model_name = "gemma3:12b-it-qat"
 
-    vlm = OllamaMLLM(model_name)
+    vlm = OllamaMLLM(model_name, container_name=CONFIG['ollama_container_name'])
 
     by_model = "LRASPP_MobileNet_V3"
 
