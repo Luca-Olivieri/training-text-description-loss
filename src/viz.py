@@ -12,6 +12,7 @@ from torchvision.transforms.functional import to_pil_image
 import seaborn as sns
 import matplotlib.pyplot as plt
 import base64
+from utils import blend_tensors
 
 def normalize_attn_maps(
         attn_maps: torch.Tensor,        
@@ -375,3 +376,73 @@ def create_diff_mask(
     diff = (mask1 != mask2).to(torch.uint8)
 
     return diff
+
+def create_cs_diff_masks(
+        sc_img: torch.Tensor,
+        gt: torch.Tensor,
+        pr: torch.Tensor,
+        sign_classes: list[int],
+        alpha: float = 0.55
+) -> dict[int, torch.Tensor]:
+    
+    cs_diff_masks: dict[int, torch.Tensor] = {}
+
+    for pos_c in sign_classes:
+        pos_class_gt = (gt == pos_c)
+        pos_class_pr = (pr == pos_c)
+
+        diff_mask = create_diff_mask(pos_class_gt, pos_class_pr)
+
+        # L overlay image
+        ovr_diff_mask_L = blend_tensors(sc_img, diff_mask*255, alpha) # int in range [0, 255]
+
+        cs_diff_masks[pos_c] = ovr_diff_mask_L
+
+    # TODO validate the format of the diff masks, they have to get into the VLE.
+
+def create_cs_masks(
+        sc_img: torch.Tensor,
+        mask: torch.Tensor,
+        sign_classes: list[int],
+        alpha: float = 0.55
+) -> dict[int, torch.Tensor]:
+    """
+    Creates class-specific difference masks in a vectorized, GPU-friendly manner.
+    """
+    if not sign_classes:
+        return {}
+    
+    # Ensure tensors are on the same device (ideally 'cuda')
+    device = mask.device
+    sc_img = sc_img.to(device)
+    mask = mask.to(device)
+
+    # 1. Create a tensor of class values.
+    # Shape: (N,) where N is the number of classes.
+    classes_tensor = torch.tensor(sign_classes, device=device, dtype=mask.dtype)
+
+    # 2. Create masks for all classes at once using broadcasting.
+    # gt is (H, W), classes_tensor is (N,).
+    # We reshape to (1, H, W) and (N, 1, 1) to trigger broadcasting.
+    # The result `all_pos_class_gt` will have shape (N, H, W).
+    all_pos_class_gt = (mask.unsqueeze(0) == classes_tensor.view(-1, 1, 1))
+
+    # 3. Create all diff masks at once. The op is element-wise.
+    # Shape: (N, H, W)
+
+    # 4. Prepare for blending. Convert boolean diff masks to float overlays.
+    # Shape: (N, H, W)
+
+    # 5. Blend the single source image with the entire stack of overlays at once.
+    # sc_img (H, W) is unsqueezed to (1, H, W) to broadcast across the N overlays.
+    # Shape: (N, H, W)
+    all_blended_masks = blend_tensors(sc_img.unsqueeze(0), all_pos_class_gt.unsqueeze(1).repeat(1, 3, 1, 1)*255, alpha)
+
+    # 6. Create the final dictionary.
+    # This is a fast CPU operation. We pair each class ID with its corresponding mask.
+    cs_masks = {
+        class_val: mask
+        for class_val, mask in zip(sign_classes, all_blended_masks)
+    }
+
+    return cs_masks
