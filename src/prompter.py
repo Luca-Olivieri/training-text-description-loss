@@ -17,8 +17,6 @@ import re
 
 from typing import Self, Any, List, Optional, Callable
 
-# TODO check if it's better to use 'transforms.v2' instead of plain 'transforms'
-
 Prompt = list[str | Image.Image]
 
 def _concat_images_fn(
@@ -828,9 +826,6 @@ class EvalModule(PromptModule):
 ### Prompts Logic ###
 
 class PromptBuilder():
-
-    # TODO: can we parallelise or speed up the methods that build the prompts?
-
     def __init__(
             self,
             seg_dataset: VOC2012SegDataset,

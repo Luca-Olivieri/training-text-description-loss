@@ -345,7 +345,7 @@ def track_performance(n_trials: int = 10) -> Callable:
         else:
             return sync_wrapper
         
-# TODO Fix this, it does not work, it does not actually retry!
+# NOTE It does not worked when applied to Google API Studio, likely for a problem of Error type.
 def retry(
         max_retries: int,
         cooldown_seconds: int | float,
@@ -464,7 +464,6 @@ def pretty_metrics(
 ) -> dict:
     return {m: f"{s.item():.4f}" for m, s in metric_collection.items()}
 
-# TODO adapt the registry to take note of the outer class and cast the model to it to have type annotations.
 class Registry:
     """
     A class to manage and instantiate registered objects.

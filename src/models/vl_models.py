@@ -26,7 +26,6 @@ Conversation = list[dict[str, str]] # list of chat-templated turns.
 # Ollama
 import ollama
 
-# TODO This should be converted to a @dataclass
 class GenParams(DictObject):
     """
     A dictionary-like class with a predefined set of keys, initially unassigned (None).

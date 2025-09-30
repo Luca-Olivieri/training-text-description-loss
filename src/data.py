@@ -35,11 +35,10 @@ from abc import ABC
 
 # TODO push core .py files into a folder named 'core'
 # TODO push cache .py files into a folder named 'cache'
+# TODO push shared and private data in to a private 'data' folder.
+# TODO push cache data files into a separate folder 'cache'
 
 class SegDataset(Dataset, ABC):
-    """
-    TODO
-    """
     def __init__(self) -> None:
         raise NotImplementedError
     
@@ -76,9 +75,6 @@ class SegDataset(Dataset, ABC):
         return get_mask(path, class_map, resize_size, resize_mode, center_crop)
 
 class VOC2012SegDataset(SegDataset):
-    """
-    TODO
-    """
     def get_image_UIDs(
             self,
             split: Literal['trainval',
@@ -646,9 +642,6 @@ class JSONLDataset(Dataset):
             self._file = None
 
 class ImageDataset(Dataset):
-    """
-    TODO
-    """
     def __init__(
             self,
             path: Path,
@@ -983,10 +976,7 @@ def read_one_from_jsonl_by(
     Returns:
         The first matching object, or None if not found.
     """
-    # TODO maybe this method can be made faster
-    """
-    'key' must be at the top level of the JSON object (no nested keys).
-    """
+    # Note 'key' must be at the top level of the JSON object (no nested keys).
     with open(path, 'r') as f:
         for line in f:
             obj = json.loads(line)

@@ -328,7 +328,7 @@ async def main() -> None:
         pretrained_weights_path=Path(SEG_CONFIG['pretrained_weights_path']),
         adaptation='contrastive_global',
         device=CONFIG['device']
-    ) # TODO to modify with the actual segnet intermediate checkpoint
+    )
 
     segmodel.adapt()
 

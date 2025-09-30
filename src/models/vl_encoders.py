@@ -60,9 +60,6 @@ class VLEncoderOutputWithAttn(VLEncoderOutput):
 
 
 class VLEncoder(ABC):
-    """
-    TODO
-    """
     @abstractmethod
     def __init__(self, *args, **kwargs) -> None:
         raise NotImplementedError
@@ -153,7 +150,6 @@ class VLEncoder(ABC):
         
         # reshape attention maps
         num_patches_per_axis = int(math.sqrt(image_num_patches))
-        # TODO I think that [cls] token is at last position, find out if it's true
         attn_maps: torch.Tensor = vle_output.attn_maps_flat[:, :, :-1].view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, sqrt(n_i), sqrt(n_i)]
         min_attn, max_attn = attn_maps.min(), attn_maps.max() # max token attention
         
@@ -161,7 +157,6 @@ class VLEncoder(ABC):
         if upsample_size:
             attn_maps: torch.Tensor = TF.resize(attn_maps, upsample_size, interpolation=upsample_mode) # [B_i, B_t, H, W]
 
-        # TODO do not output 'min_attn' and 'max_attn' anymore, make it produce by downstream functions.
         return attn_maps, min_attn, max_attn
     
     @torch.inference_mode()
@@ -251,9 +246,6 @@ class FLAIROutput(VLEncoderOutputWithAttn):
 
 @VLE_REGISTRY.register("flair")
 class FLAIRAdapter(VLEncoder):
-    """
-    TODO
-    """
     def __init__(
             self,
             version: Literal['flair-cc3m-recap.pt',
@@ -262,7 +254,8 @@ class FLAIRAdapter(VLEncoder):
                              'flair-merged30m.pt'] = 'flair-cc3m-recap.pt',
             device: str = 'cuda',
             vision_adapter: bool = False,
-            text_adapter: bool = False
+            text_adapter: bool = False,
+            concat_adapter: bool = False,
     ) -> None:
         self.device = device
         self.version = version
@@ -278,12 +271,17 @@ class FLAIRAdapter(VLEncoder):
         if text_adapter:
             text_adapter = nn.Linear(512, 512, bias=False, device=self.device)
             model.add_module('text_adapter', text_adapter)
+        if concat_adapter:
+            concat_adapter = nn.Linear(1024, 512, bias=False, device=self.device)
+            model.add_module('concat_adapter', concat_adapter)
         self.model: FLAIR = model
         self.init_weights()
         self.model.requires_grad_(False)
         self.model.eval()
 
         # Preprocess
+        preprocess_fn.transforms.pop(2) # remove _convert_to_rgb()
+        preprocess_fn.transforms.pop(2) # remove ToTensor()
         self.preprocess_fn: T.Compose = preprocess_fn
 
         # Tokenizer
@@ -303,16 +301,25 @@ class FLAIRAdapter(VLEncoder):
             # Initialise the bias to zeros
             if self.model.text_adapter.bias is not None:
                 nn.init.zeros_(self.model.text_adapter.bias)
+        if hasattr(self.model, 'concat_adapter'):
+            # Use Xavier Uniform initialisation for the weight matrix
+            nn.init.xavier_uniform_(self.model.concat_adapter.weight)
+            # Initialise the bias to zeros
+            if self.model.concat_adapter.bias is not None:
+                nn.init.zeros_(self.model.concat_adapter.bias)
 
     @torch.inference_mode()
     def preprocess_images(
             self, 
-            images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
+            images: torch.Tensor | list[torch.Tensor],
             device: str = "cuda"
     ) -> torch.Tensor:
-        if isinstance(images, torch.Tensor) or isinstance(images[0], torch.Tensor):
-            images = [to_pil_image(img) for img in images]
-        imgs_tensor = torch.stack([self.preprocess_fn(img) for img in images]).to(device) # [1, 3, H_vle, W_vle]
+        if isinstance(images, list):
+            images = torch.stack(images, dim=0)
+        images = images.to(device)
+        if images.dtype == torch.uint8:
+            images = images/255.
+        imgs_tensor = self.preprocess_fn(images) # [B, 3, H_vle, W_vle]
         return imgs_tensor
     
     @torch.inference_mode()
@@ -328,7 +335,8 @@ class FLAIRAdapter(VLEncoder):
             self,
             images: Optional[torch.Tensor],
             texts: Optional[torch.Tensor],
-            broadcast: bool = False
+            broadcast: bool = False,
+            pool: bool = True
     ) -> FLAIROutput:
         
         flair_output = FLAIROutput()
@@ -360,7 +368,7 @@ class FLAIRAdapter(VLEncoder):
 
             flair_output.global_text_token = global_text_token # [B_t, D]
             flair_output.local_text_tokens = local_text_tokens # [B_t, n_t, D]
-        
+
         if (images is not None) and (texts is not None):
 
             image_batch_size = local_image_tokens.shape[0] # B_i, n_i
@@ -369,23 +377,25 @@ class FLAIRAdapter(VLEncoder):
                 # adapt text token for broadcasting
                 global_text_token = global_text_token.unsqueeze(0).expand(image_batch_size, -1, -1) # [B_i, B_t, D]
             else:
-                if images.shape[0] != texts.shape[0]:
-                    raise AttributeError(f"When not broadcasting, 'images' and 'texts' should contain the same number of elements, but got {images.shape[0]=} and {texts.shape[0]=} instead.")
+                # if images.shape[0] != texts.shape[0]:
+                    # raise AttributeError(f"When not broadcasting, 'images' and 'texts' should contain the same number of elements, but got {images.shape[0]=} and {texts.shape[0]=} instead.")
                 # from now on, B_t = 1
                 global_text_token = global_text_token.unsqueeze(1) # [B_i, 1, D]
-
-            # perform the attention pooling: condition the 'global_text_token' (Q) on the 'local_image_tokens' (K and V)
-            local_image_features, attn_maps_flat = self.model.visual_proj(
-                global_text_token,      # [B_i, B_t, D]
-                local_image_tokens,     # [B_i, n_i, D]
-                local_image_tokens,     # [B_i, n_i, D]
-                output_attn_weights=True,
-                average_attn_weights=False
-            ) # [B_i, B_t, D], [B_i, B_t, n_i+1] (the +1 is there for the added 'cls' token)
+            
+            if pool:
+                # perform the attention pooling: condition the 'global_text_token' (Q) on the 'local_image_tokens' (K and V)
+                local_image_features, attn_maps_flat = self.model.visual_proj(
+                    global_text_token,      # [B_i, B_t, D]
+                    local_image_tokens,     # [B_i, n_i, D]
+                    local_image_tokens,     # [B_i, n_i, D]
+                    output_attn_weights=True,
+                    average_attn_weights=False
+                ) # [B_i, B_t, D], [B_i, B_t, n_i+1] (the +1 is there for the added 'cls' token)
+                
+                flair_output.local_image_features = local_image_features    # [B_i, B_t, D]
+                flair_output.attn_maps_flat = attn_maps_flat                # [B_i, B_t, n_i+1]
 
             flair_output.global_text_token = global_text_token          # [B_i, B_t, D]
-            flair_output.attn_maps_flat = attn_maps_flat                # [B_i, B_t, n_i+1]
-            flair_output.local_image_features = local_image_features    # [B_i, B_t, D]
         
         return flair_output
     
@@ -417,13 +427,14 @@ class FLAIRAdapter(VLEncoder):
                                                      'text_adapter',
                                                      'image_proj',
                                                      'text_proj',
-                                                     'visual_proj']]],
+                                                     'visual_proj',
+                                                     'concat_adapter']]],
     ) -> None:
         # LUT: module name -> module
         train_modules_lut = {
             'image_proj': self.model.image_post,
             'text_proj': self.model.text_post,
-            'visual_proj': self.model.visual_proj
+            'visual_proj': self.model.visual_proj,
         }
 
         if hasattr(self.model, 'vision_adapter'):
@@ -431,6 +442,9 @@ class FLAIRAdapter(VLEncoder):
         
         if hasattr(self.model, 'text_adapter'):
             train_modules_lut |= {'text_adapter': self.model.text_adapter}
+        
+        if hasattr(self.model, 'concat_adapter'):
+            train_modules_lut |= {'concat_adapter': self.model.concat_adapter}
 
         # first, gradients are disabled for all modules.
         self.model.requires_grad_(False)
@@ -466,17 +480,12 @@ class FLAIRAdapter(VLEncoder):
 
 
 class SimSegAdapter(VLEncoder):
-    """
-    TODO
-    """
+    ...
     # NOTE too much integration work likely for unimpressive results, I would skip this.
 
 
 @VLE_REGISTRY.register("fg-clip")
 class FG_CLIPAdapter(VLEncoder):
-    """
-    TODO
-    """
     def __init__(
             self,
             checkpoint: Literal['fg-clip-base', 
@@ -505,7 +514,6 @@ class FG_CLIPAdapter(VLEncoder):
 
         self.tokenizer = AutoTokenizer.from_pretrained(model_root, use_fast=True, model_max_length=self.context_length)
         self.image_processor = AutoImageProcessor.from_pretrained(model_root, use_fast=True)
-
 
     @torch.inference_mode()
     def preprocess_images(

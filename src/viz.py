@@ -398,8 +398,6 @@ def create_cs_diff_masks(
 
         cs_diff_masks[pos_c] = ovr_diff_mask_L
 
-    # TODO validate the format of the diff masks, they have to get into the VLE.
-
 def create_cs_masks(
         sc_img: torch.Tensor,
         mask: torch.Tensor,
