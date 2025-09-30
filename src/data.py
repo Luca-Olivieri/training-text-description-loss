@@ -211,16 +211,17 @@ class VOC2012SegDataset(SegDataset):
             self,
             idx: int | list[int] | slice
     ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
-        scs_paths = np.array([self.sc_root_path / f"{uid}.jpg" for uid in self.image_UIDs])
-        gts_paths = np.array([self.gt_root_path / f"{uid}.png" for uid in self.image_UIDs])
+        # scs_paths = np.array([self.sc_root_path / f"{uid}.jpg" for uid in self.image_UIDs])
+        # gts_paths = np.array([self.gt_root_path / f"{uid}.png" for uid in self.image_UIDs])
+        self.scs_paths
         if self.mask_prs_path:
             if self.img_idxs:
                 prs_paths = np.array([self.mask_prs_path / f'mask_pr_{img_i}.png' for img_i in self.img_idxs])
             else:
                 prs_paths = np.array([self.mask_prs_path / f'mask_pr_{i}.png' for i, uid in enumerate(self.image_UIDs)])
         if isinstance(idx, int):
-            sc = self.get_sc(path=scs_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
-            gt = self.get_gt(path=gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
+            sc = self.get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
+            gt = self.get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
             if self.mask_prs_path:
                 pr = self.get_pr(path=prs_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
                 if self.output_uids:
@@ -236,8 +237,8 @@ class VOC2012SegDataset(SegDataset):
             indices = range(*idx.indices(len(self)))
         elif isinstance(idx, list):
             indices = idx
-        scs = [self.get_sc(path=scs_paths[i], resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
-        gts = [self.get_gt(path=gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+        scs = [self.get_sc(path=self.scs_paths[i], resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+        gts = [self.get_gt(path=self.gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
         if self.mask_prs_path:
             prs = [self.get_pr(path=prs_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
             if self.output_uids:
@@ -249,7 +250,15 @@ class VOC2012SegDataset(SegDataset):
                 return self.image_UIDs[indices], scs, gts
             else:
                 return scs, gts
-    
+            
+    def get_img_by_uid(
+            self,
+            uid: str
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        sc = self.get_sc(path=self.sc_root_path / f"{uid}.jpg", resize_size=self.resize_size, center_crop=self.center_crop)
+        gt = self.get_gt(path=self.gt_root_path / f"{uid}.png", class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
+        return sc, gt
+            
     def get_color_map_dict(
             self,
             with_unlabelled: bool = False
@@ -465,21 +474,30 @@ class COCO2017SegDataset(SegDataset):
             self,
             idx: int | list[int] | slice
     ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
-            if isinstance(idx, int):
-                sc_dict = self.coco.loadImgs([int(self.image_UIDs[idx])])[0] # the output is a singleton list
-                sc = self.get_sc(self.scs_root_path / sc_dict["file_name"], resize_size=self.resize_size, resize_mode=self.sc_resize_mode, center_crop=self.center_crop)
-                gt = self.get_gt(sc_dict, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop)
-                return sc, gt
-            elif isinstance(idx, slice):
-                indices = range(*idx.indices(len(self)))
-            elif isinstance(idx, list):
-                indices = idx
-            
-            scs_dict = self.coco.loadImgs([int(uid) for uid in self.image_UIDs[indices]])
-            scs = [self.get_sc(self.scs_root_path / sc_d["file_name"], resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]            
-            gts = [self.get_gt(sc_d, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]
+        if isinstance(idx, int):
+            sc_dict = self.coco.loadImgs([int(self.image_UIDs[idx])])[0] # the output is a singleton list
+            sc = self.get_sc(self.scs_root_path / sc_dict["file_name"], resize_size=self.resize_size, resize_mode=self.sc_resize_mode, center_crop=self.center_crop)
+            gt = self.get_gt(sc_dict, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop)
+            return sc, gt
+        elif isinstance(idx, slice):
+            indices = range(*idx.indices(len(self)))
+        elif isinstance(idx, list):
+            indices = idx
+        
+        scs_dict = self.coco.loadImgs([int(uid) for uid in self.image_UIDs[indices]])
+        scs = [self.get_sc(self.scs_root_path / sc_d["file_name"], resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]            
+        gts = [self.get_gt(sc_d, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]
 
-            return scs, gts
+        return scs, gts
+
+    def get_img_by_uid(
+            self,
+            uid: str
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        sc_dict = self.coco.loadImgs([int(uid)])[0] # the output is a singleton list
+        sc = self.get_sc(self.scs_root_path / sc_dict["file_name"], resize_size=self.resize_size, resize_mode=self.sc_resize_mode, center_crop=self.center_crop)
+        gt = self.get_gt(sc_dict, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop)
+        return sc, gt
 
 class JSONLDataset(Dataset):
     """
@@ -727,7 +745,8 @@ def get_image(
         path: Path,
         resize_size: None | int | tuple[int, int] = None,
         resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
-        center_crop: bool = True
+        center_crop: bool = True,
+        mode: str = "RGB"
 ) -> torch.Tensor:
     """
     Reads a single image from disk and encodes it in a tensor.
@@ -741,7 +760,7 @@ def get_image(
     Returns:
         Image as a torch.Tensor on the global device.
     """
-    img = decode_image(path).to(CONFIG["device"])
+    img = decode_image(path, mode=mode).to(CONFIG["device"])
     if img.shape[0] == 1:
         img = img.expand(3, -1, -1) # shapes [1, H, W] are expanded to [3, H, W]
     if resize_size is not None:
@@ -1601,7 +1620,8 @@ def crop_image_preprocess_image_text_batch(
         batch: list,
         crop_fn: Callable,
         preprocess_images_fn: Optional[Callable],
-        preprocess_texts_fn: Optional[Callable]
+        preprocess_texts_fn: Optional[Callable],
+        output_text_metadata: bool = False
 ) -> tuple[torch.Tensor, torch.Tensor]:
     imgs, texts = zip(*batch)
 
@@ -1615,12 +1635,16 @@ def crop_image_preprocess_image_text_batch(
     if preprocess_images_fn:
         imgs = preprocess_images_fn(imgs)
 
+    texts_metadata = [d for d in texts]
     texts = [d['content'] for d in texts]
 
     if preprocess_texts_fn:
         texts = preprocess_texts_fn(texts, imgs.device)
 
-    return imgs, texts
+    if output_text_metadata:
+        return imgs, texts, texts_metadata
+    else:
+        return imgs, texts
 
 def main() -> None:
     jsonl_ds = JSONLDataset(Path("/home/olivieri/exp/data/data_gen/VOC2012/flat/train_no_aug_flat.jsonl"))

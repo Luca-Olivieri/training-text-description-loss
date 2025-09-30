@@ -9,7 +9,7 @@ from logger import LogManager
 from path import get_mask_prs_path
 from viz import get_layer_numel_str
 from utils import clear_memory, compile_torch_model, subsample_sign_classes, nanstd
-from core.cache import Cache, BatchedPercentilePolicy, MaskTextCache
+from core.cache import Cache, PercentilePolicy, MaskTextCache, Identity
 
 from functools import partial
 from collections import OrderedDict
@@ -353,12 +353,12 @@ async def main() -> None:
         pretrained_weights_path=Path(SEG_CONFIG['pretrained_weights_path']),
         adaptation='contrastive_global',
         device=CONFIG['device']
-    ) # TODO to modify with the actual segnet intermediate checkpoint
+    )
 
     segmodel.adapt()
 
-    if False:
-        state_dict: OrderedDict = torch.load('/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/with_text/synth_contr/lraspp_mobilenet_v3_large_phase_2_synth_text_e5_250903_1711.pth')
+    if True:
+        state_dict: OrderedDict = torch.load('/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/with_text/phases-2_cache_contr/lraspp_mobilenet_v3_large_phase_2.2_synth_text_e5_FIXED_250930_1038.pth')
         model_state_dict = state_dict.get('model_state_dict', state_dict)
         segmodel.model.load_state_dict(model_state_dict)
 
@@ -499,10 +499,10 @@ async def main() -> None:
     }
 
     cache = Cache(storage_device="cpu", memory_device="cuda")
-    update_policy = BatchedPercentilePolicy(
+    update_policy = PercentilePolicy(
         metric=BinaryJaccardIndex().to(CONFIG["device"]),
-        # metric=BinaryAccuracy().to(CONFIG["device"]),
-        percentile=0.5
+        percentile=0.4,
+        trend=Identity()
     )
     mask_text_cache = MaskTextCache(cache, update_policy)
 

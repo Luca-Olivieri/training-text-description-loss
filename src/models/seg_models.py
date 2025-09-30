@@ -93,6 +93,25 @@ class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
                 target_layer: nn.Module = self.model.backbone['16'] # [960, 32, 32] bottleneck output
                 handle = target_layer.register_forward_hook(get_activation('bottleneck', self.activations))
                 self.handles.append(handle)
+
+            case 'contrastive_diff':
+                self.model.add_module('bottleneck_adapter', nn.ModuleDict()) # Module containing all the adaptations
+                # GAP layer
+                bottleneck_gap = nn.AdaptiveAvgPool2d(output_size=(1, 1))
+                self.model.bottleneck_adapter.add_module('gap', bottleneck_gap)
+                # Dense layer
+                bottleneck_mlp = nn.Linear(960, 512, bias=False, device=self.device)
+                self.model.bottleneck_adapter.add_module('mlp', bottleneck_mlp)
+                # Use Xavier Uniform initialisation for the weight matrix
+                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
+                if self.model.bottleneck_adapter.mlp.bias is not None:
+                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
+                
+                # NOTE should I clone the fw hook output?
+                # register the forward hook to store the bottleneck output.
+                target_layer: nn.Module = self.model.backbone['16'] # [960, 32, 32] bottleneck output
+                handle = target_layer.register_forward_hook(get_activation('bottleneck', self.activations))
+                self.handles.append(handle)
             
             case 'contrastive_local':
                 ...
@@ -106,8 +125,10 @@ class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
                 x = self.model.bottleneck_adapter.gap(input).squeeze()
                 # x = self.model.bottleneck_adapter.mlp(x)
                 return x
-            case 'contrastive_global':
-                ...
+            case 'contrastive_diff':
+                x = self.model.bottleneck_adapter.gap(input).squeeze()
+                # x = self.model.bottleneck_adapter.mlp(x)
+                return x
     
     def set_trainable_params(
             self,

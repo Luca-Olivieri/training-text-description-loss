@@ -3,7 +3,7 @@ from data import VOC2012SegDataset, crop_augment_preprocess_batch, apply_classma
 from models.seg_models import SegModelWrapper, SEGMODELS_REGISTRY
 from models.vl_models import GenParams, OllamaMLLM
 from models.vl_encoders import VLE_REGISTRY, VLEncoder
-from loss import SigLipLossMultiText
+from loss import VariableTextSigLipLoss
 from prompter import FastPromptBuilder
 from logger import LogManager
 from path import get_mask_prs_path
@@ -62,7 +62,7 @@ async def train_loop(
         seg_preprocess_fn: nn.Module,
         gen_params: GenParams,
         criterion: _Loss,
-        aux_criterion: nn.Module,
+        aux_criterion: VariableTextSigLipLoss,
         metrics_dict: dict[str, tm.Metric],
         mask_text_cache: MaskTextCache,
         checkpoint_dict: Optional[dict] = None,
@@ -208,46 +208,28 @@ async def train_loop(
                         cs_vle_output = vle.encode_and_project(images=None, texts=cs_texts, broadcast=False)
 
                         cs_global_text_token = cs_vle_output.global_text_token # [N_cs, D]
+                        cs_global_text_token = segmodel.model.bottleneck_adapter.mlp(cs_global_text_token)
+
                         filtered_cs_counter += len(cs_global_text_token)
 
-                        # aggr_global_text_token = global_text_token.mean(dim=0) # aggregating the class-splitted text vectors by averaging.
                         accum_cs_global_text_tokens |= {uid: cs_global_text_token}
-                    # global_text_tokens = torch.stack(global_text_tokens)
-                    # global_text_tokens = segmodel.model.bottleneck_adapter.mlp(global_text_tokens)
                     
                     bottleneck_out: torch.Tensor = segmodel.activations['bottleneck']
                     bottleneck_out = segmodel.adapt_tensor(bottleneck_out)
-                    accum_img_features.append(bottleneck_out)
-            
-            # del scs_img, scs, gts, prs, logits, bottleneck_out, global_text_tokens
-
-            # seg_batch_loss.backward()
 
             if SEG_WITH_TEXT_CONFIG['with_text']:
 
-                bottleneck_out = torch.concat(accum_img_features, dim=0)
-
                 with autocast():
 
-                    aux_batch_loss = torch.tensor(0.0, device=CONFIG['device'])
-                    for i, uid in enumerate(uids):
-
-                        if uid in accum_cs_global_text_tokens.keys():
-
-                            cs_global_text_token = accum_cs_global_text_tokens[uid]
-                            cs_global_text_token = segmodel.model.bottleneck_adapter.mlp(cs_global_text_token)
-
-                            aux_batch_loss += aux_criterion(
-                                image_features=bottleneck_out,
-                                text_features=cs_global_text_token,
-                                positive_image_idx=i,
-                                logit_scale=vle.model.logit_scale/vle.model.logit_scale,
-                                logit_bias=vle.model.logit_bias*0,
-                                output_dict=False
-                            )/(len(cs_global_text_token)*train_dl.batch_size*grad_accum_steps)
+                    aux_batch_loss = aux_criterion(
+                        image_features=bottleneck_out,
+                        list_of_text_features=list(accum_cs_global_text_tokens.values()),
+                        logit_scale=vle.model.logit_scale/vle.model.logit_scale,
+                        logit_bias=vle.model.logit_bias*0,
+                        output_dict=False
+                    )
 
                     batch_loss: torch.Tensor = seg_batch_loss*(1. - SEG_CONTR_CONFIG['loss_lam']) + aux_batch_loss*SEG_CONTR_CONFIG['loss_lam'] # lambda coefficient
-                    # batch_loss *= seg_batch_loss.detach().norm()/batch_loss.detach().norm() # normalise loss to the value of the original CE loss.
                     
                 cs_mult = filtered_cs_counter/(train_dl.batch_size*grad_accum_steps)
                 filtered_perc = filtered_cs_counter/cs_counter
@@ -257,7 +239,6 @@ async def train_loop(
                 cs_mult = -1.0
                 filtered_perc = -1.0
 
-            # batch_loss.backward()
             backward(batch_loss, scaler)
 
             if scheduler:
@@ -283,13 +264,7 @@ async def train_loop(
                     )
                 optimizer.step()
 
-            #grad_norm = torch.nn.utils.clip_grad_norm_(
-            #    segmodel.model.parameters(),
-            #    max_grad_norm if max_grad_norm else float('inf'),
-            #    norm_type=2.0
-            #)
-            
-            # optimizer.step()
+
             optimizer.zero_grad()
 
             global_step += 1 # Increment global step *only* after an optimizer step
@@ -359,7 +334,6 @@ async def main() -> None:
         center_crop=False,
         with_unlabelled=True,
         output_uids=True,
-        # img_idxs=slice(0, 128, 1)
     )
 
     val_ds = VOC2012SegDataset(
@@ -368,7 +342,6 @@ async def main() -> None:
         resize_size=SEG_CONFIG['image_size'],
         center_crop=False,
         with_unlabelled=True,
-        # img_idxs=slice(0, 64, 1)
     )
 
     # Segmentation Model
@@ -390,11 +363,11 @@ async def main() -> None:
     mask_text_cache = MaskTextCache(cache, update_policy)
 
     if True:
-        state_dict: OrderedDict = torch.load('/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/with_text/synth_contr/lraspp_mobilenet_v3_large_phase_2_synth_text_e5_250903_1711.pth')
+        state_dict: OrderedDict = torch.load('/home/olivieri/exp/data/torch_weights/seg/lraspp_mobilenet_v3_large/with_text/phases_cache_contr/lraspp_mobilenet_v3_large_phase_2_synth_text_e5_FIXED_250930_1021.pth')
         model_state_dict = state_dict.get('model_state_dict', state_dict)
         segmodel.model.load_state_dict(model_state_dict)
         mask_text_cache.cache = Cache.load(
-            directory_path=Path("/home/olivieri/exp/data/torch_weights/cache/phase_3_prefill_cache"),
+            directory_path=Path("/home/olivieri/exp/data/torch_weights/cache/phase_3_prefill_cache_FIXED_250930_1105"),
             storage_device="cpu",
             memory_device="cuda"
         )
@@ -511,8 +484,7 @@ async def main() -> None:
     )
 
     criterion = nn.CrossEntropyLoss(ignore_index=21)
-    # aux_criterion = SigLipLoss()
-    aux_criterion = SigLipLossMultiText()
+    aux_criterion = VariableTextSigLipLoss(negative_loss_agg='sum')
 
     sign_classes_filter = partial(subsample_sign_classes, k=0)
     # sign_classes_filter = None
@@ -536,7 +508,6 @@ async def main() -> None:
         "acc": MulticlassAccuracy(num_classes=train_ds.get_num_classes(with_unlabelled=True), top_k=1, average="micro", multidim_average="global", ignore_index=21).to(CONFIG["device"]),
         "mIoU": MulticlassJaccardIndex(num_classes=train_ds.get_num_classes(with_unlabelled=True), average="macro", ignore_index=21).to(CONFIG["device"]),
     }
-
 
     log_manager.log_intro(
         config=CONFIG,

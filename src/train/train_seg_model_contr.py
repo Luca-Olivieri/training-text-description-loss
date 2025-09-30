@@ -3,7 +3,7 @@ from data import VOC2012SegDataset, crop_augment_preprocess_batch, apply_classma
 from models.seg_models import SegModelWrapper, SEGMODELS_REGISTRY
 from models.vl_models import GenParams, OllamaMLLM
 from models.vl_encoders import VLE_REGISTRY, VLEncoder
-from loss import SigLipLossMultiText
+from loss import VariableTextSigLipLoss
 from prompter import FastPromptBuilder
 from logger import LogManager
 from path import get_mask_prs_path
@@ -61,7 +61,7 @@ async def train_loop(
         seg_preprocess_fn: nn.Module,
         gen_params: GenParams,
         criterion: _Loss,
-        aux_criterion: nn.Module,
+        aux_criterion: VariableTextSigLipLoss,
         metrics_dict: dict[dict, tm.Metric],
         checkpoint_dict: Optional[dict] = None,
         sign_classes_filter: Optional[Callable[[list[int]], list[int]]] = None,
@@ -181,20 +181,14 @@ async def train_loop(
                         cs_vle_output = vle.encode_and_project(images=None, texts=cs_texts, broadcast=False)
 
                         cs_global_text_token = cs_vle_output.global_text_token # [N_cs, D]
+                        cs_global_text_token = segmodel.model.bottleneck_adapter.mlp(cs_global_text_token)
                         cs_counter += len(cs_global_text_token)
 
-                        # aggr_global_text_token = global_text_token.mean(dim=0) # aggregating the class-splitted text vectors by averaging.
                         accum_cs_global_text_tokens.append(cs_global_text_token)
-                    # global_text_tokens = torch.stack(global_text_tokens)
-                    # global_text_tokens = segmodel.model.bottleneck_adapter.mlp(global_text_tokens)
                     
                     bottleneck_out: torch.Tensor = segmodel.activations['bottleneck']
                     bottleneck_out = segmodel.adapt_tensor(bottleneck_out)
                     accum_img_features.append(bottleneck_out)
-
-            # del scs_img, scs, gts, prs, logits, bottleneck_out, global_text_tokens
-
-            # seg_batch_loss.backward()
             
             is_last_batch = (step + 1) == num_batches_per_epoch
             is_accum_step = (step + 1) % grad_accum_steps == 0
@@ -208,20 +202,14 @@ async def train_loop(
 
                     with autocast():
 
-                        aux_batch_loss = torch.tensor(0.0, device=CONFIG['device'])
-                        for i, cs_global_text_token in enumerate(accum_cs_global_text_tokens):
-
-                            cs_global_text_token = segmodel.model.bottleneck_adapter.mlp(cs_global_text_token)
-
-                            aux_batch_loss += aux_criterion(
-                                image_features=bottleneck_out,
-                                text_features=cs_global_text_token,
-                                positive_image_idx=i,
-                                logit_scale=vle.model.logit_scale/vle.model.logit_scale,
-                                logit_bias=vle.model.logit_bias*0,
-                                output_dict=False
-                            )/(len(cs_global_text_token)*train_dl.batch_size*grad_accum_steps)
-
+                        aux_batch_loss = aux_criterion(
+                            image_features=bottleneck_out,
+                            list_of_text_features=accum_cs_global_text_tokens,
+                            logit_scale=vle.model.logit_scale/vle.model.logit_scale,
+                            logit_bias=vle.model.logit_bias*0,
+                            output_dict=False
+                        )
+                        
                         batch_loss = seg_batch_loss*(1. - SEG_CONTR_CONFIG['loss_lam']) + aux_batch_loss*SEG_CONTR_CONFIG['loss_lam'] # lambda coefficient
                         
                     cs_mult = cs_counter/(train_dl.batch_size*grad_accum_steps)
@@ -230,7 +218,6 @@ async def train_loop(
                     batch_loss = seg_batch_loss
                     cs_mult = -1.0
 
-                # batch_loss.backward()
                 backward(batch_loss, scaler)
 
                 if scheduler:
@@ -256,13 +243,6 @@ async def train_loop(
                         )
                     optimizer.step()
 
-                #grad_norm = torch.nn.utils.clip_grad_norm_(
-                #    segmodel.model.parameters(),
-                #    max_grad_norm if max_grad_norm else float('inf'),
-                #    norm_type=2.0
-                #)
-                
-                # optimizer.step()
                 optimizer.zero_grad()
 
                 global_step += 1 # Increment global step *only* after an optimizer step
@@ -337,7 +317,7 @@ async def main() -> None:
         pretrained_weights_path=Path(SEG_CONFIG['pretrained_weights_path']),
         adaptation='contrastive_global',
         device=CONFIG['device']
-    ) # TODO to modify with the actual segnet intermediate checkpoint
+    )
 
     segmodel.adapt()
 
@@ -455,8 +435,7 @@ async def main() -> None:
     )
 
     criterion = nn.CrossEntropyLoss(ignore_index=21)
-    # aux_criterion = SigLipLoss()
-    aux_criterion = SigLipLossMultiText()
+    aux_criterion = VariableTextSigLipLoss(negative_loss_agg='sum')
 
     # sign_classes_filter = partial(subsample_sign_classes, k=0)
     sign_classes_filter = None

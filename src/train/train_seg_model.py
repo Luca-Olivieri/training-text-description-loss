@@ -165,6 +165,10 @@ def train_loop(
                 full_ckp_path = save_dir / ckp_filename
                 torch.save(new_checkpoint_dict, full_ckp_path)
                 log_manager.log_line(f"New best model saved to {full_ckp_path} with validation mIoU: {best_val_mIoU:.4f}")
+
+        # if best_val_mIoU > 0.3:
+        # if epoch == 19:
+            # break
     
     log_manager.log_title("Training Finished")
 
