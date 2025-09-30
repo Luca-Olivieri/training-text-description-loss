@@ -401,7 +401,7 @@ def write_query_prompt(
         gdoc_id: str,
         query_n: int,
         img_id: str,
-        example_answers: List[str]
+        example_answers: list[str]
 ) -> None:
     """
     Writes a single prompt in the Google document of a certain recipient.
@@ -423,7 +423,7 @@ def write_query_prompt(
 def write_annot_doc(
         gdoc_id: str,
         recipient: str,
-        query_idxs: List[int],
+        query_idxs: list[int],
         promptBuilder: PromptBuilder
 ) -> None:
     """
@@ -452,7 +452,7 @@ def write_annot_doc(
 
 def extract_table_content_from_gdoc(
         gdoc_id: str
-) -> List[str]:
+) -> list[str]:
     """
     Extracts the textual content from all tables in a Google Doc, assuming each table contains a single cell.
 
