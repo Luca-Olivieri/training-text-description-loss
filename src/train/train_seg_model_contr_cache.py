@@ -222,110 +222,107 @@ async def train_loop(
             # del scs_img, scs, gts, prs, logits, bottleneck_out, global_text_tokens
 
             # seg_batch_loss.backward()
-            
-            is_last_batch = (step + 1) == num_batches_per_epoch
-            is_accum_step = (step + 1) % grad_accum_steps == 0
 
-            # --- Optimizer Step and Scheduler Update ---
-            if is_accum_step or is_last_batch:
+            if SEG_WITH_TEXT_CONFIG['with_text']:
 
-                if SEG_WITH_TEXT_CONFIG['with_text']:
+                bottleneck_out = torch.concat(accum_img_features, dim=0)
 
-                    bottleneck_out = torch.concat(accum_img_features, dim=0)
+                with autocast():
 
-                    with autocast():
+                    aux_batch_loss = torch.tensor(0.0, device=CONFIG['device'])
+                    for i, uid in enumerate(uids):
 
-                        aux_batch_loss = torch.tensor(0.0, device=CONFIG['device'])
-                        for i, uid in enumerate(uids):
+                        if uid in accum_cs_global_text_tokens.keys():
 
-                            if uid in accum_cs_global_text_tokens.keys():
+                            cs_global_text_token = accum_cs_global_text_tokens[uid]
+                            cs_global_text_token = segmodel.model.bottleneck_adapter.mlp(cs_global_text_token)
 
-                                cs_global_text_token = accum_cs_global_text_tokens[uid]
-                                cs_global_text_token = segmodel.model.bottleneck_adapter.mlp(cs_global_text_token)
+                            aux_batch_loss += aux_criterion(
+                                image_features=bottleneck_out,
+                                text_features=cs_global_text_token,
+                                positive_image_idx=i,
+                                logit_scale=vle.model.logit_scale/vle.model.logit_scale,
+                                logit_bias=vle.model.logit_bias*0,
+                                output_dict=False
+                            )/(len(cs_global_text_token)*train_dl.batch_size*grad_accum_steps)
 
-                                aux_batch_loss += aux_criterion(
-                                    image_features=bottleneck_out,
-                                    text_features=cs_global_text_token,
-                                    positive_image_idx=i,
-                                    logit_scale=vle.model.logit_scale/vle.model.logit_scale,
-                                    logit_bias=vle.model.logit_bias*0,
-                                    output_dict=False
-                                )/(len(cs_global_text_token)*train_dl.batch_size*grad_accum_steps)
+                    batch_loss: torch.Tensor = seg_batch_loss*(1. - SEG_CONTR_CONFIG['loss_lam']) + aux_batch_loss*SEG_CONTR_CONFIG['loss_lam'] # lambda coefficient
+                    # batch_loss *= seg_batch_loss.detach().norm()/batch_loss.detach().norm() # normalise loss to the value of the original CE loss.
+                    
+                cs_mult = filtered_cs_counter/(train_dl.batch_size*grad_accum_steps)
+                filtered_perc = filtered_cs_counter/cs_counter
+            else:
+                aux_batch_loss = torch.tensor(-1.0, device=CONFIG['device'])
+                batch_loss = seg_batch_loss
+                cs_mult = -1.0
+                filtered_perc = -1.0
 
-                        batch_loss = seg_batch_loss*(1. - SEG_CONTR_CONFIG['loss_lam']) + aux_batch_loss*SEG_CONTR_CONFIG['loss_lam'] # lambda coefficient
-                        
-                    cs_mult = filtered_cs_counter/(train_dl.batch_size*grad_accum_steps)
-                    filtered_perc = filtered_cs_counter/cs_counter
-                else:
-                    aux_batch_loss = torch.tensor(-1.0, device=CONFIG['device'])
-                    batch_loss = seg_batch_loss
-                    cs_mult = -1.0
-                    filtered_perc = -1.0
+            # batch_loss.backward()
+            backward(batch_loss, scaler)
 
-                # batch_loss.backward()
-                backward(batch_loss, scaler)
+            if scheduler:
+                scheduler(global_step)
 
-                if scheduler:
-                    scheduler(global_step)
-
-                max_grad_norm = SEG_TRAIN_CONFIG['grad_clip_norm']
-                if scaler:
-                    if SEG_TRAIN_CONFIG['grad_clip_norm']:
-                        scaler.unscale_(optimizer)
-                        grad_norm = torch.nn.utils.clip_grad_norm_(
-                            segmodel.model.parameters(),
-                            max_grad_norm if max_grad_norm else float('inf'),
-                            norm_type=2.0
-                        )
-                    scaler.step(optimizer)
-                    scaler.update()
-                else:
-                    if SEG_TRAIN_CONFIG['grad_clip_norm']:
-                        grad_norm = torch.nn.utils.clip_grad_norm_(
-                            segmodel.model.parameters(),
-                            max_grad_norm if max_grad_norm else float('inf'),
-                            norm_type=2.0
-                        )
-                    optimizer.step()
-
-                #grad_norm = torch.nn.utils.clip_grad_norm_(
-                #    segmodel.model.parameters(),
-                #    max_grad_norm if max_grad_norm else float('inf'),
-                #    norm_type=2.0
-                #)
-                
-                # optimizer.step()
-                optimizer.zero_grad()
-
-                global_step += 1 # Increment global step *only* after an optimizer step
-
-                # --- Logging ---
-                if global_step % SEG_TRAIN_CONFIG['log_every'] == 0:
-                    train_metrics_score = train_metrics.compute()            
-                    metric_diffs_values = torch.stack(list(mask_text_cache.get_metric_diffs(batch).values()))
-                    train_metrics_score = {'aux_loss': aux_batch_loss} | train_metrics_score
-                    train_metrics_score |= {'metric_diff_mean': metric_diffs_values.nanmean(), 'metric_diff_std': nanstd(metric_diffs_values, dim=0)}
-                    train_metrics_score |= {"cs_mult": torch.tensor(cs_mult)}
-                    train_metrics_score |= {"filtered_perc": torch.tensor(filtered_perc)}
-                    # train_metrics_score |= {"quantile": torch.tensor(mask_text_cache.update_policy.trend.get_current_value())}
-                    current_lr = optimizer.param_groups[0]['lr']
-                    step_in_epoch = (step // grad_accum_steps) + 1
-                    log_manager.log_scores(
-                        f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, step: {step_in_epoch}/{num_steps_per_epoch} (global_step: {global_step})",
-                        seg_batch_loss, train_metrics_score, global_step, "train",
-                        f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}", "batch_"
+            max_grad_norm = SEG_TRAIN_CONFIG['grad_clip_norm']
+            if scaler:
+                if SEG_TRAIN_CONFIG['grad_clip_norm']:
+                    scaler.unscale_(optimizer)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        segmodel.model.parameters(),
+                        max_grad_norm if max_grad_norm else float('inf'),
+                        norm_type=2.0
                     )
-                
-                mask_text_cache.update(batch)
-                
-                # reset accumulated values
-                if SEG_WITH_TEXT_CONFIG['with_text']:
-                    accum_img_features, accum_cs_global_text_tokens = [], {}
-                seg_batch_loss = None
-                cs_counter = 0
-                filtered_cs_counter = 0
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                if SEG_TRAIN_CONFIG['grad_clip_norm']:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        segmodel.model.parameters(),
+                        max_grad_norm if max_grad_norm else float('inf'),
+                        norm_type=2.0
+                    )
+                optimizer.step()
 
-                train_metrics.reset() # only the batch metrics are logged
+            #grad_norm = torch.nn.utils.clip_grad_norm_(
+            #    segmodel.model.parameters(),
+            #    max_grad_norm if max_grad_norm else float('inf'),
+            #    norm_type=2.0
+            #)
+            
+            # optimizer.step()
+            optimizer.zero_grad()
+
+            global_step += 1 # Increment global step *only* after an optimizer step
+
+            # --- Logging ---
+            if global_step % SEG_TRAIN_CONFIG['log_every'] == 0:
+                train_metrics_score = train_metrics.compute()
+                if SEG_WITH_TEXT_CONFIG['with_text']:
+                    metric_diffs_values = torch.stack(list(mask_text_cache.get_metric_diffs(batch).values()))
+                    train_metrics_score |= {'metric_diff_mean': metric_diffs_values.nanmean(), 'metric_diff_std': nanstd(metric_diffs_values, dim=0)}
+                train_metrics_score = {'aux_loss': aux_batch_loss} | train_metrics_score
+                train_metrics_score |= {"cs_mult": torch.tensor(cs_mult)}
+                train_metrics_score |= {"filtered_perc": torch.tensor(filtered_perc)}
+                # train_metrics_score |= {"quantile": torch.tensor(mask_text_cache.update_policy.trend.get_current_value())}
+                current_lr = optimizer.param_groups[0]['lr']
+                step_in_epoch = (step // grad_accum_steps) + 1
+                log_manager.log_scores(
+                    f"epoch: {epoch+1}/{SEG_TRAIN_CONFIG['num_epochs']}, step: {step_in_epoch}/{num_steps_per_epoch} (global_step: {global_step})",
+                    seg_batch_loss, train_metrics_score, global_step, "train",
+                    f", lr: {current_lr:.2e}, grad_norm: {grad_norm:.2f}", "batch_"
+                )
+            
+            if SEG_WITH_TEXT_CONFIG['with_text']:
+                mask_text_cache.update(batch)
+            
+            # reset accumulated values
+            if SEG_WITH_TEXT_CONFIG['with_text']:
+                accum_img_features, accum_cs_global_text_tokens = [], {}
+            seg_batch_loss = None
+            cs_counter = 0
+            filtered_cs_counter = 0
+
+            train_metrics.reset() # only the batch metrics are logged
 
         # --- End of Epoch Validation and Checkpointing ---
         val_loss, val_metrics_score = segmodel.evaluate(val_dl, criterion, metrics_dict)
