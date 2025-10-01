@@ -15,12 +15,12 @@ import xarray as xr
 import pandas as pd
 from abc import ABC
 from tqdm import tqdm
-from typing import Any, TypeVar
 import torchmetrics as tm
 import json
 import gc
+import math
 
-from typing import Callable, TypeVar, Any, Iterable, Self
+from typing import Callable, TypeVar, Any, Iterable, Self, Any, TypeVar
 from abc import ABC
 
 GenericClient = TypeVar
@@ -658,8 +658,194 @@ def nanstd(
         result = result.unsqueeze(dim)
     return result
 
-def main() -> None:
-    ...
+
+class NegativeTextGenerator:
+    """
+    Generates text negatives by substituting words based on user-defined pools.
+    This version uses a simple string replacement method to handle hyphenated words
+    and has no external dependencies.
+    """
+    def __init__(
+            self,
+            word_pools: dict[str, list[str]]
+    ) -> None:
+        """
+        Initializes the generator and pre-processes the word pools for fast lookups.
+
+        Args:
+            word_pools (Dict[str, List[str]]): A dictionary where keys are pool names
+                and values are lists of words in that pool.
+        """
+        self.word_to_pool_map = self._build_lookup(word_pools)
+        print(f"NegativeGenerator initialized. Found {len(self.word_to_pool_map)} words across {len(word_pools)} pools.")
+
+    def _build_lookup(
+            self,
+            word_pools: dict[str, list[str]]
+    ) -> dict[str, dict]:
+        """Creates a fast reverse-lookup map from a word to its pool and siblings."""
+        lookup_map = {}
+        for pool_name, words_in_pool in word_pools.items():
+            if len(words_in_pool) < 2:
+                continue
+            for i, word in enumerate(words_in_pool):
+                siblings = words_in_pool[:i] + words_in_pool[i+1:]
+                lookup_map[word.lower()] = {
+                    'pool_name': pool_name,
+                    'siblings': siblings
+                }
+        return lookup_map
+    
+    def _tokenize(
+            self,
+            text: str
+    ) -> list[str]:
+        """
+        A simple tokenizer that splits by whitespace and also separates hyphens.
+        """
+        # Pad hyphens with spaces, so they become separate tokens after splitting
+        text = text.replace('-', ' - ')
+        text = text.replace(',', ' ,').replace(';', ' ;').replace(':', ' :')
+        text = text.replace('.', ' .').replace('!', ' !').replace('?', ' ?')
+        return text.split(' ')
+
+    def _reconstruct_text(
+            self,
+            tokens: list[str]
+    ) -> str:
+        """
+        Reconstructs text from tokens, correctly rejoining hyphenated words.
+        """
+        text = " ".join(tokens)
+        # Reverse the hyphen padding and clean up other common punctuation
+        text = text.replace(' - ', '-')
+        text = text.replace(' ,', ',').replace(' ;', ';').replace(' :', ':')
+        text = text.replace(' .', '.').replace(' !', '!').replace(' ?', '?')
+        # text.strip()
+        return text
+
+    def _backup_perturbation(
+            self,
+            tokens: list[str]
+    ) -> str:
+        """
+        Backup method to shuffle tokens if no substitutions are possible.
+        """
+        if len(tokens) < 2:
+            return " ".join(tokens)
+        
+        shuffled_tokens = list(tokens)
+        while shuffled_tokens == tokens:
+            random.shuffle(shuffled_tokens)
+        
+        # Reconstruct the shuffled text to handle any hyphens correctly
+        return self._reconstruct_text(shuffled_tokens)
+
+    def generate(
+        self,
+        positive_text: str,
+        num_negatives: int = 1,
+        change_probability: float = 0.5
+    ) -> list[str]:
+        """
+        Generates a batch of unique negative texts from a single positive text.
+        """
+        # --- MODIFICATION: Use our simple custom tokenizer ---
+        original_tokens = self._tokenize(positive_text)
+        
+        # Identify candidate indices based on the lowercase version of tokens
+        candidate_indices = [
+            i for i, token in enumerate(original_tokens)
+            if token.lower() in self.word_to_pool_map
+        ]
+
+        # Case 1: No substitutable words found, use backup
+        if not candidate_indices:
+            generated_negatives = set()
+            max_possible_permutations = math.factorial(len(original_tokens))
+            num_to_generate = min(num_negatives, max_possible_permutations)
+            max_attempts = num_to_generate * 20 + 10
+            attempts = 0
+
+            while len(generated_negatives) < num_to_generate and attempts < max_attempts:
+                generated_negatives.add(self._backup_perturbation(original_tokens))
+                attempts += 1
+            
+            return list(generated_negatives)
+
+        # Case 2: Substitutable words exist
+        generated_negatives = set()
+        max_attempts = num_negatives * 20 + 10
+        attempts = 0
+
+        while len(generated_negatives) < num_negatives and attempts < max_attempts:
+            tokens_to_modify = list(original_tokens)
+            
+            indices_to_consider = list(candidate_indices)
+            
+            # 1. Force one change
+            forced_choice_idx = random.choice(indices_to_consider)
+            word_to_replace = tokens_to_modify[forced_choice_idx].lower()
+            siblings = self.word_to_pool_map[word_to_replace]['siblings']
+            tokens_to_modify[forced_choice_idx] = random.choice(siblings)
+            indices_to_consider.remove(forced_choice_idx)
+            
+            # 2. Change others based on probability
+            for idx in indices_to_consider:
+                if random.random() < change_probability:
+                    word_to_replace = tokens_to_modify[idx].lower()
+                    siblings = self.word_to_pool_map[word_to_replace]['siblings']
+                    tokens_to_modify[idx] = random.choice(siblings)
+            
+            # Reconstruct the text using our custom method
+            reconstructed_text = self._reconstruct_text(tokens_to_modify)
+            generated_negatives.add(reconstructed_text)
+            attempts += 1
+
+        if attempts >= max_attempts and len(generated_negatives) < num_negatives:
+            print(f"Warning: Could only generate {len(generated_negatives)} unique negatives out of the requested {num_negatives}.")
+
+        return list(generated_negatives)
+
+
+def try_NegativeTextGenerator() -> None:
+    # 1. Define your word pools
+    my_word_pools = {
+        "positional": ["top", "bottom", "left", "right", "middle", "center"],
+        "positional_2": ["downwards", "upwards"],
+        "colors": ["red", "blue", "green", "yellow"],
+        "black_white": ["black", "white"],
+        "size": ["big", "large", "small", "tiny", "huge"],
+        "signifancy": ["substantial", "significant", "insignificant", "negligible"],
+        "size_relative": ["bigger", "larger", "smaller", "tinier"],
+        "quality": ["good", "bad", "great", "poor", "excellent", "wrong", "flawed", "flawless"],
+        "quality_detailed": ["precise", "imprecise", "regular", "irregular", "complete", "incomplete", "noisy", "chaotic", "rough", "defined", "undefined", "clean", "coarse", "detailed", "harsh", "sharp"],
+        "quality_detailed_adverb": ["precisely", "imprecisely", "regularly", "irregularly", "completely", "incompletely", "noisily", "chaotically", "roughly", "definedly", "undefinedly", "cleanly", "coarsly", "Detailedly", "harshly", "sharply"],
+        "quality_detailed_adverb_relative": ["rougher", "cleaner", "coarser", "sharper"],
+        "quantity_relative": ["more", "less"],
+        "quality_adverb": ["well", "badly", "greatly", "poorly", "excellently", "flawlessly"],
+        "quality_relative": ["better", "worse"],
+        "position_relative": ["above", "below", "beside", "near", "nearby", "around", "along"],
+        "area": ["boundary", "border", "interior", "center"],
+        "areas": ["boundaries", "edges", "borders", "interiors", "inners"],
+        "lower": ["lower", "elevated"],
+        "level": ["over", "under"],
+        "segmented": ["oversegmented", "undersegmented", "missegmented", "overextended", "underextended", "hallucinated", "extended", "missed", "hallucinated", "overspilled"],
+        "segmentation": ["oversegmentation", "undersegmentation", "overspill", "hallucination", "overextension", "underextension"],
+        "classes": ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR", "UNLABELLED"],
+    }
+
+    # 2. Create an instance of the generator
+    neg_generator = NegativeTextGenerator(word_pools=my_word_pools)
+    print("-" * 30)
+
+    answer = "The ground truth PERSON region is almost entirely missed by the prediction. The prediction fails to identify any of the regions which are classified as PERSON in the ground truth mask. The prediction is mainly black, indicating the model is classifying all regions as unlabelled classes."
+    print(f"ANSWER: {repr(answer)}")
+    neg_answer = neg_generator.generate(answer, num_negatives=32)
+    print("\nGenerated 3 negatives (using backup word shuffling):")
+    for neg in neg_answer:
+        print(f"  - {repr(neg)}")
+    print("-" * 30)
 
 if __name__ == "__main__":
-    main()
+    try_NegativeTextGenerator()
