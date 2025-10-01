@@ -807,36 +807,36 @@ class NegativeTextGenerator:
 
         return list(generated_negatives)
 
+diff_text_word_pools = {
+    "positional": ["top", "bottom", "left", "right", "middle", "center"],
+    "positional_2": ["downwards", "upwards"],
+    "colors": ["red", "blue", "green", "yellow"],
+    "black_white": ["black", "white"],
+    "size": ["big", "large", "small", "tiny", "huge"],
+    "signifancy": ["substantial", "significant", "insignificant", "negligible"],
+    "size_relative": ["bigger", "larger", "smaller", "tinier"],
+    "quality": ["good", "bad", "great", "poor", "excellent", "wrong", "flawed", "flawless"],
+    "quality_detailed": ["precise", "imprecise", "regular", "irregular", "complete", "incomplete", "noisy", "chaotic", "rough", "defined", "undefined", "clean", "coarse", "detailed", "harsh", "sharp"],
+    "quality_detailed_adverb": ["precisely", "imprecisely", "regularly", "irregularly", "completely", "incompletely", "noisily", "chaotically", "roughly", "definedly", "undefinedly", "cleanly", "coarsly", "Detailedly", "harshly", "sharply"],
+    "quality_detailed_adverb_relative": ["rougher", "cleaner", "coarser", "sharper"],
+    "quantity_relative": ["more", "less"],
+    "quality_adverb": ["well", "badly", "greatly", "poorly", "excellently", "flawlessly"],
+    "quality_relative": ["better", "worse"],
+    "position_relative": ["above", "below", "beside", "near", "nearby", "around", "along"],
+    "area": ["boundary", "border", "interior", "center"],
+    "areas": ["boundaries", "edges", "borders", "interiors", "inners"],
+    "lower": ["lower", "elevated"],
+    "level": ["over", "under"],
+    "segmented": ["oversegmented", "undersegmented", "missegmented", "overextended", "underextended", "hallucinated", "extended", "missed", "hallucinated", "overspilled"],
+    "segmentation": ["oversegmentation", "undersegmentation", "overspill", "hallucination", "overextension", "underextension"],
+    "classes": ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR", "UNLABELLED"],
+}
 
 def try_NegativeTextGenerator() -> None:
     # 1. Define your word pools
-    my_word_pools = {
-        "positional": ["top", "bottom", "left", "right", "middle", "center"],
-        "positional_2": ["downwards", "upwards"],
-        "colors": ["red", "blue", "green", "yellow"],
-        "black_white": ["black", "white"],
-        "size": ["big", "large", "small", "tiny", "huge"],
-        "signifancy": ["substantial", "significant", "insignificant", "negligible"],
-        "size_relative": ["bigger", "larger", "smaller", "tinier"],
-        "quality": ["good", "bad", "great", "poor", "excellent", "wrong", "flawed", "flawless"],
-        "quality_detailed": ["precise", "imprecise", "regular", "irregular", "complete", "incomplete", "noisy", "chaotic", "rough", "defined", "undefined", "clean", "coarse", "detailed", "harsh", "sharp"],
-        "quality_detailed_adverb": ["precisely", "imprecisely", "regularly", "irregularly", "completely", "incompletely", "noisily", "chaotically", "roughly", "definedly", "undefinedly", "cleanly", "coarsly", "Detailedly", "harshly", "sharply"],
-        "quality_detailed_adverb_relative": ["rougher", "cleaner", "coarser", "sharper"],
-        "quantity_relative": ["more", "less"],
-        "quality_adverb": ["well", "badly", "greatly", "poorly", "excellently", "flawlessly"],
-        "quality_relative": ["better", "worse"],
-        "position_relative": ["above", "below", "beside", "near", "nearby", "around", "along"],
-        "area": ["boundary", "border", "interior", "center"],
-        "areas": ["boundaries", "edges", "borders", "interiors", "inners"],
-        "lower": ["lower", "elevated"],
-        "level": ["over", "under"],
-        "segmented": ["oversegmented", "undersegmented", "missegmented", "overextended", "underextended", "hallucinated", "extended", "missed", "hallucinated", "overspilled"],
-        "segmentation": ["oversegmentation", "undersegmentation", "overspill", "hallucination", "overextension", "underextension"],
-        "classes": ["BACKGROUND", "AEROPLANE", "BICYCLE", "BIRD", "BOAT", "BOTTLE", "BUS", "CAR", "CAT", "CHAIR", "COW", "DININGTABLE", "DOG", "HORSE", "MOTORBIKE", "PERSON", "POTTEDPLANT", "SHEEP", "SOFA", "TRAIN", "TVMONITOR", "UNLABELLED"],
-    }
 
     # 2. Create an instance of the generator
-    neg_generator = NegativeTextGenerator(word_pools=my_word_pools)
+    neg_generator = NegativeTextGenerator(word_pools=diff_text_word_pools)
     print("-" * 30)
 
     answer = "The ground truth PERSON region is almost entirely missed by the prediction. The prediction fails to identify any of the regions which are classified as PERSON in the ground truth mask. The prediction is mainly black, indicating the model is classifying all regions as unlabelled classes."
