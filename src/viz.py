@@ -377,28 +377,7 @@ def create_diff_mask(
 
     return diff
 
-def create_cs_diff_masks(
-        sc_img: torch.Tensor,
-        gt: torch.Tensor,
-        pr: torch.Tensor,
-        sign_classes: list[int],
-        alpha: float = 0.55
-) -> dict[int, torch.Tensor]:
-    
-    cs_diff_masks: dict[int, torch.Tensor] = {}
-
-    for pos_c in sign_classes:
-        pos_class_gt = (gt == pos_c)
-        pos_class_pr = (pr == pos_c)
-
-        diff_mask = create_diff_mask(pos_class_gt, pos_class_pr)
-
-        # L overlay image
-        ovr_diff_mask_L = blend_tensors(sc_img, diff_mask*255, alpha) # int in range [0, 255]
-
-        cs_diff_masks[pos_c] = ovr_diff_mask_L
-
-def create_cs_masks(
+def create_cs_masks_(
         sc_img: torch.Tensor,
         mask: torch.Tensor,
         sign_classes: list[int],
@@ -444,3 +423,91 @@ def create_cs_masks(
     }
 
     return cs_masks
+
+def create_cs_ovr_masks(
+    sc_imgs: torch.Tensor,
+    masks: torch.Tensor,
+    batch_sign_classes: list[list[int]],
+    alpha: float = 0.55
+) -> list[dict[int, torch.Tensor]]:
+    """
+    Creates class-specific difference masks for a batch of images in a vectorized, GPU-friendly manner.
+
+    Args:
+        sc_imgs (torch.Tensor): Batch of source images. Shape: (B, C, H, W).
+        masks (torch.Tensor): Batch of segmentation masks. Shape: (B, H, W).
+        batch_sign_classes (list[list[int]]): A list of lists, where each inner list
+            contains the positive class IDs for the corresponding image in the batch.
+        alpha (float): The blending factor for the overlay.
+
+    Returns:
+        list[dict[int, torch.Tensor]]: A list of dictionaries. Each dictionary maps
+            a class ID to its blended mask tensor for the corresponding image.
+    """
+    # 0. Handle empty input
+    if not batch_sign_classes:
+        return []
+    
+    batch_size = sc_imgs.shape[0]
+    device = masks.device
+    sc_imgs = sc_imgs.to(device)
+
+    # 1. Flatten the ragged list of classes into a "long" format.
+    # This is a fast, one-time CPU operation.
+    flat_classes = []
+    batch_indices = []
+    for i, class_list in enumerate(batch_sign_classes):
+        for class_val in class_list:
+            flat_classes.append(class_val)
+            batch_indices.append(i)
+
+    # If there are no classes to process across the entire batch, return empty dicts.
+    if not flat_classes:
+        return [{} for _ in range(batch_size)]
+
+    # Convert to tensors and move to the target device.
+    # `flat_classes_tensor` holds all class IDs we need to generate masks for.
+    # `batch_indices_tensor` maps each class ID back to its original image in the batch.
+    flat_classes_tensor = torch.tensor(flat_classes, device=device, dtype=masks.dtype)
+    batch_indices_tensor = torch.tensor(batch_indices, device=device, dtype=torch.long)
+    
+    # K is the total number of masks to generate across the whole batch.
+    K = len(flat_classes_tensor)
+
+    # 2. Use advanced indexing to gather the corresponding masks for each class.
+    # `masks` is (B, H, W). We select based on `batch_indices_tensor` (K,).
+    # Result `gathered_masks` is (K, H, W).
+    gathered_masks = masks[batch_indices_tensor]
+
+    # 3. Create all boolean masks at once using broadcasting.
+    # Compare each mask in `gathered_masks` with its corresponding target class value.
+    # `gathered_masks` is (K, H, W), `flat_classes_tensor.view(-1, 1, 1)` is (K, 1, 1).
+    # Result `all_pos_class_gt` is a boolean tensor of shape (K, H, W).
+    all_pos_class_gt = (gathered_masks == flat_classes_tensor.view(-1, 1, 1))
+
+    # 4. Gather the corresponding source images for blending.
+    # `sc_imgs` is (B, C, H, W). We select based on `batch_indices_tensor` (K,).
+    # Result `gathered_sc_imgs` is (K, C, H, W).
+    gathered_sc_imgs = sc_imgs[batch_indices_tensor]
+
+    # 5. Prepare the overlays for blending.
+    # Convert boolean masks to float, unsqueeze to add a channel dim, and expand
+    # to match the number of channels in the source images.
+    # `all_pos_class_gt.unsqueeze(1)` becomes (K, 1, H, W).
+    # `expand_as` is more memory-efficient than `repeat`.
+    overlays = all_pos_class_gt.unsqueeze(1).expand_as(gathered_sc_imgs) * 255.0
+
+    # 6. Blend all images with their overlays in a single operation.
+    # The `blend_tensors` function is vectorized and handles the (K, C, H, W) tensors.
+    all_blended_masks = blend_tensors(gathered_sc_imgs, overlays, alpha)
+
+    # 7. Reconstruct the final list of dictionaries.
+    # This loop is on the CPU and is very fast as all GPU work is done.
+    output_list = [{} for _ in range(batch_size)]
+    for i in range(K):
+        original_batch_idx = batch_indices[i]
+        class_val = flat_classes[i]
+        # The i-th blended mask corresponds to the i-th entry in our flat lists.
+        output_list[original_batch_idx][class_val] = all_blended_masks[i]
+
+    return output_list
