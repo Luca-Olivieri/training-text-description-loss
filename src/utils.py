@@ -658,6 +658,118 @@ def nanstd(
         result = result.unsqueeze(dim)
     return result
 
+# Define a type hint for the nested list structure
+TensorStructure = list[torch.Tensor, TypeVar("TensorStructure")]
+# Define a type hint for the metadata structure
+StructureInfo = list[int | TypeVar("StructureInfo")]
+
+def flatten_tensor_list(
+        tensor_list: TensorStructure,
+) -> tuple[torch.Tensor, StructureInfo]:
+    """
+    Flattens a list (potentially nested) of tensors into a single tensor
+    and returns the information needed to unflatten it.
+
+    Args:
+        tensor_list: A list, potentially nested, containing PyTorch tensors.
+                     All tensors must have the same number of dimensions and
+                     the same shape except for the first dimension.
+
+    Returns:
+        A tuple containing:
+        - flat_tensor (torch.Tensor): A single tensor containing all the data from
+          the input tensors, concatenated along dimension 0.
+        - structure_info (list): A nested list that mirrors the original structure,
+          but with tensors replaced by the size of their first dimension.
+    """
+    if not isinstance(tensor_list, list):
+        raise TypeError("Input must be a list of tensors.")
+
+    flat_tensors = []
+    structure_info = []
+
+    # Helper function to recursively traverse the list
+    def _traverse(
+            sub_list: TensorStructure,
+            current_structure: StructureInfo
+    ) -> None:
+        for item in sub_list:
+            if isinstance(item, torch.Tensor):
+                # Store the tensor for concatenation
+                flat_tensors.append(item)
+                # Store the size of its first dimension in the structure info
+                current_structure.append(item.shape[0])
+            elif isinstance(item, list):
+                # Recurse into the nested list
+                new_sub_structure = []
+                current_structure.append(new_sub_structure)
+                _traverse(item, new_sub_structure)
+            else:
+                raise TypeError(f"Unsupported type in list: {type(item)}")
+
+    _traverse(tensor_list, structure_info)
+    
+    if not flat_tensors:
+        # Handle empty list case
+        return torch.tensor([]), []
+
+    # Concatenate all found tensors along the first dimension
+    flat_tensor = torch.cat(flat_tensors, dim=0)
+
+    return flat_tensor, structure_info
+
+def unflatten_tensor_list(
+        flat_tensor: torch.Tensor,
+        structure_info: StructureInfo
+) -> TensorStructure:
+    """
+    Reconstructs an original nested list of tensors from a flattened tensor
+    and its corresponding structure information.
+
+    Args:
+        flat_tensor (torch.Tensor): The flattened tensor.
+        structure_info (list): The metadata describing the original nested
+                               structure and tensor sizes.
+
+    Returns:
+        A nested list of tensors in the same format as the original.
+    """
+    # First, get a flat list of all tensor sizes from the structure info
+    sizes = []
+    def _get_sizes(
+            sub_structure: TensorStructure
+    ) -> list:
+        for item in sub_structure:
+            if isinstance(item, int):
+                sizes.append(item)
+            elif isinstance(item, list):
+                _get_sizes(item)
+    
+    _get_sizes(structure_info)
+
+    if not sizes:
+        return []
+
+    # Split the flat tensor back into a list of original tensors
+    # torch.split returns a tuple, so we make it an iterator
+    split_tensors = iter(torch.split(flat_tensor, sizes, dim=0))
+
+    # Helper function to recursively rebuild the nested list structure
+    def _rebuild(
+            sub_structure: TensorStructure
+    ) -> list:
+        rebuilt_list = []
+        for item in sub_structure:
+            if isinstance(item, int):
+                # This was a tensor's location, so pull the next one from the iterator
+                rebuilt_list.append(next(split_tensors))
+            elif isinstance(item, list):
+                # This was a nested list, so recurse
+                rebuilt_list.append(_rebuild(item))
+        return rebuilt_list
+
+    return _rebuild(structure_info)
+
 
 class NegativeTextGenerator:
     """
@@ -847,5 +959,20 @@ def try_NegativeTextGenerator() -> None:
         print(f"  - {repr(neg)}")
     print("-" * 30)
 
+def try_flatten_unflatten_tensor_list() -> None:
+    C, H = 3, 4
+    t1 = torch.randn(2, C, H)  # N=2
+    t2 = torch.randn(5, C, H)  # N=5
+    t3 = torch.randn(1, C, H)  # N=1
+    t4 = torch.randn(3, C, H)  # N=3
+    l = [t1, t2, t3, t4]
+    print(l)
+    flat_l, struct = flatten_tensor_list(l)
+    print(flat_l.shape)
+    new_l = unflatten_tensor_list(flat_l, struct)
+    print(new_l)
+    print(all([(new_t == t).all() for new_t, t in zip(new_l, l)]))
+
 if __name__ == "__main__":
-    try_NegativeTextGenerator()
+    # try_NegativeTextGenerator()
+    try_flatten_unflatten_tensor_list()
