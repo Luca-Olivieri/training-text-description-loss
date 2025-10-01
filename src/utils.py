@@ -665,7 +665,7 @@ StructureInfo = list[int | TypeVar("StructureInfo")]
 
 def flatten_tensor_list(
         tensor_list: TensorStructure,
-) -> tuple[torch.Tensor, StructureInfo]:
+) -> tuple[list[torch.Tensor], StructureInfo]:
     """
     Flattens a list (potentially nested) of tensors into a single tensor
     and returns the information needed to unflatten it.
@@ -713,13 +713,10 @@ def flatten_tensor_list(
         # Handle empty list case
         return torch.tensor([]), []
 
-    # Concatenate all found tensors along the first dimension
-    flat_tensor = torch.cat(flat_tensors, dim=0)
-
-    return flat_tensor, structure_info
+    return flat_tensors, structure_info
 
 def unflatten_tensor_list(
-        flat_tensor: torch.Tensor,
+        flat_tensors: list[torch.Tensor],
         structure_info: StructureInfo
 ) -> TensorStructure:
     """
@@ -749,6 +746,8 @@ def unflatten_tensor_list(
 
     if not sizes:
         return []
+
+    flat_tensor = torch.cat(flat_tensors, dim=0)
 
     # Split the flat tensor back into a list of original tensors
     # torch.split returns a tuple, so we make it an iterator
@@ -968,7 +967,7 @@ def try_flatten_unflatten_tensor_list() -> None:
     l = [t1, t2, t3, t4]
     print(l)
     flat_l, struct = flatten_tensor_list(l)
-    print(flat_l.shape)
+    print(torch.cat(flat_l, dim=0).shape)
     new_l = unflatten_tensor_list(flat_l, struct)
     print(new_l)
     print(all([(new_t == t).all() for new_t, t in zip(new_l, l)]))
