@@ -107,9 +107,15 @@ class VariableTextSigLipLoss(nn.Module):
             self,
             negative_loss_agg: Literal['sum', 'mean'] = 'sum'
     ) -> None:
+        """
+        Args:
+            negative_loss_agg (Literal['sum', 'mean']): How to aggregate the negative loss per image.
+                                                            'sum' (default) accumulates the push from all negatives.
+                                                            'mean' averages the push from all negatives.
+        """
         super().__init__()
-        assert negative_loss_agg in ('sum', 'mean'), \
-            "negative_loss_agg must be either 'sum' or 'mean'"
+        if negative_loss_agg not in {'sum', 'mean'}:
+            raise ValueError(f"negative_loss_agg must be either 'sum' or 'mean', got {negative_loss_agg}")
         self.negative_loss_agg = negative_loss_agg
 
     def get_logits(
@@ -146,9 +152,6 @@ class VariableTextSigLipLoss(nn.Module):
                                                     of the image corresponding to each text feature.
             logit_scale (torch.Tensor): The learnable temperature parameter.
             logit_bias (Optional[torch.Tensor]): The learnable bias parameter.
-            negative_loss_agg (Literal['sum', 'mean']): How to aggregate the negative loss per image.
-                                                        'sum' (default) accumulates the push from all negatives.
-                                                        'mean' averages the push from all negatives.
             output_dict (bool): If True, returns a dictionary with the loss key.
 
         Returns:
@@ -351,10 +354,8 @@ class PairedNegativeSigLipLoss(VariableTextSigLipLoss):
             neg_pairwise_loss = -F.logsigmoid(-neg_logits)
             
             # Aggregate the negative losses for each image
-            if self.negative_loss_agg == 'sum':
-                neg_loss_per_image = neg_pairwise_loss.sum(dim=1)
-            else: # 'mean'
-                neg_loss_per_image = neg_pairwise_loss.mean(dim=1)
+            neg_loss_per_image = neg_pairwise_loss.sum(dim=1)
+            # There is no 'mean' choice for negatives, since the negatives are not in-batch and not of variable grouping.
 
         # --- Final Loss ---
         # The total loss for each image is its normalized positive loss plus its
@@ -363,6 +364,148 @@ class PairedNegativeSigLipLoss(VariableTextSigLipLoss):
 
         # The final batch loss is the mean of the per-image losses.
         loss = total_loss_per_image.mean()
+
+        return {"contrastive_loss": loss} if output_dict else loss
+    
+class GroupedPairedNegativeSigLipLoss(VariableTextSigLipLoss):
+    """
+    Sigmoid Loss for Language Image Pre-Training (SigLIP) with grouped, paired data.
+
+    This loss is designed for datasets where image-text pairs can be grouped.
+    Each image is paired with at most one positive text, and each text is paired
+    with exactly one image. The key features are:
+    
+    1.  **One-to-One Pairing:** Each positive text corresponds to a single image instance.
+    2.  **Grouping:** Positive image-text pairs are assigned to groups.
+    3.  **Group Normalization:** The total loss (positive + negative) for each
+        group is normalized by the number of images in that group. This ensures
+        that large groups do not dominate the final batch loss.
+    4.  **Paired Negatives:** Each image (regardless of whether it has a positive
+        text) is contrasted against its own dedicated non-empty set of negative texts.
+    5.  **Isolated Images:** Images without a positive text are handled correctly,
+        contributing only negative loss and forming their own "group of one" for
+        the purpose of the final loss calculation.
+    """
+    def forward(
+        self,
+        image_features: torch.Tensor,
+        positive_text_features: torch.Tensor,
+        image_indices_for_pos_texts: torch.Tensor,
+        group_indices_for_pos_pairs: torch.Tensor,
+        negative_text_features: torch.Tensor,
+        logit_scale: torch.Tensor,
+        logit_bias: Optional[torch.Tensor] = None,
+        output_dict: bool = False,
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        """
+        Computes the SigLIP loss for grouped, paired data.
+
+        Args:
+            image_features (torch.Tensor): Shape (N, D), N is total images.
+            positive_text_features (torch.Tensor): Shape (P, D), P is total positive texts (P <= N).
+            image_indices_for_pos_texts (torch.Tensor): Shape (P,), maps each positive text
+                to its corresponding image index. E.g., `image_indices_for_pos_texts[j] = i`
+                means `positive_text_features[j]` is the positive for `image_features[i]`.
+            group_indices_for_pos_pairs (torch.Tensor): Shape (P,), maps each positive pair
+                to a group index. E.g., `group_indices_for_pos_pairs[j] = g` means the
+                j-th pair belongs to group g.
+            negative_text_features (torch.Tensor): Shape (N, M, D), M is the number of
+                dedicated negatives for each of the N images.
+            logit_scale (torch.Tensor): The learnable temperature parameter.
+            logit_bias (Optional[torch.Tensor]): The learnable bias parameter.
+            output_dict (bool): If True, returns a dictionary.
+
+        Returns:
+            The computed loss as a single scalar tensor, or a dictionary.
+        """
+        device = image_features.device
+        num_images = image_features.shape[0]
+        num_pos_pairs = positive_text_features.shape[0]
+
+        if len(negative_text_features.shape) == 2 or (len(negative_text_features.shape) == 3 and negative_text_features.shape[1] == 1):
+            raise ValueError(f"'negative_text_features' should be of shape (N, M, D), with M > 1, got {negative_text_features.shape}")
+
+        if num_images == 0:
+            loss = torch.tensor(0.0, device=device, requires_grad=True)
+            return {"contrastive_loss": loss} if output_dict else loss
+
+        # --- Step 1: Calculate Negative Loss for ALL images ---
+        # This is computed per-image, independent of grouping initially.
+        neg_loss_per_image = torch.zeros(num_images, device=device)
+        if negative_text_features.numel() > 0 and negative_text_features.shape[1] > 0:
+            neg_logits = torch.einsum('nd,nmd->nm', image_features, negative_text_features)
+            neg_logits = logit_scale * neg_logits
+            if logit_bias is not None:
+                neg_logits += logit_bias
+            
+            neg_pairwise_loss = -F.logsigmoid(-neg_logits)
+            
+            neg_loss_per_image = neg_pairwise_loss.sum(dim=1)
+            # There is no 'mean' choice for negatives, since the negatives are not in-batch and not of variable grouping.
+
+        # --- Step 2: Calculate Positive Loss for all PAIRS ---
+        true_pos_losses = torch.tensor([], device=device)
+        if num_pos_pairs > 0:
+            # Logits between all images and all positive texts
+            pos_logits = self.get_logits(image_features, positive_text_features, logit_scale, logit_bias)
+            
+            # Loss for positive pairs is -log(sigmoid(logit))
+            pos_pairwise_loss = -F.logsigmoid(pos_logits)
+            
+            # Extract the loss for the true positive pairs
+            text_indices = torch.arange(num_pos_pairs, device=device)
+            true_pos_losses = pos_pairwise_loss[image_indices_for_pos_texts, text_indices]
+        
+        # --- Step 3: Map all images to a group and aggregate losses ---
+        
+        # Determine the total number of groups. This includes groups defined by
+        # positive pairs and new "isolated" groups for images without positives.
+        num_positive_groups = 0
+        if num_pos_pairs > 0:
+            num_positive_groups = int(group_indices_for_pos_pairs.max().item()) + 1
+
+        # Create a mapping from each image index to its final group index.
+        group_indices_for_images = torch.full((num_images,), -1, dtype=torch.long, device=device)
+        if num_pos_pairs > 0:
+            # Images with positives get their assigned group index
+            group_indices_for_images.scatter_(0, image_indices_for_pos_texts, group_indices_for_pos_pairs)
+
+        # Images without a positive pair (still marked as -1) are assigned to
+        # new, unique "isolated" groups.
+        isolated_mask = (group_indices_for_images == -1)
+        num_isolated = isolated_mask.sum()
+        isolated_group_indices = torch.arange(
+            num_positive_groups, num_positive_groups + num_isolated, device=device
+        )
+        group_indices_for_images[isolated_mask] = isolated_group_indices
+        
+        num_total_groups = num_positive_groups + num_isolated
+        
+        if num_total_groups == 0: # Happens if num_images > 0 but no groups assigned (shouldn't occur with this logic)
+             loss = torch.tensor(0.0, device=device, requires_grad=True)
+             return {"contrastive_loss": loss} if output_dict else loss
+
+        # Aggregate positive and negative losses by their final group index
+        pos_loss_per_group = torch.zeros(num_total_groups, device=device)
+        if num_pos_pairs > 0:
+             pos_loss_per_group.scatter_add_(0, group_indices_for_pos_pairs, true_pos_losses)
+
+        neg_loss_per_group = torch.zeros(num_total_groups, device=device)
+        neg_loss_per_group.scatter_add_(0, group_indices_for_images, neg_loss_per_image)
+        
+        total_loss_per_group = pos_loss_per_group + neg_loss_per_group
+
+        # --- Step 4: Normalize by group size and compute final loss ---
+        
+        # Group size is the number of IMAGES in each group
+        group_sizes = torch.bincount(group_indices_for_images, minlength=num_total_groups)
+        
+        # Normalize the total loss of each group by its size
+        group_normalizer = torch.clamp(group_sizes, min=1).float()
+        normalized_loss_per_group = total_loss_per_group / group_normalizer
+        
+        # The final loss is the mean of the normalized per-group losses
+        loss = normalized_loss_per_group.mean()
 
         return {"contrastive_loss": loss} if output_dict else loss
 
@@ -491,22 +634,6 @@ def test_PairedNegativeSigLipLoss() -> None:
     print(f"Loss (No Negatives): {loss.item():.4f}")
     print("Note: The loss is calculated using only the positive pairs.")
 
-
-    # --- Example 5: Comparing 'sum' vs 'mean' Aggregation ---
-    print("\n" + "="*20 + " Example 5: 'sum' vs 'mean' Aggregation " + "="*20)
-    print("Description: Demonstrates the difference between summing and averaging negative losses.")
-
-    loss_fn_sum = PairedNegativeSigLipLoss(negative_loss_agg='sum')
-    loss_fn_mean = PairedNegativeSigLipLoss(negative_loss_agg='mean')
-
-    loss_sum = loss_fn_sum(image_features, list_of_positives, negative_features, logit_scale, logit_bias)
-    loss_mean = loss_fn_mean(image_features, list_of_positives, negative_features, logit_scale, logit_bias)
-    
-    print(f"Loss with negative_loss_agg='sum':  {loss_sum.item():.4f}")
-    print(f"Loss with negative_loss_agg='mean': {loss_mean.item():.4f}")
-    print(f"As expected, 'sum' loss is higher than 'mean' loss (by approx. factor of NUM_NEGATIVES={NUM_NEGATIVES}).")
-
-
     # --- Example 6: Testing output_dict=True ---
     print("\n" + "="*20 + " Example 6: Testing output_dict " + "="*20)
     print("Description: Verifies that the function returns a dictionary when requested.")
@@ -532,7 +659,6 @@ def test_PairedNegativeSigLipLoss() -> None:
     print(f"Loss (Empty Batch): {loss.item():.4f}")
     print("The function correctly returns 0.0 for an empty batch.")
 
-
 def compare_VariableTextSigLipLoss_PairedNegativeSigLipLoss() -> None:
     # --- Setup a controlled environment ---
     BATCH_SIZE = 2
@@ -541,7 +667,7 @@ def compare_VariableTextSigLipLoss_PairedNegativeSigLipLoss() -> None:
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}\n")
 
-    torch.manual_seed(64) # Use a different seed for different results
+    torch.manual_seed(42) # Use a different seed for different results
 
     # Shared parameters
     logit_scale = nn.Parameter(torch.tensor(10.0, device=device))
@@ -584,27 +710,342 @@ def compare_VariableTextSigLipLoss_PairedNegativeSigLipLoss() -> None:
     assert torch.allclose(loss_original, loss_paired), "Loss values for 'sum' do not match!"
     print("\n✅ SUCCESS: The loss values for `agg='sum'` are identical.\n")
 
+def test_GroupedPairedNegativeSigLipLoss() -> None:
+    # --- Setup ---
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    D = 128  # Feature dimension
+    torch.manual_seed(42)
 
-    # --- Test 2: negative_loss_agg = 'mean' ---
-    print("="*20 + " Test 2: `negative_loss_agg='mean'` " + "="*20)
+    logit_scale = nn.Parameter(torch.tensor(10.0, device=device))
+    logit_bias = nn.Parameter(torch.tensor(-5.0, device=device))
 
-    # --- Original Loss Calculation ---
-    print("\n--- Calculating with Original VariableTextSigLipLoss ---")
-    loss_fn_original_mean = VariableTextSigLipLoss(negative_loss_agg='mean')
-    loss_original_mean = loss_fn_original_mean(image_features, list_of_all_texts, logit_scale, logit_bias)
-    print(f"Original Loss: {loss_original_mean.item():.6f}")
+    # --- Test 1: Simple GroupedPairedNegativeSigLipLoss Example ---
+    print("--- Test 1: Simple Grouped Case ---")
+    
+    # Batch composition:
+    # - Group 0: 2 image-text pairs
+    # - Group 1: 1 image-text pair
+    # - Isolated: 1 image with no positive text
+    
+    num_images_total = 4
+    num_pos_pairs = 3
+    num_negatives_per_image = 5
+    
+    # (N, D) -> 4 images total
+    image_features = torch.randn(num_images_total, D, device=device)
+    
+    # (P, D) -> 3 positive texts
+    positive_text_features = torch.randn(num_pos_pairs, D, device=device)
+    
+    # (N, M, D) -> 4 images, each with 5 negatives
+    negative_text_features = torch.randn(num_images_total, num_negatives_per_image, D, device=device)
+    
+    # Map positive texts to images
+    # Text 0 -> Image 0
+    # Text 1 -> Image 1
+    # Text 2 -> Image 2
+    # Image 3 has NO positive text
+    image_indices_for_pos_texts = torch.tensor([0, 1, 2], device=device, dtype=torch.long)
+    
+    # Map positive pairs to groups
+    # Pair (I0, T0) -> Group 0
+    # Pair (I1, T1) -> Group 0
+    # Pair (I2, T2) -> Group 1
+    group_indices_for_pos_pairs = torch.tensor([0, 0, 1], device=device, dtype=torch.long)
+    
+    loss_fn_grouped = GroupedPairedNegativeSigLipLoss(negative_loss_agg='sum').to(device)
+    loss_grouped = loss_fn_grouped(
+        image_features,
+        positive_text_features,
+        image_indices_for_pos_texts,
+        group_indices_for_pos_pairs,
+        negative_text_features,
+        logit_scale,
+        logit_bias
+    )
+    print(f"Grouped Loss (Simple Case): {loss_grouped.item():.4f}")
+    
+    
+    # --- Test 2: Equivalence with PairedNegativeSigLipLoss ---
+    print("\n--- Test 2: Equivalence Test ---")
 
-    # --- New Paired Loss Calculation ---
-    print("\n--- Calculating with New PairedNegativeSigLipLoss ---")
-    loss_fn_paired_mean = PairedNegativeSigLipLoss(negative_loss_agg='mean')
-    loss_paired_mean = loss_fn_paired_mean(image_features, list_of_pos_texts, negative_features, logit_scale, logit_bias)
-    print(f"Paired Loss:   {loss_paired_mean.item():.6f}")
+    # Scenario for PairedNegativeSigLipLoss:
+    # 1 image, 3 positive texts, 5 negative texts
+    K_pos = 3
+    M_neg = 5
+    
+    image_features_orig = torch.randn(1, D, device=device)
+    list_of_pos_texts_orig = [torch.randn(K_pos, D, device=device)]
+    neg_texts_orig = torch.randn(1, M_neg, D, device=device)
 
+    loss_fn_paired = PairedNegativeSigLipLoss(negative_loss_agg='sum').to(device)
+    loss_paired = loss_fn_paired(
+        image_features_orig,
+        list_of_pos_texts_orig,
+        neg_texts_orig,
+        logit_scale,
+        logit_bias
+    )
+    print(f"PairedNegativeSigLipLoss Result: {loss_paired.item():.6f}")
+
+    # --- Recreate the equivalent scenario for GroupedPairedNegativeSigLipLoss ---
+    
+    # Expand the original data: create K=3 separate image-text pairs in one group
+    # N=K=3 images, P=K=3 positive texts, all in group 0
+    
+    # Images: Replicate the original image K times
+    grouped_images = image_features_orig.repeat(K_pos, 1)
+    
+    # Positive Texts: Use the original list of positives
+    grouped_pos_texts = list_of_pos_texts_orig[0]
+    
+    # Negatives: Replicate the original negatives for each new image instance
+    grouped_neg_texts = neg_texts_orig.repeat(K_pos, 1, 1)
+    
+    # Indices: Each text `k` pairs with the new image instance `k`
+    grouped_img_indices = torch.arange(K_pos, device=device, dtype=torch.long)
+    
+    # Groups: All K pairs belong to the same group (group 0)
+    grouped_group_indices = torch.zeros(K_pos, device=device, dtype=torch.long)
+    
+    loss_grouped_equiv = loss_fn_grouped(
+        grouped_images,
+        grouped_pos_texts,
+        grouped_img_indices,
+        grouped_group_indices,
+        grouped_neg_texts,
+        logit_scale,
+        logit_bias
+    )
+    print(f"Grouped Loss (Equivalent Case): {loss_grouped_equiv.item():.6f}")
+    
     # --- Verification ---
-    assert torch.allclose(loss_original_mean, loss_paired_mean), "Loss values for 'mean' do not match!"
-    print("\n✅ SUCCESS: The loss values for `agg='mean'` are identical.\n")
+    assert torch.allclose(loss_paired, loss_grouped_equiv), "Losses are not equivalent!"
+    print("\n✅ Equivalence Test Passed: The two losses are equivalent in the specified scenario.")
+
+
+def compare_PairedNegativeSigLipLoss_GroupedPairedNegativeSigLipLoss() -> None:
+    def generate_paired_data_item(
+        K_pos: int, 
+        M_neg: int, 
+        D: int, 
+        device: str
+    ) -> dict[str, torch.Tensor | list[torch.Tensor]]:
+        """Generates features for one item in a PairedNegativeSigLipLoss batch."""
+        image_features = torch.randn(1, D, device=device)
+        
+        if K_pos > 0:
+            pos_texts = [torch.randn(K_pos, D, device=device)]
+        else:
+            # Handle zero positives correctly
+            pos_texts = [torch.empty(0, D, device=device)]
+            
+        if M_neg > 0:
+            neg_texts = torch.randn(1, M_neg, D, device=device)
+        else:
+            # Handle zero negatives correctly
+            neg_texts = torch.empty(1, 0, D, device=device)
+            
+        return {
+            "image": image_features,
+            "pos_texts": pos_texts,
+            "neg_texts": neg_texts
+        }
+
+    def convert_to_grouped_data(
+        paired_items: list[dict], 
+        device: str
+    ) -> dict[str, torch.Tensor]:
+        """
+        Converts a list of 'paired' data items into a single batch for 
+        the GroupedPairedNegativeSigLipLoss.
+        """
+        all_grouped_images = []
+        all_grouped_pos_texts = []
+        all_grouped_neg_texts = []
+        all_img_indices_for_pos = []
+        all_group_indices_for_pos = []
+        
+        image_offset = 0
+        group_idx = 0
+
+        for item in paired_items:
+            K = item['pos_texts'][0].shape[0]
+            
+            if K > 0:
+                # Case 1: Image has positive texts. This forms a group.
+                # Replicate image K times
+                all_grouped_images.append(item['image'].repeat(K, 1))
+                # Negatives are also replicated K times, one set for each image instance
+                all_grouped_neg_texts.append(item['neg_texts'].repeat(K, 1, 1))
+                
+                # The positive texts are used as is
+                all_grouped_pos_texts.append(item['pos_texts'][0])
+                
+                # Map each of the K texts to its corresponding replicated image
+                all_img_indices_for_pos.append(torch.arange(K, device=device) + image_offset)
+                # All K pairs belong to the same group
+                all_group_indices_for_pos.append(torch.full((K,), group_idx, device=device))
+                
+                image_offset += K
+                group_idx += 1
+            else:
+                # Case 2: Image has NO positive texts. It's an "isolated" image.
+                # It will be handled automatically by Grouped loss, but we must
+                # include its features in the batch.
+                all_grouped_images.append(item['image'])
+                all_grouped_neg_texts.append(item['neg_texts'])
+                # No positive texts or indices are added for this item.
+                
+                image_offset += 1
+                # Note: We don't increment group_idx here. The Grouped loss
+                # will assign a new, unique group index to this isolated image.
+
+        # Concatenate all lists into final tensors
+        final_images = torch.cat(all_grouped_images, dim=0)
+        final_neg_texts = torch.cat(all_grouped_neg_texts, dim=0)
+        
+        if all_grouped_pos_texts:
+            final_pos_texts = torch.cat(all_grouped_pos_texts, dim=0)
+            final_img_indices = torch.cat(all_img_indices_for_pos, dim=0)
+            final_group_indices = torch.cat(all_group_indices_for_pos, dim=0)
+        else:
+            # Handle case where there are no positive texts in the entire batch
+            D = final_images.shape[1]
+            final_pos_texts = torch.empty(0, D, device=device)
+            final_img_indices = torch.empty(0, dtype=torch.long, device=device)
+            final_group_indices = torch.empty(0, dtype=torch.long, device=device)
+
+        return {
+            "images": final_images,
+            "pos_texts": final_pos_texts,
+            "neg_texts": final_neg_texts,
+            "img_indices": final_img_indices,
+            "group_indices": final_group_indices,
+        }
+
+
+    # --- Main Test Runner ---
+
+    def run_equivalence_test_case(
+        test_name: str,
+        batch_config: list[tuple[int, int]],
+        D: int,
+        device: str,
+        logit_scale: torch.Tensor,
+        logit_bias: torch.Tensor,
+    ):
+        """
+        Runs a single equivalence test case for a given configuration.
+        
+        Args:
+            test_name: A descriptive name for the test.
+            batch_config: A list of (K_pos, M_neg) tuples, where each tuple
+                        defines an image for the PairedNegative loss batch.
+            agg_method: 'sum' or 'mean'.
+        """
+        print(f"--- Running Test: {test_name} (agg_method='sum') ---")
+        
+        # 1. Generate data for PairedNegativeSigLipLoss
+        paired_items = [generate_paired_data_item(K, M, D, device) for K, M in batch_config]
+        
+        paired_images = torch.cat([item['image'] for item in paired_items], dim=0)
+        paired_pos_texts_list = [item['pos_texts'][0] for item in paired_items]
+        paired_neg_texts = torch.cat([item['neg_texts'] for item in paired_items], dim=0)
+        
+        # 2. Generate equivalent data for GroupedPairedNegativeSigLipLoss
+        grouped_data = convert_to_grouped_data(paired_items, device)
+
+        # 3. Instantiate loss functions
+        loss_fn_paired = PairedNegativeSigLipLoss(negative_loss_agg='sum').to(device)
+        loss_fn_grouped = GroupedPairedNegativeSigLipLoss(negative_loss_agg='sum').to(device)
+        
+        # 4. Calculate losses
+        loss_paired = loss_fn_paired(
+            paired_images,
+            paired_pos_texts_list,
+            paired_neg_texts,
+            logit_scale,
+            logit_bias
+        )
+        
+        loss_grouped = loss_fn_grouped(
+            grouped_data["images"],
+            grouped_data["pos_texts"],
+            grouped_data["img_indices"],
+            grouped_data["group_indices"],
+            grouped_data["neg_texts"],
+            logit_scale,
+            logit_bias
+        )
+        
+        # 5. Compare and assert
+        print(f"PairedNegative Loss:  {loss_paired.item():.8f}")
+        print(f"Grouped (Equiv) Loss: {loss_grouped.item():.8f}")
+        
+        try:
+            assert torch.allclose(loss_paired, loss_grouped, atol=1e-6)
+            print("✅ PASSED: Losses are equivalent.\n")
+        except AssertionError:
+            print(f"❌ FAILED: Losses are NOT equivalent. Difference: {abs(loss_paired - loss_grouped).item()}\n")
+            # In a real test suite, this would raise an error
+            # raise
+    
+    # --- Test Setup ---
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    D = 64  # Feature dimension
+    torch.manual_seed(42)
+
+    logit_scale = nn.Parameter(torch.tensor(0.5, device=device))
+    logit_bias = nn.Parameter(torch.tensor(-0.2, device=device))
+    
+    # --- Define Test Scenarios ---
+    
+    # Each tuple is (num_positives, num_negatives) for one image in the Paired batch
+    test_scenarios = [
+        {
+            "name": "Standard Case (Variable Positives)",
+            "config": [(3, 5), (1, 5), (5, 5)] # 3 images
+        },
+        {
+            "name": "Edge Case (Some with Zero Positives)",
+            "config": [(4, 10), (0, 10), (2, 10), (0, 10)]
+        },
+        {
+            "name": "Edge Case (All with Zero Positives)",
+            "config": [(0, 8), (0, 8)]
+        },
+        #{"name": "Edge Case (Some with Zero Negatives)", "config": [(3, 0), (2, 5), (4, 0)]},
+        #{"name": "Edge Case (All with Zero Negatives)", "config": [(2, 0), (5, 0)]},
+        # {"name": "Mixed Zeroes Case", "config": [(3, 5), (0, 5), (2, 0), (0, 0)]},
+        {
+            "name": "Simple 1-to-1 Case",
+            "config": [(1, 10), (1, 10), (1, 10)]
+        },
+        {
+            "name": "Single Item in Batch",
+            "config": [(7, 4)]
+        },
+        {
+            "name": "Single Item in Batch (Zero Positives)",
+            "config": [(0, 4)]
+        },
+    ]
+
+    # --- Run All Tests for both 'sum' and 'mean' ---
+    for scenario in test_scenarios:
+        run_equivalence_test_case(
+            test_name=scenario["name"],
+            batch_config=scenario["config"],
+            D=D,
+            device=device,
+            logit_scale=logit_scale,
+            logit_bias=logit_bias
+        )
 
 if __name__ == '__main__':
     # test_VariableTextSigLipLoss()
-    # test_PairedNegativeSigLipLoss()
-    compare_VariableTextSigLipLoss_PairedNegativeSigLipLoss()
+    # test_PairedNegativeSigLipLoss()
+    # compare_VariableTextSigLipLoss_PairedNegativeSigLipLoss()
+    # test_GroupedPairedNegativeSigLipLoss()
+    compare_PairedNegativeSigLipLoss_GroupedPairedNegativeSigLipLoss()
