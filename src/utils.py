@@ -770,6 +770,67 @@ def unflatten_tensor_list(
 
     return _rebuild(structure_info)
 
+def flatten_list_of_lists(
+        nested_list: list[list[Any]]
+) -> tuple[list[Any], list[int]]:
+    """
+    Flattens a list of lists into a single list and a list of lengths.
+
+    The list of lengths is the "metadata" required to unflatten the list
+    back to its original structure.
+
+    Args:
+        nested_list: A list containing other lists (one level of nesting).
+                     Example: [[1, 2], ["a", "b", "c"], [True]]
+
+    Returns:
+        A tuple containing:
+        - A single list with all the elements from the sub-lists.
+          Example: [1, 2, "a", "b", "c", True]
+        - A list of integers representing the length of each original sub-list.
+          Example: [2, 3, 1]
+    """
+    # Use a list comprehension to get the length of each sub-list
+    lengths = [len(sublist) for sublist in nested_list]
+    
+    # Use a nested list comprehension to create the single flat list
+    flat_list = [item for sublist in nested_list for item in sublist]
+    
+    return flat_list, lengths
+
+def unflatten_list_of_lists(
+        flat_list: list[Any],
+        lengths: list[int]
+) -> list[list[Any]]:
+    """
+    Reconstructs a nested list from a flat list and a list of lengths.
+
+    This is the inverse operation of the `flatten` function.
+
+    Args:
+        flat_list: A single, flat list of items.
+                   Example: [1, 2, "a", "b", "c", True]
+        lengths: A list of integers for partitioning the flat_list.
+                 Example: [2, 3, 1]
+
+    Returns:
+        The reconstructed list of lists.
+        Example: [[1, 2], ["a", "b", "c"], [True]]
+    """
+    if sum(lengths) != len(flat_list):
+        raise ValueError("The sum of lengths must be equal to the length of the flat list.")
+
+    nested_list = []
+    current_position = 0
+    for length in lengths:
+        # Slice the flat_list from the current position to the end of the chunk
+        chunk = flat_list[current_position : current_position + length]
+        nested_list.append(chunk)
+        
+        # Move the position marker for the next iteration
+        current_position += length
+        
+    return nested_list
 
 class NegativeTextGenerator:
     """
@@ -973,6 +1034,38 @@ def try_flatten_unflatten_tensor_list() -> None:
     print(new_l)
     print(all([(new_t == t).all() for new_t, t in zip(new_l, l)]))
 
+def try_flatten_unflatten_list_of_lists() -> None:
+    # 1. Define the original data
+    original_data = [
+        [1, "apple", 3.14],
+        [],
+        [True, False],
+        ["single_item"],
+        [4, 5, 6, 7, 8]
+    ]
+
+    print(f"Original Data:\n{original_data}\n")
+
+    # 2. Flatten the data
+    flat_data, structure_info = flatten_list_of_lists(original_data)
+
+    print(f"--- Flattening ---")
+    print(f"Flattened List: {flat_data}")
+    print(f"Structure Info (lengths): {structure_info}\n")
+
+    # 3. Unflatten the data using the saved structure info
+    reconstructed_data = unflatten_list_of_lists(flat_data, structure_info)
+
+    print(f"--- Unflattening ---")
+    print(f"Reconstructed Data:\n{reconstructed_data}\n")
+
+    # 4. Verify that the reconstructed data is identical to the original
+    print("Verification:")
+    assert original_data == reconstructed_data
+    print("Success! The reconstructed data matches the original data.")
+
 if __name__ == "__main__":
     # try_NegativeTextGenerator()
-    try_flatten_unflatten_tensor_list()
+    # try_flatten_unflatten_tensor_list()
+    try_flatten_unflatten_list_of_lists()
+    
