@@ -1,0 +1,113 @@
+# docker-compose.yml
+version: '3.8'
+
+services:
+  # You can rename 'ml_service' to whatever you like
+  pyapp:
+    # The image is built dynamically using environment variables
+    # Equivalent to: $(whoami)/${TTDL_GPU_DEVICE}:${TTDL_TAG}
+    image: ${USER}/${TTDL_IMAGE_NAME}:${TTDL_TAG}
+
+    # The container name is also built dynamically.
+    # NOTE: Docker Compose cannot execute shell commands like `date`.
+    # This is the closest we can get without a helper script. It omits the timestamp.
+    # If you need a unique name for every run, you can use `docker-compose up` without `-d`,
+    # or manage container names manually.
+    container_name: ${TTDL_CONTAINER_NAME}
+
+    # Run in interactive mode with a TTY
+    # Equivalent to: -it
+    stdin_open: true
+    tty: true
+
+    # Automatically remove the container on exit when using `docker-compose up`
+    # This is a bit different from `--rm` in `docker run`. The container is removed
+    # when the service is stopped (e.g., with `docker-compose down`).
+    # For true --rm behavior (remove on process exit), use `docker-compose run`.
+    # command: /bin/bash # Example command to keep it running
+
+    # Resource constraints
+    # Equivalent to: --gpus, --cpuset-cpus, -m
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${GPU_DEVICE}']
+              capabilities: [gpu]
+    cpuset: ${CPU_SET}
+    mem_limit: ${MEMORY_LIMIT}
+
+    # Working directory inside the container
+    # Equivalent to: -w
+    working_dir: /home/${USER}/exp
+
+    # Volumes for code, private data, and shared data
+    # Equivalent to: --mount flags
+    volumes:
+      # The PROJECT_FOLDER logic is now handled by this variable.
+      # It assumes you run `docker-compose` from the folder containing this compose file,
+      # and your code is in the parent directory.
+      # E.g., /home/user/storage/project/docker-compose.yml -> mounts /home/user/storage/project
+      - type: bind
+        source: ${PROJECT_FOLDER}
+        target: /home/${USER}/exp
+      - type: bind
+        source: ${PRIVATE_DATASETS_PATH}
+        target: /home/${USER}/exp/data/private
+      - type: bind
+        source: ${SHARED_DATASETS_PATH}/coco2017
+        target: /home/${USER}/exp/data/shared/coco2017
+
+    # Environment variables inside the container
+    # Equivalent to: -e flags
+    environment:
+      - log=/home/log.txt
+      - HOST_UID=${HOST_UID} # For file permissions
+      - HOST_GID=${HOST_GID} # For file permissions
+      - PYTHONPATH=${PYTHONPATH}
+      - OLLAMA_CONTAINER_NAME=${OLLAMA_CONTAINER_NAME}
+
+    # Network configuration
+    # Equivalent to: --network
+    networks:
+      - internal_net
+
+    # This is the new Ollama service
+  ollama:
+    image: ollama/ollama:${OLLAMA_TAG}
+    container_name: ${OLLAMA_CONTAINER_NAME}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['${GPU_DEVICE}']
+              capabilities: [gpu]
+    cpuset: ${CPU_SET}
+    mem_limit: ${MEMORY_LIMIT}
+    # Volume to persist Ollama models on the host
+    volumes:
+      - type: bind
+        source: ${OLLAMA_MODELS_PATH}
+        target: /root/.ollama
+    environment:
+      - HOST_UID=${HOST_UID}
+      - HOST_GID=${HOST_GID}
+      - OLLAMA_NUM_PARALLEL=${OLLAMA_NUM_PARALLEL}
+      - OLLAMA_DEBUG=${OLLAMA_DEBUG}
+      - OLLAMA_MAX_LOADED_MODELS=${OLLAMA_MAX_LOADED_MODELS}
+      - OLLAMA_MAX_QUEUE=${OLLAMA_MAX_QUEUE}
+      - OLLAMA_KEEP_ALIVE=${OLLAMA_KEEP_ALIVE}
+      # - OLLAMA_FLASH_ATTENTION=1
+      # - OLLAMA_KV_CACHE_TYPE="q8_0"
+    networks:
+      - internal_net
+      
+# Define the network with a dynamic name based on resources
+networks:
+  # 'internal_net' is the logical name we use within this file
+  internal_net:
+    driver: bridge
+    # 'name' sets the actual name of the network in Docker.
+    name: ${NETWORK_CONTAINER_NAME}

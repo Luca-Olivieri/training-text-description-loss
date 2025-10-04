@@ -1,12 +1,12 @@
-from config import *
-from models.vl_models import GenParams, OllamaMLLM
-from models.seg_models import SegModelWrapper, SEGMODELS_REGISTRY
-from prompter import FastPromptBuilder
-from data import VOC2012SegDataset, COCO2017SegDataset, append_many_to_jsonl, crop_augment_preprocess_batch, apply_classmap
-from color_map import apply_colormap
-from path import get_mask_prs_path
-from utils import blend_tensors, create_directory
-from viz import create_diff_mask
+from core.config import *
+from models.mllm import GenParams, OllamaMLLMAdapter
+from models.seg import SegModelWrapper, SEGMODELS_REGISTRY
+from core.prompter import FastPromptBuilder
+from core.data import VOC2012SegDataset, COCO2017SegDataset, append_many_to_jsonl, crop_augment_preprocess_batch, apply_classmap
+from core.color_map import apply_colormap
+from core.path import get_mask_prs_path
+from core.utils import blend_tensors, create_directory
+from core.viz import create_diff_mask
 
 from pathlib import Path
 from torchvision.models import segmentation as segmodels
@@ -33,7 +33,7 @@ async def main() -> None:
 
     model_name = "gemma3:12b-it-qat"
 
-    vlm = OllamaMLLM(model_name, container_name=CONFIG['ollama_container_name'])
+    vlm = OllamaMLLMAdapter(model_name, ollama_container_name=CONFIG['ollama_container_name'])
 
     by_model = "LRASPP_MobileNet_V3"
 
@@ -150,7 +150,7 @@ async def main() -> None:
             batch_idxs = [dl.batch_size*step + i for i in range(len(scs_down))]
             batch_image_uids = seg_dataset.image_UIDs[batch_idxs]
 
-            cs_answer_list = await vlm.predict_many_class_splitted(
+            cs_answer_list = await vlm.predict_cs_many(
                 cs_prompts,
                 batch_idxs,
                 gen_params=gen_params,
