@@ -1,220 +1,226 @@
+"""Multimodal Large Language Model (MLLM) adapters and interfaces.
+
+This module provides abstract base classes and concrete implementations for interacting
+with various MLLM backends (Ollama, Google AI Studio, HuggingFace). It handles prompt
+formatting, response generation, and batch processing for multimodal inputs.
+
+Key components:
+    - MLLMAdapter: Abstract base class for MLLM implementations
+    - MLLMGenParams: Generation parameters dataclass
+    - MLLMResponse: Response container with text and token count
+    - OllamaMLLMAdapter: Ollama backend implementation
+    - GoogleAIStudioMLLMAdapter: Google AI Studio backend implementation
+    - MLLM_REGISTRY: Registry for available MLLM adapters
+
+TODO:
+    - Generate text in dict default format, not JSONL format
+    - Decouple JSONL saving logic from text generation
+    - Save text predictions as separate objects (like synthetic diff dataset)
+    - Remove class-splitting notion from MLLM using Grouped Sampler approach
+"""
 from __future__ import annotations
 
 from core.config import *
 from core.data import image_to_base64
-from core.utils import DictObject, GenericClient, retry, parse_eval_text_to_dict
 from core.prompter import Prompt
-from core.data_utils import batch_list, batch_cs_list
-from core.viz import my_tqdm
 from core.registry import Registry
 
-from PIL.Image import Image as PILImage
 import asyncio
-import time
 import re
+from PIL import Image
+from functools import partial
 
-from abc import abstractmethod, ABC
 from google import genai
 from google.genai import types as genai_types
-from google.genai.errors import ServerError
 
-from typing import Any, Optional
-
-from core._types import Any, Optional, Generator, AsyncGenerator, Conversation
+from core._types import Optional, Conversation, abstractmethod, ABC, dataclass
 
 # Ollama
 import ollama
 
-# TODO turn this into a DataClass
-class GenParams(DictObject):
+@dataclass(frozen=True)
+class MLLMGenParams:
+    """Generation parameters for MLLM inference.
+    
+    Encapsulates all generation hyperparameters used to control the behavior
+    of multimodal large language models during text generation.
+    
+    Attributes:
+        seed: Random seed for reproducible generation. None for non-deterministic.
+        ctx_size: Maximum context window size (number of tokens).
+        last_n_not_to_repeat: Number of last tokens to avoid repeating.
+        repeat_penalty: Penalty multiplier for repeated tokens (>1.0 reduces repetition).
+        temperature: Sampling temperature (higher = more random, 0.0 = greedy).
+        stop_sequences: List of strings that stop generation when encountered.
+        max_tokens: Maximum number of tokens to generate in the response.
+        top_k: Top-k sampling - only sample from top k most likely tokens.
+        top_p: Nucleus sampling - sample from smallest set with cumulative probability >= top_p.
+        min_p: Minimum probability threshold for token consideration.
+        answer_format: Expected format for the answer ('json', dict schema, or None).
     """
-    A dictionary-like class with a predefined set of keys, initially unassigned (None).
-    The keys are defined within the class itself.
-    """
-    def __init__(
-            self,
-            seed: Optional[int] = None,
-            ctx_size: Optional[int] = None,
-            last_n_not_to_repeat: Optional[int] = None,
-            repeat_penalty: Optional[float] = None,
-            temperature: Optional[float] = None,
-            stop_sequences: Optional[list[str]] = None,
-            max_tokens:  Optional[int]  = None,
-            top_k: Optional[int] = None,
-            top_p: Optional[float] = None,
-            min_p: Optional[float] = None,
-            answer_format: Optional[str | dict[str, str]] = None
-    ) -> None:
-        """
-        Initializea GenParams with optional generation parameters.
+    seed: Optional[int] = None
+    ctx_size: Optional[int] = None
+    last_n_not_to_repeat: Optional[int] = None
+    repeat_penalty: Optional[float] = None
+    temperature: Optional[float] = None
+    stop_sequences: Optional[list[str]] = None
+    max_tokens:  Optional[int]  = None
+    top_k: Optional[int] = None
+    top_p: Optional[float] = None
+    min_p: Optional[float] = None
+    answer_format: Optional[str | dict[str, str]] = None
 
-        Args:
-            seed: Random seed for generation.
-            ctx_size: Context window size.
-            last_n_not_to_repeat: Number of last tokens not to repeat.
-            repeat_penalty: Penalty for repeated tokens.
-            temperature: Sampling temperature.
-            stop_sequences: List of stop sequences.
-            max_tokens: Maximum number of tokens to generate.
-            top_k: Top-k sampling parameter.
-            top_p: Top-p (nucleus) sampling parameter.
-            min_p: Minimum probability for nucleus sampling.
-            answer_format: Format for the answer.
-        """
-        self.seed = seed
-        self.ctx_size = ctx_size
-        self.last_n_not_to_repeat = last_n_not_to_repeat
-        self.repeat_penalty = repeat_penalty
-        self.temperature = temperature
-        self.stop_sequences = stop_sequences
-        self.max_tokens = max_tokens
-        self.top_k = top_k
-        self.top_p = top_p
-        self.min_p = min_p
-        self.answer_format = answer_format
+# TODO Generate text in the dict default format, not in the JSONL format.
 
-class Response(DictObject):
+@dataclass()
+class MLLMResponse:
+    """Container for MLLM generation response.
+    
+    Encapsulates the text output from an MLLM along with optional metadata
+    about token usage.
+    
+    Attributes:
+        text: The generated response text from the model.
+        num_tokens: Optional count of tokens in the response (None if not provided by backend).
     """
-    Represents a model response, including the response text and optional token count.
-    """
-    def __init__(
-            self,
-            text: str,
-            num_tokens: Optional[int] = None
-    ) -> None:
-        """
-        Initializes a Response object.
-
-        Args:
-            text: The response text.
-            num_tokens: Number of tokens in the response.
-        """
-        self.text = text
-        self.num_tokens = num_tokens
+    text: str
+    num_tokens: Optional[int] = None
 
 # TODO the JSONL saving logic for the MLLMs is embedded in the text generation logic, decouple it.
 
-# TODO provide MLLM methods with uids, query_idx
+# TODO save the text predictions as separate objects (like for the synthetic diff dataset), the MLLM should consider as individual samples the positive samples (not the variable-sized class-splitted ones). Then, when we need to fetch whole cs-splitted elements used the Grouped Sampler approach (see 'https://aistudio.google.com/app/prompts?state=%7B%22ids%22:%5B%221kDHqSTnRIaWOO7nN4CD9GVARKI44IsXK%22%5D,%22action%22:%22open%22,%22userId%22:%22101546796642867554797%22,%22resourceKeys%22:%7B%7D%7D&usp=sharing'). The MLLM should have no notion of class-splitting.
 
 class MLLMAdapter(ABC):
-    """
-    Base abstract class for implementing **Multimodal Large Language Models**.
+    """Abstract base class for Multimodal Large Language Model adapters.
+    
+    Defines the interface that all MLLM backend implementations must follow.
+    Subclasses should implement model-specific client initialization, prompt
+    preprocessing, and response generation logic.
+    
+    Subclasses must implement:
+        - __init__: Initialize the MLLM client and model
+        - predict_one: Generate response for a single prompt
+        - predict_batch: Generate responses for multiple prompts
     """
     @abstractmethod
     def __init__(self) -> None:
-        """
-        Initializes the MLLM base class and set up the client.
+        """Initialize the MLLM adapter and set up the backend client.
+        
+        Must be implemented by subclasses to configure model-specific
+        clients, authentication, and endpoints.
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses.
         """
         raise NotImplementedError
-    
+
     @abstractmethod
-    def convert_prompt_to_conv(
-        self,
-        user_prompt: list[str | PILImage],
-        system_prompt: str,
-    ) -> Conversation:
-        """
-        Converts user and system prompts to a conversation format.
-
-        Args:
-            user_prompt: List of user prompt strings or images.
-            system_prompt: System prompt string.
-
-        Returns:
-            Conversation object.
-        """
-        raise NotImplementedError
-    
-    @abstractmethod
-    async def generate_response(
-        self,
-        conversation: Conversation,
-        gen_params: GenParams,
-        stream: bool = False
-    )-> Response | AsyncGenerator[Response, None]:
-        """
-        Generates a response to a conversation.
-
-        Args:
-            conversation: The conversation object.
-            gen_params: Generation parameters.
-            stream: Whether to stream the response.
-
-        Returns:
-            Response object or async generator of responses.
-        """
-        raise NotImplementedError
-    
-    async def generate_response_batch(
-            self,
-            conversations: list[Prompt],
-            gen_params: GenParams,
-    ) -> list[Response]:
-        """
-        Generates responses for a batch of conversations.
-
-        Args:
-            conversations: List of conversation prompts.
-            gen_params: Generation parameters.
-
-        Returns:
-            List of Response objects.
-        """
-        tasks = [self.generate_response(
-            conv,
-            gen_params=gen_params,
-            stream=False
-            )
-            for conv in conversations
-        ]
-        return await asyncio.gather(*tasks)
-    
     async def predict_one(
             self,
-            query_prompt: Prompt,
-            query_idx: int,
-            gen_params: GenParams,
-            system_prompt: str = None,
-            only_text: bool = False,
-            parse_to_dict: bool = False,
-    ) -> tuple[int, Any]:
+            prompt: Prompt,
+            gen_params: MLLMGenParams,
+            system_prompt: Optional[str] = None,
+    ) -> MLLMResponse:
+        """Generate a response for a single prompt (async).
+        
+        Args:
+            prompt: The input prompt (can be text, list of text/images).
+            gen_params: Generation parameters controlling model behavior.
+            system_prompt: Optional system instruction to guide model behavior.
+        
+        Returns:
+            MLLMResponse containing the generated text and token count.
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses.
+        """
+        raise NotImplementedError
+    
+    @abstractmethod
+    async def predict_batch(
+            self,
+            prompts: list[Prompt],
+            gen_params: MLLMGenParams,
+            system_prompt: Optional[str] = None,
+    ) -> list[MLLMResponse]:
+        """Generate responses for a batch of prompts concurrently (async).
+        
+        Processes multiple prompts in parallel for efficient batch inference.
+        All prompts share the same generation parameters and system prompt.
+
+        Args:
+            prompts: List of input prompts (each can be text or list of text/images).
+            gen_params: Generation parameters applied to all prompts.
+            system_prompt: Optional system instruction applied to all prompts.
+
+        Returns:
+            List of MLLMResponse objects, one for each input prompt in order.
+        
+        Raises:
+            NotImplementedError: Must be implemented by subclasses.
+        """
+        raise NotImplementedError
+    
+
+MLLM_REGISTRY = Registry[MLLMAdapter]()
+
+
+class OllamaMLLMAdapter(MLLMAdapter):
+    """Ollama backend adapter for multimodal large language models.
+    
+    Provides integration with Ollama's local/self-hosted MLLM backend.
+    Handles conversation formatting, image encoding to base64, and
+    asynchronous response generation using the Ollama API.
+    
+    Attributes:
+        model: Name of the Ollama model to use.
+        http_endpoint: HTTP endpoint URL for the Ollama server.
+        client: Async Ollama client instance.
+    """
+    def __init__(
+            self,
+            model_name: str,
+            http_endpoint: str
+    ) -> None:
+        """Initialize the Ollama MLLM adapter.
+
+        Args:
+            model_name: Name of the Ollama model (e.g., 'llava', 'gemma3:4b-it').
+            http_endpoint: HTTP endpoint URL for the Ollama server (e.g., 'http://localhost:11434').
+        """
+        self.model = model_name
+        self.http_endpoint = http_endpoint
+        self.client = self._create_client(http_endpoint=http_endpoint, async_=True)
+
+    async def predict_one(
+            self,
+            prompt: Prompt,
+            gen_params: MLLMGenParams,
+            system_prompt: Optional[str] = None,
+    ) -> MLLMResponse:
         """
         Predicts a response for a single prompt.
 
         Args:
-            query_prompt: The prompt to predict for.
-            query_idx: Index of the query.
+            prompt: The prompt to predict for.
             gen_params: Generation parameters.
             system_prompt: Optional system prompt.
-            only_text: Whether to return only text.
-            parse_to_dict: Whether to parse output to dict.
 
         Returns:
-            Dictionary with image index and content.
+            query_idx: out dictionary entry
         """
+        conv = self._preprocess_prompt(prompt, system_prompt)
         
-        conv = self.convert_prompt_to_conv(query_prompt, system_prompt)
-        
-        answer_response: Response = await self.generate_response(
-            conv,
-            gen_params=gen_params,
-            stream=False
-        )
-        
-        out: Response = self.adapt_response(answer_response)
-        out = self.process_response(out, only_text=only_text, parse_to_dict=parse_to_dict)
+        response: MLLMResponse = await self._generate_response(conv, gen_params=gen_params)
 
-        return {"img_idx": query_idx, "content": out}
-    
-    async def _predict_batch(
+        return response  
+
+    async def predict_batch(
             self,
-            query_prompts: list[Prompt],
-            query_idxs: list[int],
-            gen_params: GenParams,
+            prompts: list[Prompt],
+            gen_params: MLLMGenParams,
             system_prompt: Optional[str] = None,
-            only_text: bool = False,
-            parse_to_dict: bool = False,
-    ) -> list[tuple[int, Response]]:
+    ) -> list[MLLMResponse]:
         """
         Predicts responses for a batch of prompts.
 
@@ -223,534 +229,177 @@ class MLLMAdapter(ABC):
             query_idxs: List of query indices.
             gen_params: Generation parameters.
             system_prompt: Optional system prompt.
-            only_text: Whether to return only text.
-            parse_to_dict: Whether to parse output to dict.
 
         Returns:
-            List of dictionaries with image index and content.
+            List of dictionaries with query index and content.
         """
-        
-        convs = [self.convert_prompt_to_conv(
-            inf_p,
-            system_prompt)
-            for inf_p in query_prompts]
-        
-        answer_responses = await self.generate_response_batch(
-            convs,
-            gen_params,
-        )
-        
-        outs: Response = [self.adapt_response(a_resp) for a_resp in answer_responses]
-        outs = [self.process_response(o, only_text=only_text, parse_to_dict=parse_to_dict) for o in outs]
+        convs: list[Conversation] = [self._preprocess_prompt(prompt, system_prompt) for prompt in prompts]
 
-        return [{"img_idx": i, "content": o} for i, o in zip(query_idxs, outs)]
+        responses: list[MLLMResponse] = await self._generate_response_batch(convs, gen_params)
 
-    async def predict_many(
-            self,
-            query_prompts: list[Prompt],
-            query_idxs: list[int],
-            gen_params: GenParams,
-            system_prompt: Optional[str] = None,
-            only_text: bool = False,
-            parse_to_dict: bool = False,
-            batch_size: Optional[int] = None,
-            cooldown_period: float = 0.0
-    ) -> list[tuple[int, Response]]:
-        """
-        Predicts responses for many prompts, optionally in batches.
-
-        Args:
-            query_prompts: List of prompts.
-            query_idxs: List of query indices.
-            gen_params: Generation parameters.
-            system_prompt: Optional system prompt.
-            only_text: Whether to return only text.
-            parse_to_dict: Whether to parse output to dict.
-            batch_size: Batch size for processing.
-            cooldown_period: Cooldown period between batches.
-
-        Returns:
-            List of dictionaries with image index and content.
-        """
-        epoch_answer_list = []
-        if batch_size is not None:
-            zipped_query_batches = batch_list(zip(query_idxs, query_prompts), batch_size)
-
-            for step, batch in my_tqdm(zipped_query_batches):
-
-                if step not in [0, len(zipped_query_batches)]: 
-                    time.sleep(cooldown_period)
-                img_idx_batch, eval_query_batch = zip(*batch)
-
-                answer_pr_batch = await self._predict_batch(
-                    eval_query_batch,
-                    img_idx_batch,
-                    gen_params=gen_params,
-                    system_prompt=system_prompt,
-                    only_text=only_text,
-                    parse_to_dict=parse_to_dict
-                )
-
-                epoch_answer_list.extend(answer_pr_batch)
-        else:
-            for _, (img_idx, q_p) in my_tqdm(zip(query_idxs, query_prompts)):  
-
-                answer_pr = await self.predict_one(
-                    q_p,
-                    img_idx,
-                    gen_params=gen_params,
-                    system_prompt=system_prompt,
-                    only_text=only_text,
-                    parse_to_dict=parse_to_dict
-                )
-                
-                epoch_answer_list.append(answer_pr)
-
-        return epoch_answer_list
+        return responses
     
-    async def predict_cs_one(
+    async def _generate_response(
             self,
-            class_splitted_query_prompt: dict[int, list[Prompt]],
-            query_idx: int,
-            gen_params: GenParams,
-            system_prompt: str = None,
-            only_text: bool = False,
-            parse_to_dict: bool = False,
-            splits_in_parallel: bool = True,
-    ) -> dict:
-        """
-        Predicts for a single prompt with class splits.
+            conversation: Conversation,
+            gen_params: MLLMGenParams,
+    ) -> MLLMResponse:
+        """Generate a response using the Ollama chat API.
+        
+        Internal method that calls the Ollama client with formatted conversation
+        and generation parameters.
 
         Args:
-            class_splitted_query_prompt: Dictionary of class to prompt list.
-            query_idx: Index of the query.
-            gen_params: Generation parameters.
-            system_prompt: Optional system prompt.
-            only_text: Whether to return only text.
-            parse_to_dict: Whether to parse output to dict.
-            splits_in_parallel: Whether to process splits in parallel.
+            conversation: Formatted conversation with role/content/images structure.
+            gen_params: Generation parameters (temperature, top_p, seed, etc.).
 
         Returns:
-            Dictionary with image index and class-split content.
+            MLLMResponse containing the generated text.
         """
-        
-        outs = {"img_idx": query_idx, "content": dict()}
-
-        significant_classes = list(class_splitted_query_prompt.keys())
-        query_prompts = list(class_splitted_query_prompt.values())
-
-        if splits_in_parallel:
-            class_splitted_answer_pr = await self._predict_batch(
-                query_prompts,
-                query_idxs=[query_idx]*len(significant_classes),
-                gen_params=gen_params,
-                system_prompt=system_prompt,
-                only_text=only_text,
-                parse_to_dict=parse_to_dict
-            )
-
-            outs["content"] = {c: a["content"] for c, a in zip(significant_classes, class_splitted_answer_pr)}
-        else:
-            for c, q_p in zip(significant_classes, query_prompts):
-                class_splitted_answer_pr = await self.predict_one(
-                    q_p,
-                    query_idx=query_idx,
-                    gen_params=gen_params,
-                    system_prompt=system_prompt,
-                    only_text=only_text,
-                    parse_to_dict=parse_to_dict
-                )
-
-                outs["content"].update({c: class_splitted_answer_pr["content"]})
-        
-        return outs
-    
-    @retry(50, 60, [ServerError])
-    async def _predict_cs_batch(
-            self,
-            class_splitted_query_prompts: list[dict[int, list[Prompt]]],
-            query_idxs: list[int],
-            gen_params: GenParams,
-            system_prompt: Optional[str] = None,
-            only_text: bool = False,
-            parse_to_dict: bool = False,
-            splits_in_parallel: bool = True
-    ) -> list[tuple[int, Response]]:
-        """
-        Predicts for a batch of class-splitted prompts.
-
-        Args:
-            class_splitted_query_prompts: List of class-splitted prompts.
-            query_idxs: List of query indices.
-            gen_params: Generation parameters.
-            system_prompt: Optional system prompt.
-            only_text: Whether to return only text.
-            parse_to_dict: Whether to parse output to dict.
-            splits_in_parallel: Whether to process splits in parallel.
-
-        Returns:
-            List of dictionaries with image index and class-split content.
-        """
-        tasks = [self.predict_cs_one(
-            q_p_splitted,
-            query_idx=img_idx,
-            gen_params=gen_params,
-            system_prompt=system_prompt,
-            only_text=only_text,
-            parse_to_dict=parse_to_dict,
-            splits_in_parallel=splits_in_parallel
-        ) for img_idx, q_p_splitted in zip(query_idxs, class_splitted_query_prompts)]
-
-        return await asyncio.gather(*tasks)
-    
-    async def predict_cs_many(
-            self,
-            class_splitted_query_prompts: list[dict[int, list[Prompt]]],
-            query_idxs: list[int],
-            gen_params: GenParams,
-            system_prompt: Optional[str] = None,
-            only_text: bool = False,
-            parse_to_dict: bool = False,
-            splits_in_parallel: bool = True,
-            batch_size: Optional[int] = None,
-            cooldown_period: float = 0.0,
-            use_tqdm: bool = True
-    ) -> list[dict]:
-        """
-        Predicts for many class-splitted prompts, optionally in batches.
-
-        Args:
-            class_splitted_query_prompts: List of class-splitted prompts.
-            query_idxs: List of query indices.
-            gen_params: Generation parameters.
-            system_prompt: Optional system prompt.
-            only_text: Whether to return only text.
-            parse_to_dict: Whether to parse output to dict.
-            splits_in_parallel: Whether to process splits in parallel.
-            batch_size: Batch size for processing.
-            cooldown_period: Cooldown period between batches.
-
-        Returns:
-            List of dictionaries with image index and class-split content.
-        """
-
-        my_tqdm_ = my_tqdm
-        if not use_tqdm:
-            my_tqdm_ = enumerate
-        
-        epoch_answer_list = []
-
-        if batch_size is not None:
-            zipped_query_batches = batch_cs_list(zip(query_idxs, class_splitted_query_prompts), batch_size)
-
-            for step, batch in my_tqdm_(zipped_query_batches):
-
-                if step not in [0, len(zipped_query_batches)]:
-                    time.sleep(cooldown_period)
-                
-                img_idx_batch, query_prompt_batch = zip(*batch)
-
-                answer_pr_batch = await self._predict_cs_batch(
-                    query_prompt_batch,
-                    img_idx_batch,
-                    gen_params=gen_params,
-                    only_text=only_text,
-                    parse_to_dict=parse_to_dict,
-                    splits_in_parallel=splits_in_parallel
-                )
-
-                epoch_answer_list.extend(answer_pr_batch)
-        else:
-            for _, (img_idx, q_p_class_splitted) in my_tqdm_(zip(query_idxs, class_splitted_query_prompts)):  
-
-                answer_pr = await self.predict_cs_one(
-                    q_p_class_splitted,
-                    img_idx,
-                    gen_params=gen_params,
-                    system_prompt=system_prompt,
-                    only_text=only_text,
-                    parse_to_dict=parse_to_dict,
-                    splits_in_parallel=splits_in_parallel
-                )
-
-                epoch_answer_list.append(answer_pr)
-
-        return epoch_answer_list
-    
-    async def evaluate_cs_one(
-            self,
-            class_splitted_eval_prompt: dict[int, Prompt],
-            query_idx: int,
-            gen_params: GenParams,
-            system_prompt: str = None,
-            only_text: bool = False,
-            parse_to_dict: Optional[bool] = False,
-    ) -> dict:
-        """
-        Evaluates a single class-splitted prompt.
-
-        Args:
-            class_splitted_eval_prompt: Dictionary of class to prompt.
-            query_idx: Index of the query.
-            gen_params: Generation parameters.
-            system_prompt: Optional system prompt.
-            only_text: Whether to return only text.
-            parse_to_dict: Whether to parse output to dict.
-
-        Returns:
-            Dictionary with image index and evaluation content.
-        """
-        
-        outs = {"img_idx": query_idx, "content": None}
-
-        significant_classes = list(class_splitted_eval_prompt.keys())
-        eval_prompts = list(class_splitted_eval_prompt.values())
-
-        class_splitted_eval_pr = await self.evaluate_batch(
-            eval_prompts,
-            query_idxs=[query_idx]*len(class_splitted_eval_prompt),
-            gen_params=gen_params,
-            system_prompt=system_prompt,
-            only_text=only_text,
-            parse_to_dict=parse_to_dict
+        ollama_response: ollama.ChatResponse = await self.client.chat(
+            model=self.model, 
+            messages=conversation,
+            options={
+                "num_ctx": gen_params.ctx_size,
+                "repeat_last_n": gen_params.last_n_not_to_repeat,
+                "repeat_penalty": gen_params.repeat_penalty,
+                "temperature": gen_params.temperature,
+                "seed": gen_params.seed,
+                "stop": gen_params.stop_sequences,
+                "num_predict": gen_params.max_tokens,
+                "top_k": gen_params.top_k,
+                "top_p": gen_params.top_p,
+                "min_p": gen_params.min_p,
+            },
+            format=gen_params.answer_format,
         )
 
-        outs["content"] = {c: a["content"] for c, a in zip(significant_classes, class_splitted_eval_pr)}
+        response: MLLMResponse = self._adapt_response(ollama_response)
 
-        return outs
-    
-    async def evaluate_cs_batch(
+        return response
+
+    async def _generate_response_batch(
             self,
-            class_splitted_eval_prompts: list[dict[int, Prompt]],
-            query_idxs: int,
-            gen_params: GenParams,
-            system_prompt: str = None,
-            only_text: bool = False,
-            parse_to_dict: Optional[bool] = False,
-    ) -> dict:
-        """
-        Evaluates a batch of class-splitted prompts.
-
-        Args:
-            class_splitted_eval_prompts: List of class-splitted evaluation prompts.
-            query_idxs: List of query indices.
-            gen_params: Generation parameters.
-            system_prompt: Optional system prompt.
-            only_text: Whether to return only text.
-            parse_to_dict: Whether to parse output to dict.
-
-        Returns:
-            List of dictionaries with image index and evaluation content.
-        """
+            conversations: list[Conversation],
+            gen_params: MLLMGenParams,
+    ) -> list[MLLMResponse]:
+        """Generate responses for multiple conversations concurrently.
         
-        tasks = [self.evaluate_cs_one(
-            e_p_splitted,
-            query_idx=img_idx,
-            gen_params=gen_params,
-            system_prompt=system_prompt,
-            only_text=only_text,
-            parse_to_dict=parse_to_dict
-        ) for img_idx, e_p_splitted in zip(query_idxs, class_splitted_eval_prompts)]
-
-        return await asyncio.gather(*tasks)
-
-    async def print_stream(
-            self,
-            stream_gen: AsyncGenerator[Response, None]
-    ) -> None:
-        """
-        Prints a streamed response to stdout.
+        Internal method that creates async tasks for each conversation and
+        gathers results in parallel.
 
         Args:
-            stream_gen: Async generator of Response objects.
-        """
-        async for chunk in stream_gen:
-            print(chunk["message"]["content"], end='', flush=True)
-        print()
-    
-    @abstractmethod
-    def adapt_response(
-            self,
-            response: Any
-    ) -> Response:
-        """
-        Adapts a raw model response to a Response object.
-
-        Args:
-            response: The raw response from the model.
+            conversations: List of formatted conversations (role/content/images).
+            gen_params: Generation parameters applied to all conversations.
 
         Returns:
-            Adapted Response object.
+            List of MLLMResponse objects in the same order as input conversations.
         """
-        raise NotImplementedError
-
-    def process_response(
-            self,
-            response: Response,
-            only_text: bool = False,
-            parse_to_dict: bool = False
-    ) -> str | dict[str, Any]:
-        """
-        Processes a Response object, optionally extracting only text or parsing to dict.
-
-        Args:
-            response: The Response object.
-            only_text: Whether to return only text.
-            parse_to_dict: Whether to parse output to dict.
-
-        Returns:
-            Processed response as string or dictionary.
-        """
-        if only_text is False and parse_to_dict is True:
-            print("WARNING: 'parse_to_dict' is True but not applied because 'only_text' is False.")
-        out = response
-        if only_text is True:
-            out: str = out.text
-            out: dict[str, Any] = parse_eval_text_to_dict(out) if parse_to_dict else out
-        return out
+        tasks = [self._generate_response(conv, gen_params=gen_params) for conv in conversations]
+        responses: list[MLLMResponse] = await asyncio.gather(*tasks)
+        return responses
     
-
-MLLM_REGISTRY = Registry[MLLMAdapter]()
-
-
-# TODO refactor the client creation procedure
-class OllamaMLLMAdapter(MLLMAdapter):
-    """
-    Multimodal Large Language Model implementation for Ollama backend.
-    Handles model initialization and client setup for Ollama models.
-    """
-    def __init__(
-            self,
-            model_name: str,
-            http_endpoint: str
-    ) -> None:
-        """
-        Initializes OllamaMLLM with model name and optional client.
-
-        Args:
-            model_name: Name of the model.
-            client: Optional Ollama client.
-        """
-        self.model = model_name
-        self.http_endpoint = http_endpoint
-        self.client = self.get_client(http_endpoint=http_endpoint, async_=True)
-
-    def get_client(
+    def _create_client(
             self,
             http_endpoint: str,
             async_: bool = True
-    ) -> ollama.Client:
-        """
-        Gets an Ollama client instance.
+    ) -> ollama.Client | ollama.AsyncClient:
+        """Create an Ollama client instance.
+        
+        Factory method to instantiate either sync or async Ollama client.
 
         Args:
-            http_endpoint: Host address for the Ollama server.
-            async_: Whether to use the async client.
+            http_endpoint: HTTP endpoint URL for the Ollama server (e.g., 'http://localhost:11434').
+            async_: Whether to create an async client (True) or sync client (False).
 
         Returns:
-            Ollama client instance.
+            ollama.AsyncClient if async_ is True, otherwise ollama.Client.
         """
         if async_:
-            client = ollama.Client(host=http_endpoint)
-        else:
             client = ollama.AsyncClient(host=http_endpoint)
+        else:
+            client = ollama.Client(host=http_endpoint)
         return client
     
-    def convert_prompt_to_conv(
+    
+    # TODO split the internal logic of this method into simpler functions.
+    def _preprocess_prompt(
             self,
             user_prompt: Prompt,
-            system_prompt: str
+            system_prompt: Optional[str] = None
     ) -> Conversation:
-        """
-        Converts user and system prompts to Ollama conversation format.
+        """Convert user and system prompts to Ollama conversation format.
+        
+        Processes the input prompt by:
+        1. Extracting PIL images and encoding them to base64
+        2. Replacing image objects with '[img]' placeholders
+        3. Joining text pieces into a single string
+        4. Adding newlines between images and text
+        5. Formatting as Ollama conversation structure
 
         Args:
-            user_prompt: User prompt (string or list).
-            system_prompt: System prompt string.
+            user_prompt: User prompt (string, or list of strings and PIL.Image objects).
+            system_prompt: Optional system instruction string.
 
         Returns:
-            Conversation object for Ollama.
+            Conversation list with 'system' (if provided) and 'user' turns,
+            where user turn includes content string and base64-encoded images.
+        
+        Raises:
+            ValueError: If string prompt contains images.
+            TypeError: If prompt contains non-string, non-image elements after processing.
         """
 
-        images_base64 = [image_to_base64(item) for item in user_prompt if isinstance(item, PILImage)] # extract list of images from prompt
+        images_base64 = [image_to_base64(item) for item in user_prompt if isinstance(item, Image.Image)] # extract list of images from prompt
 
         if isinstance(user_prompt, str) and len(images_base64) != 0:
             raise ValueError(f"If the user prompt is of type 'str', there must be no images: instead there are {len(images_base64)} images.")
         if isinstance(user_prompt, list):
-            user_prompt = ["[img]" if isinstance(item, PILImage) else item for item in user_prompt] # replaces all images with "[img]"
+            user_prompt = ["[img]" if isinstance(item, Image.Image) else item for item in user_prompt] # replaces all images with "[img]"
         if any([not isinstance(piece, str) for piece in user_prompt]):
             print(user_prompt)
             raise TypeError(f"After having substitued PIL images with the placeholder '[img]', some pieces are not of type 'str'.")
         if isinstance(user_prompt, list):
             user_prompt = "".join(user_prompt)
         if not isinstance(user_prompt, str):
-            raise TypeError(f"user prompt content fed to LMML must be of type 'str', it is of type '{type(user_prompt)}'.")
-        user_prompt = re.sub(r'(\[img\]+)(?!\[img\]|$)', r'\1\n', user_prompt)
+            raise TypeError(f"user prompt content fed to MLLM must be of type 'str', it is of type '{type(user_prompt)}'.")
+        user_prompt = re.sub(r'(\[img\]+)(?!\[img\]|$)', r'\1\n', user_prompt) # adds a '\n' between an image if it is followed by text.
 
         conversation = []
-        if system_prompt is not None:
-            conversation.append({"role": "system_prompt", "content": system_prompt}) # add system turn if present
-        conversation.append({"role": "user", "content": user_prompt, "images": images_base64}) # add user turn
+        if system_prompt:
+            conversation.append({'role': 'system', 'content': system_prompt}) # add system turn if present
+        conversation.append({'role': 'user', 'content': user_prompt, 'images': images_base64}) # add user turn
 
         return conversation
     
-    async def generate_response(
+    def _adapt_response(
             self,
-            conversation: Conversation,
-            gen_params: GenParams,
-            stream: bool = False,
-    ) -> ollama.ChatResponse | Generator[ollama.ChatResponse, None, ollama.ChatResponse] | AsyncGenerator[ollama.ChatResponse, None]:
-        """
-        Generates a response using Ollama.
-
-        Args:
-            conversation: Conversation object for Ollama.
-            gen_params: Generation parameters.
-            stream: Whether to stream the response.
-
-        Returns:
-            Ollama ChatResponse or generator/async generator of responses.
-        """
+            ollama_response: ollama.ChatResponse
+    ) -> MLLMResponse:
+        """Convert Ollama ChatResponse to MLLMResponse format.
         
-        response_or_generator: ollama.ChatResponse = await self.client.chat(
-            model=self.model, 
-            messages=conversation,
-            options={
-                "num_ctx": gen_params["ctx_size"] ,
-                "repeat_last_n": gen_params["last_n_not_to_repeat"],
-                "repeat_penalty": gen_params["repeat_penalty"],
-                "temperature": gen_params["temperature"],
-                "seed": gen_params["seed"],
-                "stop": gen_params["stop_sequences"],
-                "num_predict": gen_params["max_tokens"],
-                "top_k": gen_params["top_k"],
-                "top_p": gen_params["top_p"],
-                "min_p": gen_params["min_p"],
-            },
-            format=gen_params["answer_format"],
-            stream=stream
-        ) # generate response or generator of responses
-
-        return response_or_generator    
-    
-    def adapt_response(
-            self,
-            response: ollama.ChatResponse
-    ) -> Response:
-        """
-        Adapts an Ollama ChatResponse to a Response object.
+        Extracts the message content from Ollama's response structure.
 
         Args:
-            response: Ollama ChatResponse object.
+            ollama_response: Raw response dictionary from Ollama chat API.
 
         Returns:
-            Adapted Response object.
+            MLLMResponse containing the message content text.
         """
-        new_response: Response = Response(
-            text=response["message"]["content"],
+        response: MLLMResponse = MLLMResponse(
+            text=ollama_response["message"]["content"],
             num_tokens=None
         )
-        return new_response
+        return response
+    
+    async def load_model(self) -> None:
+        """Pre-load the model into memory by making a dummy prediction.
+        
+        Sends an empty prompt to warm up the model and load it into memory.
+        Useful for reducing latency on the first real prediction.
+        """
+        await self.predict_one([""], MLLMGenParams())
+
 
 valid_ollama_model_names: list[str] = [
     'gemma3:4b-it-q4_K_M',
@@ -765,137 +414,205 @@ valid_ollama_model_names: list[str] = [
     'hf.co/unsloth/InternVL3-14B-Instruct-GGUF:Q4_K_M'
 ]
 
-ollama_http_endpoint: str = f'http://{CONFIG['ollama_container_name']}:11434'
+# TODO when you have refactored configs, do not hardcode this.
+ollama_http_endpoint: str = f'http://{CONFIG["ollama_container_name"]}:11434'
 
 for model_name in valid_ollama_model_names:
-    MLLM_REGISTRY.add(model_name, OllamaMLLMAdapter(model_name, http_endpoint=ollama_http_endpoint))
+    MLLM_REGISTRY.add(model_name, partial(OllamaMLLMAdapter, model_name=model_name, http_endpoint=ollama_http_endpoint))
+
 
 class GoogleAIStudioMLLMAdapter(MLLMAdapter):
+    """Google AI Studio backend adapter for multimodal large language models.
+    
+    Provides integration with Google's Gemini models through the GenAI API.
+    Handles native multimodal prompt formatting and asynchronous response
+    generation using Google's API client.
+    
+    Attributes:
+        model: Name of the Google model to use (e.g., 'gemini-2.0-flash').
+        client: Google GenAI client instance configured with API key.
+    """
     def __init__(
             self,
             model_name: str,
-            client: Optional[genai.Client] = None,
-            api_key: str = None
+            api_key: str
     ) -> None:
-        """
-        Initializes GoogleAIStudioMLLM with model name, client, and API key.
+        """Initialize the Google AI Studio MLLM adapter.
 
         Args:
-            model_name: Name of the model.
-            client: Optional Google GenAI client.
-            api_key: API key for authentication.
+            model_name: Name of the Google model (e.g., 'gemini-2.0-flash').
+            api_key: Google API key for authentication and access.
         """
         self.model = model_name
-        if client is not None and api_key is not None:
-            print("WARNING: 'api_key' is specified but unused because the client has been set.")
-        self.client = client or self.get_client(api_key=api_key)
+        self.client = self._create_client(api_key=api_key)
 
-    def get_client(
+    async def predict_one(
+            self,
+            prompt: Prompt,
+            gen_params: MLLMGenParams,
+            system_prompt: Optional[str] = None,
+    ) -> MLLMResponse:
+        """Generate a response for a single prompt using Google AI Studio.
+
+        Args:
+            prompt: The input prompt (text, list of text/images, or native Google format).
+            gen_params: Generation parameters controlling model behavior.
+            system_prompt: Optional system instruction to guide the model.
+
+        Returns:
+            MLLMResponse containing the generated text and token count.
+        """
+        response: MLLMResponse = await self._generate_response(prompt, gen_params=gen_params, system_prompt=system_prompt)
+
+        return response
+
+    async def predict_batch(
+            self,
+            prompts: list[Prompt],
+            gen_params: MLLMGenParams,
+            system_prompt: Optional[str] = None,
+    ) -> list[MLLMResponse]:
+        """Generate responses for a batch of prompts concurrently using Google AI Studio.
+        
+        Processes multiple prompts in parallel using asyncio.gather for efficient
+        batch inference.
+
+        Args:
+            prompts: List of input prompts (each can be text, list of text/images, or native format).
+            gen_params: Generation parameters applied to all prompts.
+            system_prompt: Optional system instruction applied to all prompts.
+
+        Returns:
+            List of MLLMResponse objects, one for each input prompt in order.
+        """
+        responses: list[MLLMResponse] = await self._generate_response_batch(prompts, gen_params, system_prompt)
+
+        return responses
+    
+    def _create_client(
             self,
             api_key: str
     ) -> genai.Client:
-        """
-        Gets a Google GenAI client instance.
+        """Create a Google GenAI client instance.
+        
+        Factory method to instantiate the Google GenAI client with authentication.
 
         Args:
-            api_key: API key for authentication.
+            api_key: Google API key for authentication and authorization.
 
         Returns:
-            Google GenAI client instance.
+            Configured genai.Client instance ready for API calls.
         """
         client = genai.Client(api_key=api_key)
         return client
-    
-    def convert_prompt_to_conv(
+
+    async def _generate_response(
             self,
             user_prompt: Prompt,
-            system_prompt: str
-    ) -> Prompt:
-        """
-        Converts user and system prompts to Google GenAI format.
-
-        Args:
-            user_prompt: User prompt.
-            system_prompt: System prompt string.
-
-        Returns:
-            Prompt for Google GenAI.
-        """
-        return user_prompt
-
-    async def generate_response(
-            self,
-            user_prompt: Prompt,
-            gen_params: GenParams,
+            gen_params: MLLMGenParams,
             system_prompt: Optional[str] = None,
-            stream: bool = False
-    ) -> genai_types.GenerateContentResponse | AsyncGenerator[genai_types.GenerateContentResponse, None]:    
-        """
-        Generates a response using Google GenAI.
+    ) -> MLLMResponse:
+        """Generate a response using the Google GenAI API.
+        
+        Internal method that calls the Google GenAI client with the prompt
+        and generation configuration.
 
         Args:
-            user_prompt: Prompt for Google GenAI.
-            gen_params: Generation parameters.
-            system_prompt: Optional system prompt.
-            stream: Whether to stream the response.
+            user_prompt: Input prompt in Google's native format (supports multimodal).
+            gen_params: Generation parameters (temperature, top_p, max_tokens, etc.).
+            system_prompt: Optional system instruction passed as system_instruction.
 
         Returns:
-            Google GenAI response or async generator of responses.
+            MLLMResponse containing the generated text.
         """
-        response = await self.client.aio.models.generate_content(
+        genai_response = await self.client.aio.models.generate_content(
             model=self.model,
             contents=user_prompt,
             config=genai_types.GenerateContentConfig(
                 system_instruction=system_prompt,
-                temperature=gen_params["temperature"],
-                top_p=gen_params["top_p"],
-                top_k=gen_params["top_k"],
-                maxOutputTokens=gen_params["max_tokens"],
-                stop_sequences=gen_params["stop_sequences"],
-                seed=CONFIG["seed"]
+                temperature=gen_params.temperature,
+                top_p=gen_params.top_p,
+                top_k=gen_params.top_k,
+                maxOutputTokens=gen_params.max_tokens,
+                stop_sequences=gen_params.stop_sequences,
+                seed=gen_params.seed
             ),
         )
 
-        return response
+        response: MLLMResponse = self._adapt_response(genai_response)
 
-    def adapt_response(
+        return response
+    
+    async def _generate_response_batch(
             self,
-            response: genai_types.GenerateContentResponse
-    ) -> Response:
-        """
-        Adapts a Google GenAI response to a Response object.
+            prompts: list[Prompt],
+            gen_params: MLLMGenParams,
+            system_prompt: Optional[str] = None,
+    ) -> list[MLLMResponse]:
+        """Generate responses for multiple prompts concurrently.
+        
+        Internal method that creates async tasks for each prompt and
+        gathers results in parallel.
 
         Args:
-            response: Google GenAI response object.
+            prompts: List of input prompts in Google's native format.
+            gen_params: Generation parameters applied to all prompts.
+            system_prompt: Optional system instruction applied to all prompts.
 
         Returns:
-            Adapted Response object.
+            List of MLLMResponse objects in the same order as input prompts.
         """
-        new_response: Response = Response(
-            text=response.text,
-            num_tokens=None
-        )
-        return new_response
-    
-class HuggingFaceMLLM(MLLMAdapter):
-    """
-    Multimodal Large Language Model implementation for HuggingFace backend.
-    Handles model initialization for HuggingFace models.
-    """
-    def __init__(
+        tasks = [self._generate_response(prompt, gen_params=gen_params, system_prompt=system_prompt) for prompt in prompts]
+        responses: list[MLLMResponse] = await asyncio.gather(*tasks)
+        return responses
+
+    def _adapt_response(
             self,
-            model_name: str,
-    ) -> None:
-        """
-        Initialize HuggingFaceMLLM with model name.
+            genai_response: genai_types.GenerateContentResponse
+    ) -> MLLMResponse:
+        """Convert Google GenAI response to MLLMResponse format.
+        
+        Extracts the text content from Google's response structure.
 
         Args:
-            model_name: Name of the model.
+            genai_response: Raw GenerateContentResponse from Google GenAI API.
+
+        Returns:
+            MLLMResponse containing the response text.
         """
-        self.model = model_name
-        pass
+        response: MLLMResponse = MLLMResponse(
+            text=genai_response.text,
+            num_tokens=None
+        )
+        return response
+    
+valid_googleaistudio_model_names: list[str] = [
+    'gemini-2.0-flash',
+]
+
+for model_name in valid_googleaistudio_model_names:
+    MLLM_REGISTRY.add(model_name, partial(GoogleAIStudioMLLMAdapter, model_name=model_name))
+
+class HuggingFaceMLLM(MLLMAdapter):
+    """HuggingFace backend adapter for multimodal large language models.
+    
+    Placeholder for future implementation of HuggingFace Transformers integration.
+    Will provide support for locally-hosted or HF-hosted multimodal models.
+    
+    TODO: Implement HuggingFace adapter with:
+        - Model loading from HuggingFace Hub
+        - Local inference support
+        - Processor/tokenizer handling
+        - Image preprocessing pipeline
+    """
+    ...
 
 def main() -> None:
+    """Main entry point for the module.
+    
+    Currently a placeholder. Can be used for testing MLLM adapters
+    or running example inference.
+    """
     pass
     
 if __name__ == '__main__':
