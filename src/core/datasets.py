@@ -2,7 +2,7 @@ from core.config import *
 from core.data import get_image, get_mask
 from core.color_map import full_color_map
 from core.torch_utils import map_tensors
-from core.data import is_state
+from core.data import is_state, JsonlIO
 
 import numpy as np
 import random
@@ -30,31 +30,34 @@ class SegDataset(Dataset, ABC):
     def get_sc(
         self,
         path: Path,
+        device: torch.device,
         resize_size: None | int | tuple[int, int] = None,
         resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
         center_crop: bool = True
     ) -> torch.Tensor:
-        return get_image(path, resize_size, resize_mode, center_crop)
+        return get_image(path, device, resize_size, resize_mode, center_crop)
     
     def get_gt(
         self,
         path: str,
+        device: torch.device,
         class_map: Optional[dict] = None,
         resize_size: Optional[int | tuple[int, int]] = None,
         resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
         center_crop: Optional[bool] = None
     ) -> torch.Tensor:
-        return get_mask(path, class_map, resize_size, resize_mode, center_crop)
+        return get_mask(path, device, class_map, resize_size, resize_mode, center_crop)
 
     def get_pr(
         self,
         path: str,
+        device: torch.device,
         class_map: Optional[dict] = None,
         resize_size: Optional[int | tuple[int, int]] = None,
         resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
         center_crop: Optional[bool] = None
     ) -> torch.Tensor:
-        return get_mask(path, class_map, resize_size, resize_mode, center_crop)
+        return get_mask(path, device, class_map, resize_size, resize_mode, center_crop)
 
 def download_VOC2012(
         root_path: Path
@@ -65,7 +68,7 @@ def download_VOC2012(
 class VOC2012SegDataset(SegDataset):
     def get_image_UIDs(
             self,
-            seed: int, # TODO set this CONFIG['seed']
+            seed: int, # TODO set this CONFIGto ['seed']
             split: Literal['trainval',
                            'train'
                            'val',
@@ -97,7 +100,7 @@ class VOC2012SegDataset(SegDataset):
         image_UIDs = sorted(image_UIDs)
         if prompt_split:
             to_shuffle = image_UIDs[23:]
-            rng = random.Random()
+            rng = random.Random(seed)
             rng.shuffle(to_shuffle)
             image_UIDs[23:] = to_shuffle
             image_UIDs = image_UIDs[:80] # NOTE hard-coded
@@ -110,6 +113,7 @@ class VOC2012SegDataset(SegDataset):
                            'val',
                            'trainval',
                            'prompts_split'],
+            device: torch.device,
             resize_size: Optional[int | list[int, int]] = None,
             sc_resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
             mask_resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
@@ -124,6 +128,7 @@ class VOC2012SegDataset(SegDataset):
         self.mask_prs_path = mask_prs_path
         self.split = split
         self.img_idxs = img_idxs
+        self.device = device
 
         self.image_UIDs = self.get_image_UIDs(self.split, uids_to_exclude=uids_to_exclude)
 
@@ -196,19 +201,12 @@ class VOC2012SegDataset(SegDataset):
             self,
             idx: int | list[int] | slice
     ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
-        # scs_paths = np.array([self.sc_root_path / f"{uid}.jpg" for uid in self.image_UIDs])
-        # gts_paths = np.array([self.gt_root_path / f"{uid}.png" for uid in self.image_UIDs])
         self.scs_paths
-        if self.mask_prs_path:
-            if self.img_idxs:
-                prs_paths = np.array([self.mask_prs_path / f'mask_pr_{img_i}.png' for img_i in self.img_idxs])
-            else:
-                prs_paths = np.array([self.mask_prs_path / f'mask_pr_{i}.png' for i, uid in enumerate(self.image_UIDs)])
         if isinstance(idx, int):
-            sc = self.get_sc(path=self.scs_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
-            gt = self.get_gt(path=self.gts_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
+            sc = self.get_sc(path=self.scs_paths[idx], device=self.device, resize_size=self.resize_size, center_crop=self.center_crop)
+            gt = self.get_gt(path=self.gts_paths[idx], device=self.device, class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
             if self.mask_prs_path:
-                pr = self.get_pr(path=prs_paths[idx], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
+                pr = self.get_pr(path=self.prs_paths[idx], device=self.device, class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
                 if self.output_uids:
                     return self.image_UIDs[idx], sc, gt, pr
                 else:
@@ -222,10 +220,10 @@ class VOC2012SegDataset(SegDataset):
             indices = range(*idx.indices(len(self)))
         elif isinstance(idx, list):
             indices = idx
-        scs = [self.get_sc(path=self.scs_paths[i], resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
-        gts = [self.get_gt(path=self.gts_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+        scs = [self.get_sc(path=self.scs_paths[i], device=self.device, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+        gts = [self.get_gt(path=self.gts_paths[i], device=self.device, class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
         if self.mask_prs_path:
-            prs = [self.get_pr(path=prs_paths[i], class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+            prs = [self.get_pr(path=self.prs_paths[i], device=self.device, class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
             if self.output_uids:
                 return self.image_UIDs[indices], scs, gts, prs
             else:
@@ -240,8 +238,8 @@ class VOC2012SegDataset(SegDataset):
             self,
             uid: str
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        sc = self.get_sc(path=self.sc_root_path / f"{uid}.jpg", resize_size=self.resize_size, center_crop=self.center_crop)
-        gt = self.get_gt(path=self.gt_root_path / f"{uid}.png", class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
+        sc = self.get_sc(path=self.sc_root_path / f"{uid}.jpg", device=self.device, resize_size=self.resize_size, center_crop=self.center_crop)
+        gt = self.get_gt(path=self.gt_root_path / f"{uid}.png", device=self.device, class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
         return sc, gt
             
     def get_color_map_dict(
@@ -291,6 +289,7 @@ class COCO2017SegDataset(SegDataset):
         root_path: Path,
         split: Literal['train',
                        'val'],
+        device: torch.device,
         resize_size: Optional[int | list[int, int]] = None,
         sc_resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
         mask_resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
@@ -304,6 +303,7 @@ class COCO2017SegDataset(SegDataset):
                 
         self.root_path = root_path
         self.split = split
+        self.device = device
 
         self.coco = COCO(self.root_path / 'annotations' / f'instances_{self.split}2017.json')
         
@@ -447,9 +447,10 @@ class COCO2017SegDataset(SegDataset):
         resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
         center_crop: Optional[bool] = None
     ) -> torch.Tensor:
-        gt = self._create_COCO_masks(sc_dict)
+        gt: torch.Tensor = self._create_COCO_masks(sc_dict)
+        gt = gt.to(self.device)
         if class_map:
-           gt = map_tensors(gt, class_map) 
+           gt = map_tensors(gt, class_map)
         if resize_size:
             gt = TF.resize(gt, resize_size, resize_mode)
         if center_crop:
@@ -462,7 +463,7 @@ class COCO2017SegDataset(SegDataset):
     ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
         if isinstance(idx, int):
             sc_dict = self.coco.loadImgs([int(self.image_UIDs[idx])])[0] # the output is a singleton list
-            sc = self.get_sc(self.scs_root_path / sc_dict["file_name"], resize_size=self.resize_size, resize_mode=self.sc_resize_mode, center_crop=self.center_crop)
+            sc = self.get_sc(self.scs_root_path / sc_dict["file_name"], self.device, resize_size=self.resize_size, resize_mode=self.sc_resize_mode, center_crop=self.center_crop)
             gt = self.get_gt(sc_dict, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop)
             return sc, gt
         elif isinstance(idx, slice):
@@ -471,7 +472,7 @@ class COCO2017SegDataset(SegDataset):
             indices = idx
         
         scs_dict = self.coco.loadImgs([int(uid) for uid in self.image_UIDs[indices]])
-        scs = [self.get_sc(self.scs_root_path / sc_d["file_name"], resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]            
+        scs = [self.get_sc(self.scs_root_path / sc_d["file_name"], self.device, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]            
         gts = [self.get_gt(sc_d, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]
 
         return scs, gts
@@ -481,9 +482,32 @@ class COCO2017SegDataset(SegDataset):
             uid: str
     ) -> tuple[torch.Tensor, torch.Tensor]:
         sc_dict = self.coco.loadImgs([int(uid)])[0] # the output is a singleton list
-        sc = self.get_sc(self.scs_root_path / sc_dict["file_name"], resize_size=self.resize_size, resize_mode=self.sc_resize_mode, center_crop=self.center_crop)
+        sc = self.get_sc(self.scs_root_path / sc_dict["file_name"], self.device, resize_size=self.resize_size, resize_mode=self.sc_resize_mode, center_crop=self.center_crop)
         gt = self.get_gt(sc_dict, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop)
         return sc, gt
+    
+
+def get_answer_objects(
+        path: Path,
+        idxs: Optional[int | list[int]],
+        jsonlio: JsonlIO,
+        return_state: bool = False,
+        format_to_dict: bool = False
+) -> dict | list[dict]:
+    if idxs is None:
+        answer_gts = jsonlio.get_many_item(path, return_state, format_to_dict)
+        return
+    if isinstance(idxs, int):
+        answer_gt = jsonlio.get_one_item(path, idxs, return_state, format_to_dict)
+        return answer_gt
+    answer_gts = jsonlio.get_many_item(path, return_state, format_to_dict)
+    # if isinstance(idxs, slice):
+        # indices = range(*idxs.indices(len(self)))
+    if isinstance(idxs, list):
+        indices = idxs
+    answer_gts = [gt for i, gt in enumerate(answer_gts) if i in indices]
+    return answer_gts
+
 
 class JSONLDataset(Dataset):
     """

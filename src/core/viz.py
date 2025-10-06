@@ -1,19 +1,23 @@
 from core.config import *
 from core.prompter import Prompt
 from core.torch_utils import blend_tensors
+from core.datasets import JsonlIO, get_answer_objects
 
 from IPython.display import Markdown, display
-from core.path import MISC_PATH
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image
 import torch
-from torch import nn
-from torchvision.transforms.functional import to_pil_image
 import seaborn as sns
+import xarray as xr
+import pandas as pd
+from glob import glob
 import matplotlib.pyplot as plt
 import base64
 from tqdm import tqdm
 import torchmetrics as tm
+from torch import nn
+from torch.utils.data import DataLoader
+from torchvision.transforms.functional import to_pil_image
 
 from core._types import Iterable
 
@@ -119,31 +123,6 @@ def overlay_map(
     overlay_img = to_pil_image(overlay_tensor).convert('RGBA')
     return Image.alpha_composite(background_img, overlay_img).convert('RGB')
 
-def format_image_with_caption(
-        image: Image.Image,
-        caption: str,
-        caption_height: int = 40,
-        font_size: int = 32
-) -> Image.Image:
-    font = ImageFont.truetype(f"{MISC_PATH}/Arial.ttf", size=font_size)
-
-    title_img = Image.new("RGB", (image.width, caption_height), "white")
-    draw = ImageDraw.Draw(title_img)
-
-    # Center the text
-    bbox = draw.textbbox((0, 0), caption, font=font)
-    text_width, text_height = bbox[2] - bbox[0], bbox[3] - bbox[1]
-    text_x = (image.width - text_width) // 2
-    text_y = (caption_height - text_height) // 2
-
-    draw.text((text_x, text_y), caption, fill="black", font=font)
-    
-    concatenated_image = Image.new("RGB", (image.size[0], image.size[1]+caption_height), "white")
-    concatenated_image.paste(image, (0, 0))  # Paste image
-    concatenated_image.paste(title_img, (0, image.size[1]))  # Paste caption below image
-
-    return concatenated_image
-
 def display_token_length_distr(
         token_lengths: list[int],
         bins: int = 20
@@ -212,6 +191,166 @@ def get_image_base64_data(image):
     except Exception as e:
         print(f"Error encoding image to base64: {e}")
         return None, None
+
+def compute_results_da(
+        exp_path: Path,
+        jsonlio: JsonlIO
+) -> xr.DataArray:
+    data_da = None
+
+    var_paths = glob(f"{exp_path}/*.jsonl")
+    var_names = [os.path.splitext(os.path.basename(path))[0] for path in var_paths]
+
+    for var_n, var_p in zip(var_names, var_paths):
+        
+        eval_prs = get_answer_objects(var_p, idxs=None, jsonlio=jsonlio, return_state=False, format_to_dict=True)
+        # eval_prs = get_many_eval_pr(var_p, return_state=False, format_to_dict=True)
+        prs_per_img_idx_df = pd.DataFrame.from_dict(eval_prs, orient='index')
+        prs_per_img_idx_df = prs_per_img_idx_df.sort_index().sort_index(axis=1)
+
+        prs_per_img_idx_pred_df = (prs_per_img_idx_df["pred"] == "correct").astype(float)
+        prs_per_img_idx_score_df = prs_per_img_idx_df["score"]
+        prs_per_img_idx_reason_df = prs_per_img_idx_df["reason"]
+
+        prs_per_img_idx_da = xr.DataArray(
+            [prs_per_img_idx_pred_df, prs_per_img_idx_reason_df, prs_per_img_idx_score_df],
+            coords=[["pred", "reason", "score"], prs_per_img_idx_df.index],
+            dims=["metric", "img_idx"]
+        ).transpose("img_idx", "metric")
+        
+        if data_da is None:
+            coords = [var_names, prs_per_img_idx_df.index, ["pred", "reason", "score"]] # indexes names
+            sorted_coords = [sorted(dim_values) for dim_values in coords]
+            dims = ["var", "img_idx", "metric"] # dimensions names
+            shape = [len(l) for l in sorted_coords]
+            data_da = xr.DataArray(np.empty(shape, dtype=object), coords=sorted_coords, dims=dims)
+
+        data_da.loc[var_n] = prs_per_img_idx_da
+
+    return data_da
+
+def compute_results_da_class_splitted(
+        exp_path: Path,
+        num_classes: int,
+        jsonlio: JsonlIO
+) -> xr.DataArray:
+    data_da = None
+
+    var_paths = glob(f"{exp_path}/*.jsonl")
+    var_names = [os.path.splitext(os.path.basename(path))[0] for path in var_paths]
+
+    for var_n, var_p in zip(var_names, var_paths):
+        
+        eval_prs = get_answer_objects(var_p, idxs=None, jsonlio=jsonlio, return_state=False, format_to_dict=True)
+        prs_per_img_idx_df = pd.DataFrame.from_dict(eval_prs, orient='index')
+        
+        for column in [str(n) for n in range(0, num_classes)]:
+            if column not in prs_per_img_idx_df.columns:
+                prs_per_img_idx_df[column] = pd.NA
+        prs_per_img_idx_df.columns = [int(s) for s in prs_per_img_idx_df.columns]
+        prs_per_img_idx_df = prs_per_img_idx_df.sort_index().sort_index(axis=1)
+
+        prs_per_img_idx_pred_df = prs_per_img_idx_df.map(lambda x: x["pred"] == "correct" if type(x) == dict else None).astype(float)
+        prs_per_img_idx_score_df = prs_per_img_idx_df.map(lambda x: x["score"] if type(x) == dict else None)
+        prs_per_img_idx_reason_df = prs_per_img_idx_df.map(lambda x: x["reason"] if type(x) == dict else None)
+
+        prs_per_img_idx_da = xr.DataArray(
+            [prs_per_img_idx_pred_df, prs_per_img_idx_reason_df, prs_per_img_idx_score_df],
+            coords=[["pred", "reason", "score"], prs_per_img_idx_df.index, prs_per_img_idx_df.columns],
+            dims=["metric", "img_idx", "pos_class"]
+        ).transpose("img_idx", "pos_class", "metric")
+        
+        if data_da is None:
+            coords = [var_names, prs_per_img_idx_df.index, prs_per_img_idx_df.columns, ["pred", "score", "reason"]] # indexes names
+            sorted_coords = [sorted(dim_values) for dim_values in coords]
+            dims = ["var", "img_idx", "pos_class", "metric"] # dimensions names
+            shape = [len(l) for l in sorted_coords]
+            data_da = xr.DataArray(np.empty(shape, dtype=object), coords=sorted_coords, dims=dims)
+
+        data_da.loc[var_n] = prs_per_img_idx_da
+
+    return data_da
+
+def describe_da(
+        data_da: xr.DataArray,
+        dims_to_agg: list[str]
+) -> pd.DataFrame:
+    data_da = data_da.astype("float")
+    stats = {
+        "mean": data_da.mean(dim=dims_to_agg),
+        "std": data_da.std(dim=dims_to_agg, ddof=1),
+        "min": data_da.min(dim=dims_to_agg),
+        "max": data_da.max(dim=dims_to_agg),
+    }
+    # Convert to DataArrays and stack
+    df = xr.concat(stats.values(), dim="stat").assign_coords(stat=list(stats)).to_pandas().transpose()
+    if len(df.shape) > 2: raise AttributeError 
+    return df
+
+def flatten_class_splitted_answers(
+        class_splitted_answers: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    flat_answers = []
+    b = 0
+    for csa in class_splitted_answers:
+        new_answers = list(csa["content"].values())
+        new_answers = [{"img_idx": b+i, "content": a} for i, a in enumerate(new_answers)]
+        flat_answers.extend(new_answers)
+        b += len(new_answers)
+    return flat_answers
+
+def class_pixel_distribution(
+        dl: DataLoader,
+        num_classes: int,
+        device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Computes the pixel-wise class distribution for a segmentation dataset.
+
+    Args:
+        dl: PyTorch DataLoader providing (image, label) batches.
+                                 Labels are expected to be 2D tensors (HxW) with integer class IDs.
+        num_classes: The total number of classes in the dataset.
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor]: A tuple containing:
+            - class_pixel_counts (torch.Tensor): A 1D tensor where each element
+                                                 is the total count of pixels for that class.
+            - class_pixel_distribution_percentage (torch.Tensor): A 1D tensor
+                                                                   with the percentage of pixels
+                                                                   for each class.
+    """
+    if not isinstance(num_classes, int) or num_classes <= 0:
+        raise ValueError("'num_classes' must be a positive integer.")
+
+    # Initialize a tensor to store pixel counts for each class
+    class_pixel_counts = torch.zeros(num_classes, dtype=torch.long, device=device)
+
+    # Iterate through the DataLoader
+    for i, (_, labels) in enumerate(dl):
+        # labels will be of shape [batch_size, H, W]
+        # For each label in the batch:
+        for label_map in labels:
+            # label_map is [H, W]
+            # Flatten the label map to easily count pixel values
+            flattened_label = label_map.view(-1)
+
+            # Use torch.bincount to count occurrences of each class ID
+            # minlength ensures the tensor has 'num_classes' elements even if some classes are missing
+            counts = torch.bincount(flattened_label, minlength=num_classes)
+
+            # Add these counts to our total
+            class_pixel_counts += counts
+        
+    total_pixels = torch.sum(class_pixel_counts).item()
+
+    if total_pixels == 0:
+        print("Warning: No pixels processed. Check your dataset and labels.")
+        return class_pixel_counts, torch.zeros(num_classes, dtype=torch.float)
+    else:
+        # Calculate percentages
+        class_pixel_distribution_percentage = (class_pixel_counts.float() / total_pixels) * 100
+        return class_pixel_counts, class_pixel_distribution_percentage
 
 def create_multi_row_gallery(
         title: str,

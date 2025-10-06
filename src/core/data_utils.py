@@ -1,6 +1,7 @@
 from core.config import *
-from core._types import T, Any
 from pathlib import Path
+
+from core._types import T, Any, K, V, ClassSplitted
 
 def create_directory(
         parent_path: Path,
@@ -71,6 +72,43 @@ def flatten_list_to_depth(
             result.append(item)
     return result
 
+def flatten_cs_dict(
+        cs_dict: ClassSplitted[T],
+) -> tuple[T, list[int]]:
+    pos_classes = list(cs_dict.keys())
+    values = list(cs_dict.values())
+    return values, pos_classes
+
+def flatten_cs_dicts(
+        cs_dicts: list[ClassSplitted[T]],
+) -> tuple[list[T], list[int], list[int]]:
+    """
+    Processes a batch of dictionaries into three flat lists:
+    1. All values from all dictionaries.
+    2. The corresponding classes (keys).
+    3. An index mapping each element back to its original dict in the batch.
+    
+    This format is ideal for vectorized operations (e.g., with NumPy).
+    """
+    flat_values = []
+    flat_pos_classes = []
+    batch_indices = []
+
+    for i, cs_dict in enumerate(cs_dicts):
+        if not cs_dict:
+            continue
+        # In Python 3.7+, dicts are ordered, so .keys() and .values()
+        # will correspond. It's safe and efficient.
+        keys = list(cs_dict.keys())
+        values = list(cs_dict.values())
+        
+        flat_pos_classes.extend(keys)
+        flat_values.extend(values)
+        # Create the corresponding indices for this dictionary
+        batch_indices.extend([i] * len(keys))
+        
+    return flat_values, flat_pos_classes, batch_indices
+
 def batch_list(
         list_to_batch: list[T],
         batch_size: int
@@ -88,6 +126,34 @@ def batch_list(
         list_to_batch = list(list_to_batch)
     return [list_to_batch[i:i + batch_size] for i in range(0, len(list_to_batch), batch_size)]
 
+def batch_dict(
+    dict_to_batch: dict[K, V],
+    batch_size: int
+) -> list[dict[K, V]]:
+    """Partitions a dictionary into a list of smaller dictionaries.
+
+    Each dictionary in the output list will have at most `batch_size` items.
+
+    Args:
+        dict_to_batch (Dict[K, V]): The dictionary to partition.
+        batch_size (int): The maximum number of items in each batch dictionary.
+
+    Returns:
+        List[Dict[K, V]]: The list of batched dictionaries.
+        
+    Raises:
+        ValueError: If batch_size is not a positive integer.
+    """
+    if not isinstance(batch_size, int) or batch_size < 1:
+        raise ValueError("batch_size must be a positive integer.")
+
+    # Convert the dictionary's items to a list to allow for slicing
+    items = list(dict_to_batch.items())
+    
+    # Use a list comprehension similar to the list batching function.
+    # For each slice of items, convert it back into a dictionary.
+    return [dict(items[i:i + batch_size]) for i in range(0, len(items), batch_size)]
+
 def get_batch_keys_amount(
         list_of_dicts: list[dict]
 ) -> int:
@@ -101,6 +167,8 @@ def get_batch_keys_amount(
     """
     return sum([len(d.keys()) for d in list_of_dicts])
 
+
+# TODO If a single dict has more than 'max_keys_per_batch', what should we do? Set the batch_size just for him, throw an error?
 def batch_cs_list(
         list_of_dicts: list[dict],
         max_keys_per_batch: int

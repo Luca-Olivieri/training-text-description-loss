@@ -415,10 +415,10 @@ valid_ollama_model_names: list[str] = [
 ]
 
 # TODO when you have refactored configs, do not hardcode this.
-ollama_http_endpoint: str = f'http://{CONFIG["ollama_container_name"]}:11434'
+# ollama_http_endpoint: str = f'http://{CONFIG["ollama_container_name"]}:11434'
 
 for model_name in valid_ollama_model_names:
-    MLLM_REGISTRY.add(model_name, partial(OllamaMLLMAdapter, model_name=model_name, http_endpoint=ollama_http_endpoint))
+    MLLM_REGISTRY.add(model_name, partial(OllamaMLLMAdapter, model_name=model_name))
 
 
 class GoogleAIStudioMLLMAdapter(MLLMAdapter):

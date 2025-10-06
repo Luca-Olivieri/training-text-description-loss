@@ -5,11 +5,7 @@ import matplotlib.pyplot as plt
 import io
 import webcolors
 
-from torchvision.utils import draw_segmentation_masks # TO BE REMOVED
-
-from typing_extensions import deprecated
-
-from core._types import deprecated, RGB_tuple
+from core._types import RGB_tuple
 
 def full_color_map(
         N: int = 256,
@@ -244,28 +240,6 @@ def apply_colormap(
     output_tensor = colored_tensor.permute(0, 3, 1, 2)
 
     return output_tensor.contiguous()
-    
-@deprecated("This method is used for in the class PromptBuilder, but a betetr version exists. Test it!")
-def apply_colormap_(
-        mask: torch.Tensor,
-        color_map: dict[int, RGB_tuple],
-        num_classes: int
-) -> torch.Tensor:
-    """Receives a tensor of shape [C, H, W] and returns a PIL Image with the color map applied.
-
-    Args:
-        mask: Segmentation mask tensor of shape [C, H, W].
-        color_map: Dictionary mapping class indices to RGB tuples.
-
-    Returns:
-        Image with color map applied.
-    """
-    assert len(mask.shape) == 3, mask.shape
-    mask_all_classes = (mask == torch.arange(num_classes).to(CONFIG["device"])[:, None, None, None]).swapaxes(0, 1)
-    if mask.shape[0] == 1:
-        mask = mask.repeat(3, 1, 1)
-    mask = draw_segmentation_masks(mask, mask_all_classes[0], colors=list(color_map.values()), alpha=1.)
-    return mask
 
 def rgb_to_class(
         mask_np: np.ndarray

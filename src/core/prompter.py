@@ -1,10 +1,8 @@
 from core.config import *
 from core.data_utils import flatten_list
-from core.torch_utils import blend_tensors, map_tensors
-from core.datasets import VOC2012SegDataset
-from core.data import read_txt, get_one_answer_gt, get_one_sup_set_answer_gt, get_significant_classes_, read_json
-# from data import VOC2012SegDataset, read_txt, get_image_UIDs, get_one_answer_gt, get_one_sup_set_answer_gt, get_significant_classes_, read_json
-from core.path import get_prompts_path, get_data_gen_prompts_path, LOCAL_ANNOT_IMGS_PATH, MISC_PATH, SPLITS_PATH
+from core.torch_utils import blend_tensors
+from core.datasets import VOC2012SegDataset, get_answer_objects, JsonlIO
+from core.data import read_txt, read_json
 from core.color_map import get_color_map_as, apply_colormap, pil_to_class_array
 
 from PIL import Image, ImageFont, ImageDraw, ImageOps
@@ -23,7 +21,8 @@ def _concat_images_fn(
         images: list[Image.Image],
         titles: list[str],
         scene_mode: str, 
-        align: str
+        align: str,
+        font_path: Path
 ) -> Image.Image:
     """
     Concatenates images according to the values of the parameters 'scene_mode' and 'align' in various combinations.
@@ -54,7 +53,7 @@ def _concat_images_fn(
         titles.pop(0)
 
     # Load a specific font
-    font = ImageFont.truetype(f"{MISC_PATH}/Arial.ttf", size=32)
+    font = ImageFont.truetype(font_path, size=32)
 
     # Ensure images have the same dimension in the correct direction
     if align == "horizontal":
@@ -829,6 +828,9 @@ class PromptBuilder():
     def __init__(
             self,
             seg_dataset: VOC2012SegDataset,
+            prompts_path: Path,
+            answers_gt_path: Path,
+            sup_set_gt_path: Path,
             by_model: str,
             alpha: float,
             split_by: str,
@@ -838,6 +840,9 @@ class PromptBuilder():
             color_map: dict
     ) -> None:
         self.seg_dataset = seg_dataset
+        self.answers_gt_path = answers_gt_path
+        self.sup_set_gt_path = sup_set_gt_path
+        self.jsonlio = JsonlIO()
         
         # Attributes to inherit from modules
         self.layout = None
@@ -854,7 +859,7 @@ class PromptBuilder():
         self.split_by = split_by
 
         # sets the shared static root path for the prompts
-        PromptModule.prompts_path = get_prompts_path(self.split_by)
+        PromptModule.prompts_path = prompts_path / f"{self.split_by}"
 
     def read_sc_gt_pr(
             self,
@@ -954,11 +959,11 @@ class PromptBuilder():
             img_prompts.append(pr_arr)
 
         img_prompts.append(f"Output:")
-        if with_answer_gt is True:
-            if self.split_by == "non-splitted":
-                answer_gt = get_one_answer_gt(self.by_model, img_idx, format_to_dict=True)[img_idx]
-            elif self.split_by == "class-splitted":
-                answer_gt = get_one_sup_set_answer_gt(self.by_model, img_idx, format_to_dict=True)[img_idx]
+        if with_answer_gt:
+            if self.split_by == 'non-splitted':
+                answer_gt = get_answer_objects(self.answers_gt_path, img_idx, self.jsonlio, format_to_dict=True)[img_idx]
+            elif self.split_by == 'class-splitted':
+                answer_gt = get_answer_objects(self.sup_set_gt_path, img_idx, self.jsonlio, format_to_dict=True)[img_idx]
             img_prompts.append(answer_gt) # add target answer if specified
         return flatten_list(img_prompts)
 
@@ -1143,7 +1148,7 @@ class PromptBuilder():
         Returns:
             Evaluation prompt.
         """
-        answer_gt = get_one_answer_gt(self.by_model, query_idx)['content']
+        answer_gt = get_answer_objects(self.answers_gt_path, query_idx, self.jsonlio, format_to_dict=True)['content']
         prompt = [self.modules_dict["eval"](answer_gt, answer_pr)]
         return prompt
     
@@ -1213,7 +1218,7 @@ class FastPromptBuilder:
     def __init__(
             self,
             seg_dataset: VOC2012SegDataset,
-            seed: int,
+            prompts_file_path: Path,
             prompt_blueprint: OrderedDict[str, str],
             by_model: str,
             alpha: float,
@@ -1221,8 +1226,10 @@ class FastPromptBuilder:
             color_map: dict[int, tuple[int, int, int]],
             image_size: int | tuple[int, int],
             sup_set_seg_dataset: VOC2012SegDataset,
+            sup_set_gt_path: Path,
             sup_set_img_idxs: list[int],
             str_formats: dict[str, str],
+            seed: int,
     ) -> None:
         """
         Initializea GenParams with optional generation parameters.
@@ -1232,6 +1239,8 @@ class FastPromptBuilder:
             shuffle_seeds: Whether to shuffle the examples.
         """
         self.seg_dataset = seg_dataset
+        self.prompts_file_path = prompts_file_path
+        self.jsonlio = JsonlIO()
         self.seed = seed
         self.prompt_blueprint = prompt_blueprint
         self.by_model = by_model
@@ -1241,6 +1250,7 @@ class FastPromptBuilder:
         self.image_size = image_size
         self.str_formats = str_formats
         self.sup_set_img_idxs = sup_set_img_idxs
+        self.sup_set_gt_path = sup_set_gt_path
         self.sup_set_seg_dataset = sup_set_seg_dataset
         
         base_head_prompt = self.build_cs_base_prompt(self.sup_set_img_idxs, alpha)
@@ -1264,7 +1274,7 @@ class FastPromptBuilder:
             expanded_sup_set_module = map_list_placeholders(expanded_sup_set_module, placeholder="[img]", objects_list=flatten_list(sup_set_imgs))
             return expanded_sup_set_module
         
-        prompt_corpus = read_json(get_data_gen_prompts_path() / "fast_cs_prompt.json")
+        prompt_corpus = read_json(self.prompts_file_path)
         prompt = [prompt_corpus[mod][var] for mod, var in self.prompt_blueprint.items()]
         
         if len(sup_set_imgs) != 0:
@@ -1314,7 +1324,7 @@ class FastPromptBuilder:
         prs_img = [to_pil_image(col_pr) for col_pr in prs]
 
         sup_set_imgs = list(zip(gts_img, prs_img))
-        sup_set_answers = [get_one_sup_set_answer_gt(self.by_model, sup_set_img_idx, return_state=False, format_to_dict=False)['content'] for sup_set_img_idx in self.sup_set_img_idxs]
+        sup_set_answers = [get_answer_objects(self.sup_set_gt_path, sup_set_img_idx, jsonlio=self.jsonlio, return_state=False, format_to_dict=False)['content'] for sup_set_img_idx in self.sup_set_img_idxs]
 
         base_prompt = self.build_base_prompt_(sup_set_imgs, sup_set_answers)
 
@@ -1445,7 +1455,8 @@ class FastPromptBuilder:
     
 def save_formatted_images(
         promptBuilder: PromptBuilder,
-        img_idxs: tuple[int]
+        img_idxs: tuple[int],
+        loca_annot_imgs_path: Path,
 ) -> None:
     """
     Saves formatted images for the given indices using the provided prompt builder.
@@ -1457,7 +1468,7 @@ def save_formatted_images(
     for img_idx in img_idxs:
         sc, gt, pr = promptBuilder.read_sc_gt_pr(img_idx, promptBuilder.image_size)
         formatted_image = _format_images(sc, gt, pr, img_idx, promptBuilder.layout, promptBuilder.scene_mode, promptBuilder.align, promptBuilder.alpha)[0]
-        formatted_image.save(LOCAL_ANNOT_IMGS_PATH / f"annot_image_{img_idx}.png")
+        formatted_image.save(loca_annot_imgs_path / f"annot_image_{img_idx}.png")
 
 def make_synthetic_diff_text(
         templates_filepath: Path,

@@ -1,0 +1,20 @@
+exp_name_: test
+
+seg:
+  image_size: 520
+
+vlm:
+  image_size: 224
+  alpha: 0.6
+  sup_set_img_idxs: [16]
+  MLLMGenParams:
+    temperature: 0.1
+
+by_model: 'LRASPP_MobileNet_V3'
+split_by: 'class-splitted'
+mask_prs_path: '/home/olivieri/exp/data/private/prompts_data/by_model/LRASPP_MobileNet_V3/_mask_prs_'
+prompts_path: '/home/olivieri/exp/data/private/prompts_data/prompts'
+
+prs_root_path: '/home/olivieri/exp/data/private/prompts_data/by_model/LRASPP_MobileNet_V3/class-splitted/new_answer_prs/gemma3:12b-it-qat/_tests'
+gt_path: '/home/olivieri/exp/data/private/prompts_data/by_model/LRASPP_MobileNet_V3/answer_gts.jsonl'
+sup_set_gt_path: '/home/olivieri/exp/data/private/prompts_data/by_model/LRASPP_MobileNet_V3/class-splitted/sup_set_answer_gts.jsonl'

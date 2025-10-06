@@ -14,8 +14,9 @@ from abc import ABC
 import json
 import math
 
-from core._types import Callable, TypeVar, Any, Any, TypeVar, ABC
+from core._types import Callable, TypeVar, Any, Any, TypeVar, ABC, deprecated
 
+@deprecated("Should be split into two methods, one flattening and one writing.")
 def flatten_cs_jsonl(
         input_path: Path,
         output_path: Path
@@ -107,22 +108,22 @@ def extract_uppercase_words(text: str) -> list[str]:
     """
     return sorted(set(re.findall(r'\b[A-Z]+\b', text)))
 
-def parse_eval_text_to_dict(eval_str: str) -> dict | str:
+def parse_str_to_dict(text: str) -> dict | str:
     """Parses a string containing a dictionary representation and returns the dictionary.
 
     Args:
-        eval_str (str): The string to parse.
+        text (str): The string to parse.
 
     Returns:
         dict | str: The parsed dictionary, or the original string if parsing fails.
     """
-    eval_str = extract_json(eval_str)
+    text = extract_json(text)
     try:
-        eval_dict = ast.literal_eval(eval_str)
+        eval_dict = ast.literal_eval(text)
         return eval_dict
     except:
         print("Wrong parsing to dict!")
-        return eval_str
+        return text
 
 def create_empty_dataarray(dims_to_coords: dict[str, list[Any]]) -> xr.DataArray:
     """Creates an empty xarray DataArray with the specified dimensions and coordinates.

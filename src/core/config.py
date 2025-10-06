@@ -15,52 +15,82 @@ def load_config(config_filepath: Path) -> dict[str, Any]:
         config_dict = yaml.safe_load(file)
     return config_dict
 
-# Base Paths #
+def setup_config(
+        base_config: dict[str, Any],
+        exp_config_filepath: Path
+) -> dict[str, Any]:
+    exp_config = load_config(exp_config_filepath)
+    if set(base_config) & set(exp_config):
+        raise ValueError(f'Base config and exp config at "{exp_config_filepath}" have some keys in common. They should be disjoint.')
+    config = base_config | exp_config
+    # Ollama configs
+    config |= {'ollama_container_name': os.getenv("OLLAMA_CONTAINER_NAME")} # 'ollama_container_name' is passed to the Docker environment
+    config |= {'ollama_http_endpoint': f'http://{config["ollama_container_name"]}:11434'}
+    if 'exp_name' in list(config.keys()): 
+        config['exp_name'] += f'_{datetime.now().strftime("%y%m%d_%H%M")}' # add datetime to exp name
+    config = convert_paths_in_dict(config)
+    return config
 
-BASE_PATH = Path("/home/olivieri/exp").resolve() # outer-most project path
-CONFIG_PATH =  BASE_PATH / "config"
+def convert_paths_in_dict(data: Any) -> Any:
+    """
+    Recursively traverses a nested data structure (dictionaries and lists)
+    and converts string values to pathlib.Path objects if their
+    corresponding key contains the word "path".
 
-CONFIG = load_config(CONFIG_PATH / "config.yml")
+    The modification is done in-place on the original data structure.
 
-CONFIG |= {'ollama_container_name': os.getenv("OLLAMA_CONTAINER_NAME")} # 'ollama_container_name' is passed to the Docker environment
+    Args:
+        data: The dictionary, list, or other data to process.
 
-for module in ['seg', 'vle']:
-    CONFIG[module]['train']["exp_name"] += f'_{datetime.now().strftime("%y%m%d_%H%M")}'
+    Returns:
+        The same data structure, with paths converted.
+    """
+    # If the data is a dictionary, iterate through its items
+    if isinstance(data, dict):
+        for key, value in data.items():
+            # Check if the key is a string before calling .lower()
+            # And check if the value is a string to be converted
+            if isinstance(key, str) and "path" in key.lower() and isinstance(value, str):
+                data[key] = Path(value)
+            else:
+                # If the value is a nested structure, recurse into it
+                convert_paths_in_dict(value)
 
-# PyTorch Hub
-TORCH_WEIGHTS_ROOT = Path('/home/olivieri/exp/data/torch_weights')
-TORCH_WEIGHTS_CHECKPOINTS = TORCH_WEIGHTS_ROOT / 'checkpoints'
-torch.hub.set_dir(TORCH_WEIGHTS_ROOT) # set local model weights directory
+    # If the data is a list, iterate through its items and recurse
+    elif isinstance(data, list):
+        for item in data:
+            convert_paths_in_dict(item)
+    
+    # Base case: if data is not a dict or list, do nothing and return
+    return data
 
-# TODO place all these paths and env variables in the config
+# Base Config #
 
-# HuggingFace Hub
-os.environ["HF_HOME"] = '/home/olivieri/exp/data/huggingface/datasets'
-os.environ["HF_HUB_CACHE"] = '/home/olivieri/exp/data/huggingface/hub'
+base_path = Path(__file__).resolve().parent.parent.parent # project path
+BASE_CONFIG = load_config(base_path / 'config' / 'base_config.yml')
+BASE_CONFIG['device'] = torch.device(BASE_CONFIG['device']) # cast device string to torch.device object
+
+# Environmental Variables #
+
+load_dotenv(str(base_path / 'config' / '.env'), override=True)
+
+BASE_CONFIG |= {'_google_AI_key': os.getenv("GOOGLE_AI_KEY")}
 
 # Reproducibility #
 
-random.seed(CONFIG["seed"])
-np.random.seed(CONFIG["seed"])
-torch.manual_seed(CONFIG["seed"])
+random.seed(BASE_CONFIG['seed'])
+np.random.seed(BASE_CONFIG['seed'])
+torch.manual_seed(BASE_CONFIG['seed'])
 
 _torch_gen = torch.Generator()
-_torch_gen.manual_seed(CONFIG["seed"])
+_torch_gen.manual_seed(BASE_CONFIG['seed'])
 
 def get_torch_gen() -> torch.Generator:
     return _torch_gen.clone_state()
 
-# Environmental Variables #
-
-load_dotenv(str(CONFIG_PATH / ".env"), override=True)
-
-GOOGLE_AI_KEY = os.getenv("GOOGLE_AI_KEY_1")
-GDRIVE_ANNOT_IMGS_PATH = os.getenv("GDRIVE_ANNOT_IMGS_PATH")
-
-
 # Custom Representations
 
-# BEWARE! this are applied everywhere in the code.
+# NOTE this are applied everywhere in the code.
 Image.Image.__repr__ = lambda obj: f"<PIL.Image.Image image mode={obj.mode} size={obj.size}>"
 
 # PyTorch
@@ -68,10 +98,9 @@ Image.Image.__repr__ = lambda obj: f"<PIL.Image.Image image mode={obj.mode} size
 torch.backends.cudnn.benchmark = True # if True, can speeds up computation at the cost of reproducibility.
 
 def main() -> None:
-    c = load_config(CONFIG_PATH / "config.yml")
-    print(c["ollama_container_name"])
-    # print(os.environ['HF_HOME'])
-    # print(os.environ['HF_HUB_CACHE'])
+    # print(setup_config(BASE_CONFIG, Path('/home/olivieri/exp/config/exp_config.yml')))
+    print(Path(__file__).resolve().parent.parent.parent)
+    print(base_path)
 
 if __name__ == '__main__':
     main()

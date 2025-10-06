@@ -14,11 +14,12 @@ K = TypeVar('K') # generic key type
 V = TypeVar('V') # generic value type
 F = TypeVar("F", bound=Callable[..., object]) # generic function
 
-TensorStructure = list[torch.Tensor, TypeVar("TensorStructure")] # nested list structure
-StructureInfo = list[int | TypeVar("StructureInfo")] # tenso metadata structure
+TensorStructureInfo = list[torch.Tensor, TypeVar('TensorStructureInfo')] # nested list structure
+ListStructureInfo = list[int | TypeVar('ListStructureInfo')] # tenso metadata structure
 
 # Types for images
 RGB_tuple = tuple[float, float, float]
+ImageMediaMetadata = object
 
 # Types for prompts
 Prompt = list[str | Image.Image]

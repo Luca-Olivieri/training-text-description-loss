@@ -5,7 +5,7 @@ import gc
 import torch
 from torch import nn
 
-from core._types import Callable, TensorStructure, StructureInfo
+from core._types import Callable, TensorStructureInfo, ListStructureInfo
 
 def get_compute_capability() -> float:
     compute_capability = torch.cuda.get_device_capability()
@@ -132,8 +132,8 @@ def nanstd(
     return result
 
 def flatten_tensor_list(
-        tensor_list: TensorStructure,
-) -> tuple[torch.Tensor, StructureInfo]:
+        tensor_list: TensorStructureInfo,
+) -> tuple[torch.Tensor, ListStructureInfo]:
     """
     Flattens a list (potentially nested) of tensors into a single tensor
     and returns the information needed to unflatten it.
@@ -158,8 +158,8 @@ def flatten_tensor_list(
 
     # Helper function to recursively traverse the list
     def _traverse(
-            sub_list: TensorStructure,
-            current_structure: StructureInfo
+            sub_list: TensorStructureInfo,
+            current_structure: ListStructureInfo
     ) -> None:
         for item in sub_list:
             if isinstance(item, torch.Tensor):
@@ -188,8 +188,8 @@ def flatten_tensor_list(
 
 def unflatten_tensor_list(
         flat_tensor: torch.Tensor,
-        structure_info: StructureInfo
-) -> TensorStructure:
+        structure_info: ListStructureInfo
+) -> TensorStructureInfo:
     """
     Reconstructs an original nested list of tensors from a flattened tensor
     and its corresponding structure information.
@@ -205,7 +205,7 @@ def unflatten_tensor_list(
     # First, get a flat list of all tensor sizes from the structure info
     sizes = []
     def _get_sizes(
-            sub_structure: TensorStructure
+            sub_structure: TensorStructureInfo
     ) -> list:
         for item in sub_structure:
             if isinstance(item, int):
@@ -224,7 +224,7 @@ def unflatten_tensor_list(
 
     # Helper function to recursively rebuild the nested list structure
     def _rebuild(
-            sub_structure: TensorStructure
+            sub_structure: TensorStructureInfo
     ) -> list:
         rebuilt_list = []
         for item in sub_structure:
