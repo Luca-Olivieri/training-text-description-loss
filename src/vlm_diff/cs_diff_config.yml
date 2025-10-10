@@ -1,0 +1,36 @@
+exp_name_: '_test'
+
+seg:
+  image_size: 520
+
+vlm:
+  image_size: 224
+  alpha: 0.6
+  sup_set_img_idxs: [16]
+  MLLMGenParams:
+    temperature: 0.1
+  batch_size: 1 # Optional, set to 1 if None
+
+llm_judge:
+  MLLMGenParams:
+    temperature: 0.1
+  batch_size: 15 # Optional, set to 1 if None
+
+by_model: 'LRASPP_MobileNet_V3'
+split_by: 'class-splitted'
+mask_prs_path: '/home/olivieri/exp/data/private/prompts_data/by_model/LRASPP_MobileNet_V3/_mask_prs_'
+prompts_path: '/home/olivieri/exp/data/private/prompts_data/prompts'
+
+prs_root_path: '/home/olivieri/exp/data/private/exps/vlm_diff/LRASPP_MobileNet_V3/class-splitted/gemma3:12b-it-qat'
+gt_path: '/home/olivieri/exp/data/private/prompts_data/by_model/LRASPP_MobileNet_V3/answer_gts.jsonl'
+sup_set_gt_path: '/home/olivieri/exp/data/private/prompts_data/by_model/LRASPP_MobileNet_V3/class-splitted/sup_set_answer_gts.jsonl'
+
+prompt_modules_vars:
+  context: 'default'
+  color_map: 'default'
+  input_format: 'original'
+  task: 'default'
+  output_format: 'no_example'
+  support_set: 'default'
+  query: 'default'
+  eval: '4_specify_pos_class_recency_2'
