@@ -141,15 +141,15 @@ async def train_loop(
 
     log_manager.log_title("Training Start")
     
+    if seg_train_with_text_config['with_cache']:
+        log_manager.log_line(mask_text_cache)
+    
     # --- 6. Main Training Loop ---
     train_metrics = tm.MetricCollection(metrics_dict)
     for epoch in range(start_epoch, seg_train_config["num_epochs"]):
         
         train_metrics.reset() # in theory, this can be removed
         segmodel.model.train()
-
-        if seg_train_with_text_config['with_cache']:
-            log_manager.log_line(mask_text_cache)
 
         for step, (uids, scs_img, gts) in enumerate(train_dl):
 
@@ -527,9 +527,6 @@ async def main() -> None:
             raise AttributeError(f"ERROR: VLE weights path '{vle_checkpoint_path}' not found.")
     
     vle.set_trainable_params(None)
-
-    # vle.model.logit_scale = nn.Parameter(torch.tensor(1.0, device=config['device']))
-    # vle.model.logit_bias = nn.Parameter(torch.tensor(0.0, device=config['device']))
 
     vle.model = compile_torch_model(vle.model)
 

@@ -1,7 +1,7 @@
 root_exp_path: '/home/olivieri/exp/data/private/exps/seg'
 exp_name: '2-xen-rescale'
 var_name: 'alpha10_b8'
-exp_desc: "test run" # Optional
+exp_desc: "" # Optional
 
 seg:
   pretrained_weights_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/base/good_ckp_b8-251010_0642/weights/lraspp_mobilenet_v3_large-base-good_ckp_b8-251010_0642.pth'
