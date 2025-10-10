@@ -1,0 +1,26 @@
+root_exp_path: '/home/olivieri/exp/data/private/exps/seg'
+exp_name: '0-baseline'
+var_name: 'b8_for_50_epochs'
+exp_desc: "" # Optional
+
+seg:
+  pretrained_weights_path: '/home/olivieri/exp/data/private/torch_weights/seg/lraspp_mobilenet_v3_large/no_text/lraspp_mobilenet_v3_large-enc-pt.pth'
+  checkpoint_path: null
+  image_size: 520
+  train:
+    train_decoder_only: False
+    batch_size: 8
+    num_epochs: 50
+    precision: 'amp_bfloat16' # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
+    regularizers: ['dropout']
+    lr_schedule:
+      policy: 'cosine'
+      base_lr: 1.0e-4
+      warmup_length: 200 # 0 for no warmup
+      epochs_cooldown: null
+      lr_cooldown_power: null
+      lr_cooldown_end: null
+    grad_clip_norm: 10.0 # optional
+    resume_path: null
+    log_only_to_stdout: False
+    log_every: 5
