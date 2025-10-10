@@ -562,8 +562,8 @@ class PercentilePolicy(CacheUpdatePolicy):
         metrics = torch.stack(list(metrics_dict.values()))
         batch_quantile = torch.quantile(metrics, q=self.percentile)
         quantile = self.get_and_update_state(batch_quantile)
-        keys_to_filter_mask: list[bool] = [bool(m <= quantile) for m in metrics]
-        filtered_keys = [k for i, k in enumerate(keys) if keys_to_filter_mask[i] is True]
+        keys_to_keep_mask: list[bool] = [bool(m <= quantile) for m in metrics]
+        filtered_keys = [k for i, k in enumerate(keys) if keys_to_keep_mask[i] is True]
         return filtered_keys
 
 
