@@ -1,21 +1,28 @@
 """Multimodal Large Language Model (MLLM) adapters and interfaces.
 
-This module provides abstract base classes and concrete implementations for interacting
-with various MLLM backends (Ollama, Google AI Studio, HuggingFace). It handles prompt
-formatting, response generation, and batch processing for multimodal inputs.
+This module provides a unified interface for interacting with various MLLM backends through
+abstract base classes and concrete implementations. It supports async inference, batch processing,
+and multimodal prompts (text + images) across different model providers.
+
+Supported backends:
+    - Ollama: Local/self-hosted models (Gemma, Qwen2.5-VL, InternVL3, etc.)
+    - Google AI Studio: Gemini models via GenAI API
+    - HuggingFace: Placeholder for future Transformers integration
 
 Key components:
-    - MLLMAdapter: Abstract base class for MLLM implementations
-    - MLLMGenParams: Generation parameters dataclass
-    - MLLMResponse: Response container with text and token count
-    - OllamaMLLMAdapter: Ollama backend implementation
-    - GoogleAIStudioMLLMAdapter: Google AI Studio backend implementation
-    - MLLM_REGISTRY: Registry for available MLLM adapters
+    - MLLMAdapter: Abstract base class defining the MLLM interface
+    - MLLMGenParams: Frozen dataclass for generation hyperparameters
+    - MLLMResponse: Response container with text and optional token count
+    - OllamaMLLMAdapter: Ollama backend with base64 image encoding
+    - GoogleAIStudioMLLMAdapter: Google Gemini backend with retry logic
+    - MLLM_REGISTRY: Global registry for adapter factory functions
+
+Usage example:
+    >>> adapter = MLLM_REGISTRY.get('gemini-2.0-flash')(api_key='...')
+    >>> gen_params = MLLMGenParams(temperature=0.7, max_tokens=512)
+    >>> response = await adapter.predict_one(prompt, gen_params)
 
 TODO:
-    - Generate text in dict default format, not JSONL format
-    - Decouple JSONL saving logic from text generation
-    - Save text predictions as separate objects (like synthetic diff dataset)
     - Remove class-splitting notion from MLLM using Grouped Sampler approach
 """
 from __future__ import annotations
@@ -24,6 +31,7 @@ from core.config import *
 from core.data import image_to_base64
 from core.prompter import Prompt
 from core.registry import Registry
+from core.utils import retry
 
 import asyncio
 import re
@@ -32,6 +40,7 @@ from functools import partial
 
 from google import genai
 from google.genai import types as genai_types
+from google.genai import errors as genai_errors
 
 from core._types import Optional, Conversation, abstractmethod, ABC, dataclass
 
@@ -163,6 +172,13 @@ class MLLMAdapter(ABC):
     
 
 MLLM_REGISTRY = Registry[MLLMAdapter]()
+"""Global registry mapping model names to MLLM adapter factory functions.
+
+This registry enables dynamic adapter instantiation by model name. Models are
+registered using partial functions that bind model-specific parameters. Access
+adapters using MLLM_REGISTRY.get(model_name) which returns a factory function
+that creates the appropriate adapter instance.
+"""
 
 
 class OllamaMLLMAdapter(MLLMAdapter):
@@ -198,16 +214,18 @@ class OllamaMLLMAdapter(MLLMAdapter):
             gen_params: MLLMGenParams,
             system_prompt: Optional[str] = None,
     ) -> MLLMResponse:
-        """
-        Predicts a response for a single prompt.
+        """Generate a response for a single prompt using Ollama.
+
+        Preprocesses the prompt into Ollama's conversation format (including
+        base64-encoded images) and generates a response asynchronously.
 
         Args:
-            prompt: The prompt to predict for.
-            gen_params: Generation parameters.
-            system_prompt: Optional system prompt.
+            prompt: Input prompt (string or list of strings/PIL.Image objects).
+            gen_params: Generation parameters controlling model behavior.
+            system_prompt: Optional system instruction to guide the model.
 
         Returns:
-            query_idx: out dictionary entry
+            MLLMResponse containing the generated text.
         """
         conv = self._preprocess_prompt(prompt, system_prompt)
         
@@ -221,17 +239,18 @@ class OllamaMLLMAdapter(MLLMAdapter):
             gen_params: MLLMGenParams,
             system_prompt: Optional[str] = None,
     ) -> list[MLLMResponse]:
-        """
-        Predicts responses for a batch of prompts.
+        """Generate responses for a batch of prompts concurrently using Ollama.
+
+        Preprocesses all prompts into Ollama's conversation format and
+        generates responses in parallel using asyncio.gather.
 
         Args:
-            query_prompts: List of prompts.
-            query_idxs: List of query indices.
-            gen_params: Generation parameters.
-            system_prompt: Optional system prompt.
+            prompts: List of input prompts (each can be string or list of strings/PIL.Image objects).
+            gen_params: Generation parameters applied to all prompts.
+            system_prompt: Optional system instruction applied to all prompts.
 
         Returns:
-            List of dictionaries with query index and content.
+            List of MLLMResponse objects, one for each input prompt in order.
         """
         convs: list[Conversation] = [self._preprocess_prompt(prompt, system_prompt) for prompt in prompts]
 
@@ -413,10 +432,14 @@ valid_ollama_model_names: list[str] = [
     'hf.co/unsloth/Mistral-Small-3.1-24B-Instruct-2503-GGUF:Q4_K_M',
     'hf.co/unsloth/InternVL3-14B-Instruct-GGUF:Q4_K_M'
 ]
+"""List of validated Ollama model names supported by the adapter.
 
-# TODO when you have refactored configs, do not hardcode this.
-# ollama_http_endpoint: str = f'http://{CONFIG["ollama_container_name"]}:11434'
+Includes various quantization levels (Q4_K_M, Q8_0) and model sizes (4B-27B) 
+for Gemma3, Qwen2.5-VL, Mistral-Small, and InternVL3 models available through Ollama.
+"""
 
+# Register all valid Ollama models in the global MLLM_REGISTRY
+# Each model is registered with a partial factory function that binds the model_name parameter
 for model_name in valid_ollama_model_names:
     MLLM_REGISTRY.add(model_name, partial(OllamaMLLMAdapter, model_name=model_name))
 
@@ -466,6 +489,7 @@ class GoogleAIStudioMLLMAdapter(MLLMAdapter):
 
         return response
 
+    @retry(max_retries=3, cooldown_period=60, exceptions=[genai_errors.APIError])
     async def predict_batch(
             self,
             prompts: list[Prompt],
@@ -475,7 +499,8 @@ class GoogleAIStudioMLLMAdapter(MLLMAdapter):
         """Generate responses for a batch of prompts concurrently using Google AI Studio.
         
         Processes multiple prompts in parallel using asyncio.gather for efficient
-        batch inference.
+        batch inference. Automatically retries on API errors (up to 3 times with
+        60-second cooldown between retries).
 
         Args:
             prompts: List of input prompts (each can be text, list of text/images, or native format).
@@ -484,6 +509,9 @@ class GoogleAIStudioMLLMAdapter(MLLMAdapter):
 
         Returns:
             List of MLLMResponse objects, one for each input prompt in order.
+        
+        Raises:
+            genai_errors.APIError: If API errors persist after max retries.
         """
         responses: list[MLLMResponse] = await self._generate_response_batch(prompts, gen_params, system_prompt)
 
@@ -542,7 +570,7 @@ class GoogleAIStudioMLLMAdapter(MLLMAdapter):
         response: MLLMResponse = self._adapt_response(genai_response)
 
         return response
-    
+
     async def _generate_response_batch(
             self,
             prompts: list[Prompt],
@@ -589,7 +617,13 @@ class GoogleAIStudioMLLMAdapter(MLLMAdapter):
 valid_googleaistudio_model_names: list[str] = [
     'gemini-2.0-flash',
 ]
+"""List of validated Google AI Studio model names supported by the adapter.
 
+Currently includes Gemini 2.0 Flash model available through Google's GenAI API.
+"""
+
+# Register all valid Google AI Studio models in the global MLLM_REGISTRY
+# Each model is registered with a partial factory function that binds the model_name parameter
 for model_name in valid_googleaistudio_model_names:
     MLLM_REGISTRY.add(model_name, partial(GoogleAIStudioMLLMAdapter, model_name=model_name))
 

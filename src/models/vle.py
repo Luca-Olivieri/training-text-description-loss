@@ -1,5 +1,5 @@
 from core.config import *
-from core.utils import Registry
+from core.registry import Registry
 
 import torch
 from torch import nn
@@ -28,10 +28,14 @@ from typing import Optional, Literal
 from vendors.flair.src.flair.model import FLAIR
 from enum import Enum
 
-VLE_REGISTRY = Registry()
-
-
 class MapComputeMode(Enum):
+    """
+    Enumeration for different map computation modes.
+    
+    Attributes:
+        SIMILARITY: Compute similarity maps using cosine similarity between tokens
+        ATTENTION: Compute attention maps from the visual projection layer
+    """
     SIMILARITY = 'similarity'
     ATTENTION = 'attention'
 
@@ -56,22 +60,47 @@ class VLEncoderOutput:
 
 @dataclass
 class VLEncoderOutputWithAttn(VLEncoderOutput):
+    """
+    Extended VL encoder output that includes attention maps.
+    
+    Attributes:
+        attn_maps_flat: Flattened attention maps with shape [B_i, B_t, n_i+1] where the +1
+            accounts for the CLS token. Inherits all attributes from VLEncoderOutput.
+    """
     attn_maps_flat: Optional[torch.Tensor] = None # [B_i, B_t, n_i+1]
 
 
 class VLEncoder(ABC):
+    """
+    Abstract base class for Vision-Language Encoders.
+    
+    This class defines the interface that all VLE implementations must follow,
+    including methods for preprocessing, encoding, computing similarities and maps,
+    and training utilities.
+    """
+    
     @abstractmethod
     def __init__(self, *args, **kwargs) -> None:
+        """Initialize the vision-language encoder."""
         raise NotImplementedError
     
     @abstractmethod
     @torch.inference_mode()
     def preprocess_images(
             self,
-            images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
-            device: str = "cuda", 
+            images: torch.Tensor | list[torch.Tensor],
             **kwargs
     ) -> torch.Tensor:
+        """
+        Preprocess images for the vision encoder.
+        
+        Args:
+            images: Input images as a tensor or list of tensors
+            **kwargs: Additional preprocessing arguments
+            
+        Returns:
+            Preprocessed image tensor ready for encoding
+        """
         raise NotImplementedError
     
     @abstractmethod
@@ -79,9 +108,18 @@ class VLEncoder(ABC):
     def preprocess_texts(
             self,
             texts: list[str],
-            device: str = "cuda",
             **kwargs
     ) -> torch.Tensor:
+        """
+        Tokenize and preprocess text for the text encoder.
+        
+        Args:
+            texts: List of text strings to preprocess
+            **kwargs: Additional preprocessing arguments
+            
+        Returns:
+            Tokenized text tensor ready for encoding
+        """
         raise NotImplementedError
 
     @abstractmethod
@@ -92,6 +130,18 @@ class VLEncoder(ABC):
             broadcast: bool = False,
             **kwargs
     ) -> VLEncoderOutput:
+        """
+        Encode and project images and/or texts into a shared embedding space.
+        
+        Args:
+            images: Preprocessed image tensor or None
+            texts: Preprocessed text tensor or None
+            broadcast: If True, compute all pairwise image-text combinations
+            **kwargs: Additional encoding arguments
+            
+        Returns:
+            VLEncoderOutput containing global and local tokens for images and texts
+        """
         raise NotImplementedError
     
     @abstractmethod
@@ -102,6 +152,17 @@ class VLEncoder(ABC):
             texts: torch.Tensor,
             broadcast: bool = False
     ) -> torch.Tensor:
+        """
+        Compute similarity scores between images and texts.
+        
+        Args:
+            images: Preprocessed image tensor
+            texts: Preprocessed text tensor
+            broadcast: If True, compute similarity for all image-text pairs
+            
+        Returns:
+            Similarity scores tensor. Shape [B_i, B_t] if broadcast=True, else [B] where B=B_i=B_t
+        """
         raise NotImplementedError
     
     @torch.inference_mode()
@@ -115,6 +176,24 @@ class VLEncoder(ABC):
             broadcast: bool = False,
             **kwargs
     ) -> torch.Tensor:
+        """
+        Compute spatial maps (similarity or attention) between images and texts.
+        
+        Args:
+            images: Preprocessed image tensor
+            texts: Preprocessed text tensor
+            map_compute_mode: Mode for computing maps (SIMILARITY or ATTENTION)
+            upsample_size: Target size for upsampling maps, or None to keep original size
+            upsample_mode: Interpolation mode for upsampling
+            broadcast: If True, compute maps for all image-text pairs
+            **kwargs: Additional arguments passed to specific map computation methods
+            
+        Returns:
+            Tuple of (maps, min_value, max_value) where maps has shape [B_i, B_t, H, W]
+            
+        Raises:
+            ValueError: If map_compute_mode is not recognized
+        """
         match map_compute_mode:
             case MapComputeMode.ATTENTION:
                 return self.get_attn_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast, **kwargs)
@@ -134,11 +213,29 @@ class VLEncoder(ABC):
             attn_heads_idx: Optional[list[int]] = None # [0, 3, 5, 7] are selected by the authors for FLAIR
     ) -> torch.Tensor:
         """
-        Encodes image and text and returns the attention maps from the visual projection layer.
+        Compute attention maps from the visual projection layer.
+        
+        Encodes images and texts, then extracts attention weights from the cross-attention
+        mechanism that conditions text queries on image patches.
+        
+        Args:
+            images: Preprocessed image tensor
+            texts: Preprocessed text tensor
+            upsample_size: Target size for upsampling attention maps
+            upsample_mode: Interpolation mode for upsampling
+            broadcast: If True, compute attention for all image-text pairs
+            attn_heads_idx: Indices of attention heads to average. If None, average all heads.
+                For FLAIR, [0, 3, 5, 7] are recommended by the authors
+            
+        Returns:
+            Tuple of (attention_maps, min_attn, max_attn) where:
+                - attention_maps: Tensor of shape [B_i, B_t, H, W] (or [B_i, B_t, sqrt(n_i), sqrt(n_i)] if not upsampled)
+                - min_attn: Minimum attention value across all maps
+                - max_attn: Maximum attention value across all maps
         """
         # _, [B_i, B_t, D], [B_i, n_i, D], _, _, [B_i, B_t, n_i+1]
-        # 'B_t' = 1 if 'broadcast' = False
         vle_output = self.encode_and_project(images, texts, broadcast)
+        # NOTE 'B_t' = 1 if 'broadcast' = False
 
         if attn_heads_idx:
             vle_output.attn_maps_flat = vle_output.attn_maps_flat[:, attn_heads_idx, ...].mean(dim=1, keepdim=False)
@@ -168,6 +265,25 @@ class VLEncoder(ABC):
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
             broadcast: bool = False
     ) -> torch.Tensor:
+        """
+        Compute similarity maps using cosine similarity between text and image tokens.
+        
+        Computes cosine similarity between global text tokens and local image patch tokens
+        to produce spatial similarity maps.
+        
+        Args:
+            images: Preprocessed image tensor
+            texts: Preprocessed text tensor
+            upsample_size: Target size for upsampling similarity maps
+            upsample_mode: Interpolation mode for upsampling
+            broadcast: If True, compute similarity for all image-text pairs
+            
+        Returns:
+            Tuple of (similarity_maps, min_sim, max_sim) where:
+                - similarity_maps: Tensor of shape [B_i, B_t, H, W] (or [B_i, B_t, sqrt(n_i), sqrt(n_i)] if not upsampled)
+                - min_sim: Minimum similarity value across all maps
+                - max_sim: Maximum similarity value across all maps
+        """
         # _, [B_i, B_t, D], [B_i, n_i, D], _, _, _
         # _, global_text_token, local_image_tokens, _, _, _ = self.encode_and_project(images, texts, broadcast)
         vle_output = self.encode_and_project(images, texts, broadcast)
@@ -192,10 +308,27 @@ class VLEncoder(ABC):
         
         return sim_maps, min_sim, max_sim
     
-    def set_vision_trainable_params(self, *arg, **kwargs) -> None:
+    def set_trainable_params(self, *arg, **kwargs) -> None:
+        """
+        Configure which parameters of the model should be trainable.
+        
+        Args:
+            *arg: Positional arguments for parameter selection
+            **kwargs: Keyword arguments for parameter selection
+        """
         raise NotImplementedError
     
     def create_loss(self, *args, **kwargs) -> nn.Module:
+        """
+        Create and return the loss function for training this encoder.
+        
+        Args:
+            *args: Positional arguments for loss creation
+            **kwargs: Keyword arguments for loss creation
+            
+        Returns:
+            Loss module appropriate for this encoder
+        """
         raise NotImplementedError
 
     def evaluate(
@@ -203,6 +336,16 @@ class VLEncoder(ABC):
             dl: DataLoader,
             criterion: nn.modules.loss._Loss,
     ) -> torch.Tensor:
+        """
+        Evaluate the model on a dataset.
+        
+        Args:
+            dl: DataLoader providing (images, texts) batches
+            criterion: Loss function to compute evaluation loss
+            
+        Returns:
+            Average loss across the entire dataset
+        """
         running_loss = 0.0
         running_supcount = 0
 
@@ -229,57 +372,119 @@ class VLEncoder(ABC):
 
                 running_loss += total_batch_loss.item() * images.size(0)
                 running_supcount += images.size(0)
-
-                torch.cuda.synchronize() if CONFIG["device"] == "cuda" else None
         
         loss = running_loss / running_supcount
         
         return loss
     
     @abstractmethod
-    def count_tokens(self, *args, **kwargs) -> None:
+    def count_tokens(self, *args, **kwargs) -> int:
+        """
+        Count the number of tokens in a text string.
+        
+        Args:
+            *args: Positional arguments (typically the text string)
+            **kwargs: Keyword arguments
+            
+        Returns:
+            Number of tokens after tokenization
+        """
         raise NotImplementedError
+
+VLE_REGISTRY = Registry[VLEncoder]()
+
+class NewLayer(Enum):
+    """
+    Enumeration of new adapter layers that can be added to FLAIR.
+    
+    Attributes:
+        VISION_ADAPTER: Adapter layer applied after vision encoding
+        TEXT_ADAPTER: Adapter layer applied after text encoding
+        CONCAT_ADAPTER: Adapter layer applied to concatenated features
+    """
+    VISION_ADAPTER = 'vision_adapter'
+    TEXT_ADAPTER = 'text_adapter'
+    CONCAT_ADAPTER = 'concat_adapter'
+
+class OldFLAIRLayer(Enum):
+    """
+    Enumeration of existing FLAIR layers that can be fine-tuned.
+    
+    Attributes:
+        IMAGE_POST: Post-processing layer for image embeddings
+        TEXT_POST: Post-processing layer for text embeddings
+        VISUAL_PROJ: Visual projection layer for cross-attention pooling
+    """
+    IMAGE_POST = 'image_post'
+    TEXT_POST = 'text_post'
+    VISUAL_PROJ = 'visual_proj'
+    
 
 @dataclass
 class FLAIROutput(VLEncoderOutputWithAttn):
+    """
+    Extended output specific to FLAIR encoder.
+    
+    Attributes:
+        local_image_features: Image features after attention pooling with text queries,
+            shape [B_i, B_t, D]. Inherits all attributes from VLEncoderOutputWithAttn.
+    """
     local_image_features: Optional[torch.Tensor] = None # [B_i, B_t, D]
 
 @VLE_REGISTRY.register("flair")
 class FLAIRAdapter(VLEncoder):
+    """
+    Adapter for the FLAIR (Fine-grained Late-interaction Representation) model.
+    
+    FLAIR is a vision-language model that uses cross-attention pooling to condition
+    text representations on image patches, enabling fine-grained spatial understanding.
+    This adapter supports adding custom adapter layers and selective fine-tuning.
+    
+    Attributes:
+        device: Device where the model runs
+        version: FLAIR checkpoint version
+        model: The underlying FLAIR model
+        new_layers: List of new adapter layers added to the model
+        preprocess_fn: Image preprocessing transform
+        tokenizer: Text tokenizer
+        context_length: Maximum token context length
+    """
+    
     def __init__(
             self,
             version: Literal['flair-cc3m-recap.pt',
                              'flair-cc12m-recap.pt',
                              'flair-yfcc15m-recap.pt',
-                             'flair-merged30m.pt'] = 'flair-cc3m-recap.pt',
-            device: str = 'cuda',
-            vision_adapter: bool = False,
-            text_adapter: bool = False,
-            concat_adapter: bool = False,
+                             'flair-merged30m.pt'],
+            pretrained_weights_root_path: Path,
+            new_layers: list[NewLayer],
+            device: torch.device
     ) -> None:
+        """
+        Initialize FLAIR adapter.
+        
+        Args:
+            version: FLAIR checkpoint to load
+            pretrained_weights_root_path: Path to cache pretrained weights
+            new_layers: List of new adapter layers to add to the model
+            device: Device to load the model on
+        """
         self.device = device
         self.version = version
 
         # Model
-        # pretrained = flair.download_weights_from_hf(model_repo='xiaorui638/flair', filename=version)
-        pretrained = hf_hub_download(repo_id='xiaorui638/flair', filename=version, cache_dir=CONFIG['vle']['pretrained_weights_root_path'])
+        pretrained = hf_hub_download(repo_id='xiaorui638/flair', filename=version, cache_dir=pretrained_weights_root_path)
         model, _, preprocess_fn = flair.create_model_and_transforms('ViT-B-16-FLAIR', pretrained=pretrained, device=self.device)
-        # NOTE the authors do not use a bias nor an activation function, I won't use them either.
-        if vision_adapter:
-            vision_adapter = nn.Linear(512, 512, bias=False, device=self.device)
-            model.add_module('vision_adapter', vision_adapter)
-        if text_adapter:
-            text_adapter = nn.Linear(512, 512, bias=False, device=self.device)
-            model.add_module('text_adapter', text_adapter)
-        if concat_adapter:
-            concat_adapter = nn.Linear(1024, 512, bias=False, device=self.device)
-            model.add_module('concat_adapter', concat_adapter)
+        
         self.model: FLAIR = model
-        self.init_weights()
-        self.model.requires_grad_(False)
+        self.new_layers = new_layers
+        self.add_new_layers()
+        self.init_new_layers_weights()
+        self.model.requires_grad_(False) # freeze parameters
         self.model.eval()
 
         # Preprocess
+        # NOTE the following instruction remove some preprocessing functions that are for PIL images, but we only work with tensors.
         preprocess_fn.transforms.pop(2) # remove _convert_to_rgb()
         preprocess_fn.transforms.pop(2) # remove ToTensor()
         self.preprocess_fn: T.Compose = preprocess_fn
@@ -288,35 +493,27 @@ class FLAIRAdapter(VLEncoder):
         self.tokenizer: SimpleTokenizer = flair.get_tokenizer('ViT-B-16-FLAIR')
         self.context_length = self.tokenizer.context_length
 
-    def init_weights(self) -> None:
-        if hasattr(self.model, 'vision_adapter'):
-            # Use Xavier Uniform initialisation for the weight matrix
-            nn.init.xavier_uniform_(self.model.vision_adapter.weight)
-            # Initialise the bias to zeros
-            if self.model.vision_adapter.bias is not None:
-                nn.init.zeros_(self.model.vision_adapter.bias)
-        if hasattr(self.model, 'text_adapter'):
-            # Use Xavier Uniform initialisation for the weight matrix
-            nn.init.xavier_uniform_(self.model.text_adapter.weight)
-            # Initialise the bias to zeros
-            if self.model.text_adapter.bias is not None:
-                nn.init.zeros_(self.model.text_adapter.bias)
-        if hasattr(self.model, 'concat_adapter'):
-            # Use Xavier Uniform initialisation for the weight matrix
-            nn.init.xavier_uniform_(self.model.concat_adapter.weight)
-            # Initialise the bias to zeros
-            if self.model.concat_adapter.bias is not None:
-                nn.init.zeros_(self.model.concat_adapter.bias)
+    def init_new_layers_weights(self) -> None:
+        """
+        Initialize weights of newly added adapter layers.
+        
+        Uses Xavier uniform initialization for weights and zeros for biases.
+        """
+        # NOTE for all linear layers, I use Xavier Uniform weight initialisation and bias to 0
+        for new_l in self.new_layers:
+            module = self.model.get_submodule(new_l.value)
+            nn.init.xavier_uniform_(module.weight)
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
 
     @torch.inference_mode()
     def preprocess_images(
             self, 
             images: torch.Tensor | list[torch.Tensor],
-            device: str = "cuda"
     ) -> torch.Tensor:
         if isinstance(images, list):
             images = torch.stack(images, dim=0)
-        images = images.to(device)
+        images = images.to(self.device)
         if images.dtype == torch.uint8:
             images = images/255.
         imgs_tensor = self.preprocess_fn(images) # [B, 3, H_vle, W_vle]
@@ -326,9 +523,17 @@ class FLAIRAdapter(VLEncoder):
     def preprocess_texts(
             self, 
             texts: list[str],
-            device: str = "cuda"
     ) -> torch.Tensor:
-        texts_tensor = self.tokenizer(texts).to(device) # [B, context_length]
+        """
+        Tokenize texts for FLAIR encoder.
+        
+        Args:
+            texts: List of text strings
+            
+        Returns:
+            Tokenized text tensor of shape [B, context_length]
+        """
+        texts_tensor = self.tokenizer(texts).to(self.device) # [B, context_length]
         return texts_tensor
     
     def encode_and_project(
@@ -338,6 +543,21 @@ class FLAIRAdapter(VLEncoder):
             broadcast: bool = False,
             pool: bool = True
     ) -> FLAIROutput:
+        """
+        Encode and project images and texts through FLAIR.
+        
+        Encodes inputs through vision/text encoders, applies projection layers and
+        optional adapter layers, then performs cross-attention pooling if requested.
+        
+        Args:
+            images: Preprocessed image tensor or None
+            texts: Preprocessed text tensor or None
+            broadcast: If True, compute all pairwise image-text combinations
+            pool: If True, perform attention pooling to get local_image_features
+            
+        Returns:
+            FLAIROutput containing all encoded tokens and optionally attention maps
+        """
         
         flair_output = FLAIROutput()
         
@@ -348,7 +568,7 @@ class FLAIRAdapter(VLEncoder):
             global_image_token: torch.Tensor = self.model.image_post(global_image_token)    # [B_i, D]
             local_image_tokens: torch.Tensor = self.model.image_post(local_image_tokens)    # [B_i, n_i, D]
             # apply vision adapter
-            if hasattr(self.model, 'vision_adapter'):
+            if NewLayer.VISION_ADAPTER in self.new_layers:
                 global_image_token = self.model.vision_adapter(global_image_token) # [B_i, D]
                 local_image_tokens = self.model.vision_adapter(local_image_tokens) # [B_i, n_i, D]
             
@@ -362,7 +582,7 @@ class FLAIRAdapter(VLEncoder):
             global_text_token: torch.Tensor = self.model.text_post(global_text_token)       # [B_t, D]
             local_text_tokens: torch.Tensor = self.model.text_post(local_text_tokens)       # [B_t, n_t, D]
             # apply text adapter
-            if hasattr(self.model, 'text_adapter'):
+            if NewLayer.TEXT_ADAPTER in self.new_layers:
                 global_text_token = self.model.text_adapter(global_text_token) # [B_t, D]
                 local_text_tokens = self.model.text_adapter(local_text_tokens) # [B_t, n_t, D]
 
@@ -406,6 +626,20 @@ class FLAIRAdapter(VLEncoder):
             texts: torch.Tensor,
             broadcast: bool = False
     ) -> torch.Tensor:
+        """
+        Compute similarity scores between images and texts using FLAIR.
+        
+        Uses normalized local_image_features (after attention pooling) and global_text_token
+        to compute cosine similarity.
+        
+        Args:
+            images: Preprocessed image tensor
+            texts: Preprocessed text tensor
+            broadcast: If True, compute similarity for all image-text pairs
+            
+        Returns:
+            Similarity scores. Shape [B_i, B_t] if broadcast=True, else [B]
+        """
         if broadcast:
             flair_output = self.encode_and_project(images, texts, broadcast=True)
             image_features, text_features = F.normalize(flair_output.local_image_features, dim=-1), F.normalize(flair_output.global_text_token, dim=-1)
@@ -421,39 +655,24 @@ class FLAIRAdapter(VLEncoder):
             sim = torch.einsum('bf,bf->b', image_features, text_features)
         return sim
     
-    def set_vision_trainable_params(
+    def set_trainable_params(
             self,
-            trainable_modules: Optional[list[Literal['vision_adapter',
-                                                     'text_adapter',
-                                                     'image_proj',
-                                                     'text_proj',
-                                                     'visual_proj',
-                                                     'concat_adapter']]],
+            trainable_modules: Optional[list[OldFLAIRLayer | NewLayer]],
     ) -> None:
-        # LUT: module name -> module
-        train_modules_lut = {
-            'image_proj': self.model.image_post,
-            'text_proj': self.model.text_post,
-            'visual_proj': self.model.visual_proj,
-        }
-
-        if hasattr(self.model, 'vision_adapter'):
-            train_modules_lut |= {'vision_adapter': self.model.vision_adapter}
+        """
+        Configure which FLAIR modules should be trainable.
         
-        if hasattr(self.model, 'text_adapter'):
-            train_modules_lut |= {'text_adapter': self.model.text_adapter}
+        Freezes all parameters by default, then enables gradients for specified modules.
         
-        if hasattr(self.model, 'concat_adapter'):
-            train_modules_lut |= {'concat_adapter': self.model.concat_adapter}
-
+        Args:
+            trainable_modules: List of modules to make trainable, or None to freeze all
+        """
         # first, gradients are disabled for all modules.
         self.model.requires_grad_(False)
 
+        # enable the gradients in the selected modules (if any)
         if trainable_modules:
-            # access the right modules with the LUT
-            train_params: list[nn.Module] = [train_modules_lut[m].requires_grad_(True) for m in trainable_modules]
-            # enable the gradiens in the accessed modules
-            [p.requires_grad_(True) for p in train_params]
+            [self.model.get_submodule(m.value).requires_grad_(True) for m in trainable_modules]
     
     def create_loss(
             self,
@@ -462,6 +681,18 @@ class FLAIRAdapter(VLEncoder):
             rank: int = 0,
             num_caps_per_img: int = 1
     ) -> FlairLoss:
+        """
+        Create FLAIR-specific contrastive loss.
+        
+        Args:
+            add_mps_loss: Whether to add the maximum patch similarity loss
+            world_size: Number of distributed processes
+            rank: Rank of current process in distributed setting
+            num_caps_per_img: Number of captions per image in the dataset
+            
+        Returns:
+            Configured FlairLoss module
+        """
         flair_loss = FlairLoss(
             rank=rank,
             world_size=world_size,
@@ -475,24 +706,80 @@ class FLAIRAdapter(VLEncoder):
             self,
             text: str
     ) -> int:
+        """
+        Count tokens in a text string using FLAIR tokenizer.
+        
+        Args:
+            text: Input text string
+            
+        Returns:
+            Number of tokens including SoT and EoT special tokens
+        """
         tokenizer = flair.get_tokenizer('ViT-B-16-FLAIR', context_length=1000) # I do not expect to use text longer than 1000 tokens. If so, increase it to working upper bound.
         return len(tokenizer.encode(text)) + 2 # 'SoT' and 'EoT' are added.
 
+    def add_new_layers(self) -> None:
+        """
+        Add new adapter layers to the FLAIR model.
+        
+        Creates linear adapter layers (without bias or activation) and registers them
+        as submodules of the model.
+        """
+        # NOTE the authors do not use a bias nor an activation function, I won't use them either.
+        if NewLayer.VISION_ADAPTER in self.new_layers:
+            vision_adapter = nn.Linear(512, 512, bias=False, device=self.device)
+            self.model.add_module('vision_adapter', vision_adapter)
+        if NewLayer.TEXT_ADAPTER in self.new_layers:
+            text_adapter = nn.Linear(512, 512, bias=False, device=self.device)
+            self.model.add_module('text_adapter', text_adapter)
+        if NewLayer.CONCAT_ADAPTER in self.new_layers:
+            concat_adapter = nn.Linear(1024, 512, bias=False, device=self.device)
+            self.model.add_module('concat_adapter', concat_adapter)
+
 
 class SimSegAdapter(VLEncoder):
+    """
+    Placeholder for SimSeg adapter (not implemented).
+    
+    Note: Integration deemed too complex for expected benefits.
+    """
     ...
     # NOTE too much integration work likely for unimpressive results, I would skip this.
 
 
 @VLE_REGISTRY.register("fg-clip")
 class FG_CLIPAdapter(VLEncoder):
+    """
+    Adapter for FG-CLIP (Fine-Grained CLIP) model.
+    
+    FG-CLIP provides both global and dense (patch-level) image features for
+    fine-grained vision-language understanding. Unlike FLAIR, it does not use
+    cross-attention pooling.
+    
+    Attributes:
+        image_size: Input image size expected by the model
+        model: The underlying FG-CLIP model
+        walk_short_pos: Whether to use short position embeddings for text
+        context_length: Maximum token context length
+        tokenizer: Text tokenizer
+        image_processor: Image preprocessor
+    """
+    
     def __init__(
             self,
             checkpoint: Literal['fg-clip-base', 
-                                'fg-clip-large'] = 'fg-clip-base',
-            device: str = 'cuda',
+                                'fg-clip-large'],
+            device: torch.device,
             long_captions = True
     ) -> None:
+        """
+        Initialize FG-CLIP adapter.
+        
+        Args:
+            checkpoint: FG-CLIP checkpoint to load ('fg-clip-base' or 'fg-clip-large')
+            device: Device to load the model on
+            long_captions: If True, use context length of 248, else 77
+        """
         model_root = f'qihoo360/{checkpoint}'
         ckp_2_imgsize = {
             'fg-clip-base': 224,
@@ -519,7 +806,7 @@ class FG_CLIPAdapter(VLEncoder):
     def preprocess_images(
             self, 
             images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
-            device: str = "cuda"
+            device: torch.device
     ) -> torch.Tensor:
         if isinstance(images, torch.Tensor) or isinstance(images[0], torch.Tensor):
             images = [to_pil_image(img) for img in images]
@@ -535,8 +822,18 @@ class FG_CLIPAdapter(VLEncoder):
     def preprocess_texts(
             self, 
             texts: list[str],
-            device: str = "cuda"
+            device: torch.device
     ) -> torch.Tensor:
+        """
+        Tokenize texts for FG-CLIP encoder.
+        
+        Args:
+            texts: List of text strings
+            device: Device to move tokenized texts to
+            
+        Returns:
+            Tokenized text tensor of shape [B, context_length]
+        """
         texts_tensor = torch.tensor(self.tokenizer(texts, max_length=self.context_length, padding="max_length", truncation=True).input_ids, dtype=torch.long, device=device) # # [B, context_length]
         return texts_tensor
 
@@ -545,7 +842,24 @@ class FG_CLIPAdapter(VLEncoder):
             images: torch.Tensor,
             texts: torch.Tensor,
             broadcast: bool = False
-    ) -> FLAIROutput:
+    ) -> VLEncoderOutput:
+        """
+        Encode and project images and texts through FG-CLIP.
+        
+        Extracts global image features, dense image features, and global text features.
+        All features are L2-normalized.
+        
+        Args:
+            images: Preprocessed image tensor
+            texts: Preprocessed text tensor
+            broadcast: If True, expand text features for all image-text pairs
+            
+        Returns:
+            VLEncoderOutput containing normalized global and local tokens
+            
+        Raises:
+            AttributeError: If broadcast=False but image and text batch sizes don't match
+        """
 
         image_feature = self.model.get_image_features(images)
         dense_image_feature = self.model.get_image_dense_features(images)
@@ -580,6 +894,19 @@ class FG_CLIPAdapter(VLEncoder):
             texts: torch.Tensor,
             broadcast: bool = False
     ) -> torch.Tensor:
+        """
+        Compute similarity scores between images and texts using FG-CLIP.
+        
+        Uses global image and text features (already normalized during encoding).
+        
+        Args:
+            images: Preprocessed image tensor
+            texts: Preprocessed text tensor
+            broadcast: If True, compute similarity for all image-text pairs
+            
+        Returns:
+            Similarity scores. Shape [B_i, B_t] if broadcast=True, else [B]
+        """
         vle_output = self.encode_and_project(images, texts, broadcast)
         if broadcast:
             sim = vle_output.global_image_token @ vle_output.global_text_token.mT # [B_i, B_t, D]
@@ -593,13 +920,32 @@ class FG_CLIPAdapter(VLEncoder):
             self,
             text: str
     ) -> int:
+        """
+        Count tokens in a text string using FG-CLIP tokenizer.
+        
+        Args:
+            text: Input text string
+            
+        Returns:
+            Number of tokens including special tokens
+        """
         return len(self.tokenizer.encode(text)) # 'SoT' and 'EoT' are added.
     
     def get_attn_maps(self, *args, **kwargs) -> None:
+        """
+        Attention maps are not available for FG-CLIP.
+        
+        Raises:
+            AttributeError: Always, as FG-CLIP does not provide attention maps
+        """
         raise AttributeError("The VLE 'FG-CLIP' does not provide attention maps.")
 
 def main() -> None:
+    """
+    Test function to verify VLE registry and FLAIR adapter initialization.
     
+    Prints registered VLE models and tests FLAIR loss creation.
+    """
     from typing import cast
     print(VLE_REGISTRY.registered_objects())
     model: VLEncoder = VLE_REGISTRY.get('flair')

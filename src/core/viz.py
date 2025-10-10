@@ -1,3 +1,21 @@
+"""
+Visualization and analysis utilities for model evaluation and data processing.
+
+This module provides comprehensive tools for visualizing and analyzing machine learning
+models, particularly focused on semantic segmentation and vision-language tasks. It includes:
+
+- Display and rendering utilities for prompts, images, and metrics
+- Attention and similarity map visualization with overlay capabilities
+- Performance metrics computation and formatting
+- HTML gallery generation for multi-row image comparisons
+- Data analysis tools for computing statistics from experiment results
+- Class distribution analysis for segmentation datasets
+- Mask creation and manipulation utilities for class-specific visualizations
+
+The module integrates with PyTorch, xarray, pandas, and various visualization libraries
+to provide end-to-end support for model evaluation workflows, especially in Jupyter notebooks.
+"""
+
 from core.config import *
 from core.prompter import Prompt
 from core.torch_utils import blend_tensors
@@ -24,7 +42,24 @@ from core._types import Iterable
 def print_file_content(
         filename: str
 ) -> None:
-    """Utility function to print the content of a file."""
+    """
+    Prints the entire content of a file to stdout.
+
+    Reads and displays the file line by line, preserving original formatting.
+    Prints a warning message if the file does not exist.
+
+    Args:
+        filename (str): Path to the file to print.
+
+    Returns:
+        None: Prints directly to stdout.
+
+    Example:
+        >>> print_file_content("config.yml")
+        --- Contents of 'config.yml' ---
+        ...file contents...
+        --- End of file ---
+    """
     if not os.path.exists(filename):
         print(f"File '{filename}' does not exist.")
         return
@@ -39,14 +74,25 @@ def my_tqdm(
         data: Iterable,
         desc: str = ""
 ) -> tqdm:
-    """Wraps an iterable with tqdm progress bar, converting to list if needed.
+    """
+    Wraps an iterable with a customized tqdm progress bar.
+
+    Creates a styled progress bar with enumeration support. Converts non-list
+    iterables to lists to enable proper progress tracking. The progress bar
+    includes custom formatting with a green color scheme and detailed time estimates.
 
     Args:
-        data (Iterable): The data to wrap.
-        desc (str): The description for the progress bar.
+        data (Iterable): The data to wrap with a progress bar. Will be converted
+            to a list if not already a list.
+        desc (str, optional): Description text displayed before the progress bar.
+            Defaults to an empty string.
 
     Returns:
-        tqdm: The tqdm progress bar iterator.
+        tqdm: An enumerated tqdm progress bar iterator that yields (index, item) tuples.
+
+    Example:
+        >>> for idx, item in my_tqdm(data_list, desc="Processing"):
+        ...     process(item)
     """
     if not isinstance(data, list):
         data = list(data)
@@ -61,11 +107,50 @@ def my_tqdm(
 def pretty_metrics(
         metric_collection: tm.MetricCollection
 ) -> dict:
-    return {m: f"{s.item():.4f}" for m, s in metric_collection.items()}
+    """
+    Formats a torchmetrics MetricCollection into human-readable strings.
+
+    Converts metric values to formatted strings with appropriate precision.
+    Learning rate metrics are formatted in scientific notation, while other
+    metrics use fixed-point notation with 4 decimal places.
+
+    Args:
+        metric_collection (tm.MetricCollection): A collection of computed metrics
+            from torchmetrics.
+
+    Returns:
+        dict: A dictionary mapping metric names to formatted string values.
+
+    Example:
+        >>> metrics = MetricCollection([Accuracy(), F1Score()])
+        >>> pretty_metrics(metrics)
+        {'accuracy': '0.9234', 'f1_score': '0.8765'}
+    """
+    return {m: f"{s.item():.4f}" if 'lr' not in m else f"{s.item():.2e}" for m, s in metric_collection.items()}
 
 def normalize_attn_maps(
         attn_maps: torch.Tensor,        
 ) -> torch.Tensor:
+    """
+    Normalizes attention maps to the range [0, 1] using min-max normalization.
+
+    Performs per-image normalization by computing min and max values over the
+    last two dimensions (typically height and width). This ensures each attention
+    map in a batch is independently normalized.
+
+    Args:
+        attn_maps (torch.Tensor): Attention maps tensor of any shape. Normalization
+            is applied over the last two dimensions.
+
+    Returns:
+        torch.Tensor: Normalized attention maps with values in [0, 1], same shape
+            as input.
+
+    Example:
+        >>> attn = torch.rand(4, 8, 16, 16)  # batch, heads, H, W
+        >>> norm_attn = normalize_attn_maps(attn)
+        >>> assert norm_attn.min() >= 0 and norm_attn.max() <= 1
+    """
     norm_dims = list(range(attn_maps.ndim))[-2:] # indices of the last two dimensions (per-image normalization)
     max_per_image = attn_maps.amax(dim=norm_dims, keepdim=True)
     min_per_image = attn_maps.amin(dim=norm_dims, keepdim=True)
@@ -75,6 +160,30 @@ def normalize_attn_maps(
 def normalize_sim_maps(
         sim_maps: torch.Tensor,        
 ) -> torch.Tensor:
+    """
+    Normalizes similarity maps preserving sign information.
+
+    Handles both positive and negative similarity values by separately normalizing
+    each using the absolute maximum value per map. This preserves the sign while
+    scaling values to the range [-1, 1].
+
+    Args:
+        sim_maps (torch.Tensor): Similarity maps that may contain both positive
+            and negative values. Normalization is applied over the last two dimensions.
+
+    Returns:
+        torch.Tensor: Normalized similarity maps with values in [-1, 1], same shape
+            as input. Sign information is preserved.
+
+    Note:
+        Positive and negative values are normalized independently to ensure
+        the full dynamic range is utilized while maintaining interpretability.
+
+    Example:
+        >>> sim = torch.randn(4, 16, 16)  # Can have positive and negative values
+        >>> norm_sim = normalize_sim_maps(sim)
+        >>> assert norm_sim.abs().max() <= 1
+    """
     pos_sim_maps = sim_maps.clamp(min=0)
     neg_sim_maps = -(sim_maps.clamp(max=0))
     norm_dims = list(range(sim_maps.ndim))[-2:] # indices of the last two dimensions (per-image normalization)
@@ -100,6 +209,37 @@ def overlay_map(
         neg_rgb_fill: tuple[int, int, int] = (0, 0, 255),
         normalize: bool = True
 ) -> Image.Image:
+    """
+    Creates an overlay visualization of a signed map on a background image.
+
+    Overlays positive and negative regions of a map (e.g., similarity, attention)
+    onto a background image with different colors. Positive values are shown with
+    pos_rgb_fill color (default green) and negative values with neg_rgb_fill color
+    (default blue). The overlay opacity is controlled by the absolute map values
+    and the alpha parameter.
+
+    Args:
+        background (torch.Tensor | Image.Image): The background image. If a tensor,
+            should have shape (C, H, W). Will be converted to RGBA PIL Image.
+        map (torch.Tensor): The signed map to overlay, shape (H, W). Positive and
+            negative values are colored differently.
+        alpha (float, optional): Overall opacity multiplier for the overlay.
+            Defaults to 1.0.
+        pos_rgb_fill (tuple[int, int, int], optional): RGB color (0-255) for positive
+            values. Defaults to (0, 255, 0) (green).
+        neg_rgb_fill (tuple[int, int, int], optional): RGB color (0-255) for negative
+            values. Defaults to (0, 0, 255) (blue).
+        normalize (bool, optional): Whether to normalize the map using normalize_sim_maps.
+            Defaults to True.
+
+    Returns:
+        Image.Image: An RGB PIL Image with the map overlaid on the background.
+
+    Example:
+        >>> img = torch.rand(3, 224, 224)
+        >>> sim_map = torch.randn(224, 224)
+        >>> result = overlay_map(img, sim_map, alpha=0.5)
+    """
     if isinstance(background, torch.Tensor):
         background_img = to_pil_image(background.cpu()).convert('RGBA')
     else:
@@ -127,6 +267,23 @@ def display_token_length_distr(
         token_lengths: list[int],
         bins: int = 20
 ) -> None:
+    """
+    Displays a histogram of token length distribution.
+
+    Creates a histogram visualization using seaborn to show the distribution
+    of token lengths in a dataset. Useful for analyzing text data characteristics.
+
+    Args:
+        token_lengths (list[int]): A list of token length values to plot.
+        bins (int, optional): Number of bins for the histogram. Defaults to 20.
+
+    Returns:
+        None: Displays the plot using matplotlib.
+
+    Example:
+        >>> lengths = [10, 15, 12, 18, 20, 15, 13]
+        >>> display_token_length_distr(lengths, bins=10)
+    """
     sns.histplot(token_lengths, bins=bins)
     plt.xlabel("Token Length")
     plt.ylabel("Count")
@@ -134,10 +291,24 @@ def display_token_length_distr(
     plt.show()
 
 def display_prompt(full_prompt: str | Prompt) -> None:
-    """Displays a prompt, which can be a string or a list of strings and images, using IPython display utilities.
+    """
+    Displays a prompt in a Jupyter notebook using IPython display utilities.
+
+    Handles both simple string prompts and complex multi-modal prompts that
+    contain mixtures of text and images. Text is rendered as Markdown, and
+    images are displayed inline.
 
     Args:
-        full_prompt (str | Prompt): The prompt to display.
+        full_prompt (str | Prompt): The prompt to display. Can be either:
+            - A simple string (displayed as Markdown)
+            - A Prompt object (list) containing strings and/or PIL Images
+
+    Returns:
+        None: Renders the prompt directly in the notebook.
+
+    Example:
+        >>> display_prompt("# This is a title\\nSome text")
+        >>> display_prompt([img1, "Description", img2])
     """
     if isinstance(full_prompt, str):
         display(Markdown(full_prompt))
@@ -153,6 +324,33 @@ def write_html_multi_row_image_caption(
         rows: dict[str: list[Image.Image]],
         captions: list[str]
 ) -> None:
+    """
+    Writes an HTML file containing a multi-row image gallery with captions.
+
+    Creates an interactive HTML gallery where images are organized in rows
+    (one row per key in the rows dict) and columns (one column per caption).
+    The gallery scrolls horizontally and displays all images with their
+    corresponding captions.
+
+    Args:
+        title (str): The title for the HTML page and the output filename.
+        rows (dict[str, list[Image.Image]]): A dictionary where keys are row
+            labels and values are lists of PIL Images for that row. All lists
+            must have the same length.
+        captions (list[str]): A list of caption strings, one per column.
+            Length must match the length of image lists in rows.
+
+    Returns:
+        None: Writes an HTML file named "{title}.html" to the current directory.
+
+    Raises:
+        IOError: If the file cannot be written.
+
+    Example:
+        >>> rows = {"Row1": [img1, img2], "Row2": [img3, img4]}
+        >>> captions = ["Caption A", "Caption B"]
+        >>> write_html_multi_row_image_caption("Gallery", rows, captions)
+    """
     row_labels = list(rows.keys())
     column_data = [list(x) for x in list(zip(*list(rows.values())))]
 
@@ -167,7 +365,28 @@ def write_html_multi_row_image_caption(
 
 def get_image_base64_data(image):
     """
-    Converts a PIL Image object to Base64 encoded string.
+    Converts a PIL Image object to a Base64 encoded data URI string.
+
+    Encodes an image as PNG format and converts it to a base64 string suitable
+    for embedding in HTML. Handles various image modes by converting to RGB.
+
+    Args:
+        image (Image.Image | None): A PIL Image object to encode. If None,
+            returns (None, None).
+
+    Returns:
+        tuple[str | None, str | None]: A tuple containing:
+            - The base64 data URI string (e.g., "data:image/png;base64,...")
+            - The MIME type string ("image/png")
+            Returns (None, None) if the image is None or encoding fails.
+
+    Note:
+        Prints warning messages to stdout if the image is None or encoding fails.
+
+    Example:
+        >>> img = Image.open("photo.jpg")
+        >>> data_uri, mime = get_image_base64_data(img)
+        >>> # Use in HTML: <img src="{data_uri}">
     """
     if image is None:
         print("Warning: Image is None. Skipping.")
@@ -196,6 +415,27 @@ def compute_results_da(
         exp_path: Path,
         jsonlio: JsonlIO
 ) -> xr.DataArray:
+    """
+    Computes evaluation results as an xarray DataArray from experiment JSONL files.
+
+    Reads all JSONL files in the specified experiment directory, extracts evaluation
+    predictions, scores, and reasons, and organizes them into a multi-dimensional
+    xarray DataArray for easy analysis and visualization.
+
+    Args:
+        exp_path (Path): Path to the experiment directory containing JSONL result files.
+        jsonlio (JsonlIO): A JsonlIO instance for reading and parsing JSONL files.
+
+    Returns:
+        xr.DataArray: A 3D DataArray with dimensions ["var", "img_idx", "metric"].
+            - "var": Variable names derived from JSONL filenames
+            - "img_idx": Image indices
+            - "metric": ["pred", "reason", "score"] evaluation metrics
+
+    Example:
+        >>> results = compute_results_da(Path("experiments/exp1"), jsonlio)
+        >>> accuracy = (results.sel(metric="pred") == 1).mean()
+    """
     data_da = None
 
     var_paths = glob(f"{exp_path}/*.jsonl")
@@ -234,6 +474,30 @@ def compute_results_da_class_splitted(
         num_classes: int,
         jsonlio: JsonlIO
 ) -> xr.DataArray:
+    """
+    Computes class-specific evaluation results as an xarray DataArray.
+
+    Similar to compute_results_da but handles results that are split by class.
+    Reads JSONL files containing per-class evaluation results and organizes them
+    into a 4D DataArray with an additional dimension for class labels.
+
+    Args:
+        exp_path (Path): Path to the experiment directory containing JSONL result files.
+        num_classes (int): Total number of classes in the dataset. Used to ensure
+            all class columns are present even if some are missing data.
+        jsonlio (JsonlIO): A JsonlIO instance for reading and parsing JSONL files.
+
+    Returns:
+        xr.DataArray: A 4D DataArray with dimensions ["var", "img_idx", "pos_class", "metric"].
+            - "var": Variable names derived from JSONL filenames
+            - "img_idx": Image indices
+            - "pos_class": Class labels (0 to num_classes-1)
+            - "metric": ["pred", "reason", "score"] evaluation metrics
+
+    Example:
+        >>> results = compute_results_da_class_splitted(Path("exp"), 21, jsonlio)
+        >>> class_5_acc = (results.sel(pos_class=5, metric="pred") == 1).mean()
+    """
     data_da = None
 
     var_paths = glob(f"{exp_path}/*.jsonl")
@@ -275,6 +539,28 @@ def describe_da(
         data_da: xr.DataArray,
         dims_to_agg: list[str]
 ) -> pd.DataFrame:
+    """
+    Computes descriptive statistics for an xarray DataArray.
+
+    Aggregates data along specified dimensions and computes mean, standard
+    deviation, minimum, and maximum values. Returns results as a pandas DataFrame.
+
+    Args:
+        data_da (xr.DataArray): The data array to compute statistics for.
+        dims_to_agg (list[str]): List of dimension names to aggregate over.
+
+    Returns:
+        pd.DataFrame: A DataFrame with statistics (mean, std, min, max) as columns.
+            Remaining dimensions from the DataArray become rows/indices.
+
+    Raises:
+        AttributeError: If the resulting DataFrame has more than 2 dimensions.
+
+    Example:
+        >>> da = xr.DataArray(np.random.rand(10, 5), dims=["img", "class"])
+        >>> stats = describe_da(da, dims_to_agg=["img"])
+        >>> # Returns stats aggregated over images, indexed by class
+    """
     data_da = data_da.astype("float")
     stats = {
         "mean": data_da.mean(dim=dims_to_agg),
@@ -290,6 +576,26 @@ def describe_da(
 def flatten_class_splitted_answers(
         class_splitted_answers: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
+    """
+    Flattens class-splitted answer dictionaries into a single list.
+
+    Converts nested answer structures where each entry contains multiple
+    class-specific answers into a flat list where each answer has its own
+    entry with a unique image index.
+
+    Args:
+        class_splitted_answers (list[dict[str, Any]]): A list of dictionaries,
+            each containing a "content" key with a dict of class-specific answers.
+
+    Returns:
+        list[dict[str, Any]]: A flattened list where each dictionary contains
+            "img_idx" (sequential index) and "content" (the answer).
+
+    Example:
+        >>> answers = [{"content": {"0": "ans1", "1": "ans2"}}]
+        >>> flatten_class_splitted_answers(answers)
+        [{"img_idx": 0, "content": "ans1"}, {"img_idx": 1, "content": "ans2"}]
+    """
     flat_answers = []
     b = 0
     for csa in class_splitted_answers:
@@ -307,18 +613,31 @@ def class_pixel_distribution(
     """
     Computes the pixel-wise class distribution for a segmentation dataset.
 
+    Iterates through a DataLoader and counts the number of pixels belonging to
+    each class across all images. Returns both absolute counts and percentages.
+
     Args:
-        dl: PyTorch DataLoader providing (image, label) batches.
-                                 Labels are expected to be 2D tensors (HxW) with integer class IDs.
-        num_classes: The total number of classes in the dataset.
+        dl (DataLoader): PyTorch DataLoader providing (image, label) batches.
+            Labels are expected to be 2D tensors (H, W) with integer class IDs.
+        num_classes (int): The total number of classes in the dataset.
+        device (torch.device): The device to perform computations on.
 
     Returns:
         tuple[torch.Tensor, torch.Tensor]: A tuple containing:
-            - class_pixel_counts (torch.Tensor): A 1D tensor where each element
-                                                 is the total count of pixels for that class.
-            - class_pixel_distribution_percentage (torch.Tensor): A 1D tensor
-                                                                   with the percentage of pixels
-                                                                   for each class.
+            - class_pixel_counts (torch.Tensor): A 1D tensor of shape (num_classes,)
+                where each element is the total count of pixels for that class.
+            - class_pixel_distribution_percentage (torch.Tensor): A 1D tensor of
+                shape (num_classes,) with the percentage of pixels for each class.
+
+    Raises:
+        ValueError: If num_classes is not a positive integer.
+
+    Note:
+        Prints a warning if no pixels are processed (empty dataset).
+
+    Example:
+        >>> counts, percentages = class_pixel_distribution(train_loader, 21, device)
+        >>> print(f"Class 0: {percentages[0]:.2f}% of pixels")
     """
     if not isinstance(num_classes, int) or num_classes <= 0:
         raise ValueError("'num_classes' must be a positive integer.")
@@ -359,17 +678,33 @@ def create_multi_row_gallery(
         captions: list[str]
 ) -> str:
     """
-    Generates HTML for a multi-row image gallery where each caption has a
-    column of images above it, all scrolling horizontally together.
+    Generates HTML for a multi-row image gallery with horizontal scrolling.
+
+    Creates a styled HTML page with a grid layout where images are organized in
+    rows and columns. Each column has a caption below it, and row labels appear
+    on the left. The gallery uses Tailwind CSS for styling and supports horizontal
+    scrolling for viewing many columns.
 
     Args:
-        row_labels (list): A list of strings for the row headers.
-        column_data (list of lists): A list where each inner list contains
-                                     PIL Image objects for one vertical column.
-        captions (list): A list of captions, one for each column.
+        title (str): The page title displayed at the top and in the browser tab.
+        row_labels (list[str]): A list of strings for the row headers (sticky left column).
+        column_data (list[list[Image.Image]]): A list where each inner list contains
+            PIL Image objects for one vertical column. Each inner list must have
+            the same length as row_labels.
+        captions (list[str]): A list of captions, one for each column. Length must
+            match len(column_data).
 
     Returns:
-        str: The complete HTML content as a string.
+        str: The complete HTML content as a string, ready to be written to a file.
+
+    Note:
+        Images are base64-encoded and embedded directly in the HTML. The function
+        prints error messages if data validation fails.
+
+    Example:
+        >>> html = create_multi_row_gallery("Results", ["GT", "Pred"],
+        ...                                  [[img1, img2], [img3, img4]],
+        ...                                  ["Sample 1", "Sample 2"])
     """
     # --- Data Validation ---
     num_columns = len(column_data)
@@ -485,6 +820,31 @@ def get_layer_numel_str(
         print_only_total: bool = False,
         only_trainable: bool = False
 ) -> str:
+    """
+    Returns a formatted string showing parameter counts for a PyTorch module.
+
+    Generates a human-readable summary of the number of parameters in each layer
+    of a neural network module. Can optionally filter to show only trainable
+    parameters or only the total count.
+
+    Args:
+        module (nn.Module): The PyTorch module to analyze.
+        print_only_total (bool, optional): If True, only returns the total count.
+            If False, includes per-layer breakdown. Defaults to False.
+        only_trainable (bool, optional): If True, only counts parameters with
+            requires_grad=True. If False, counts all parameters. Defaults to False.
+
+    Returns:
+        str: A formatted string with parameter counts. Numbers are comma-separated
+            for readability. Returns empty string if no parameters found.
+
+    Example:
+        >>> model = torchvision.models.resnet18()
+        >>> print(get_layer_numel_str(model, only_trainable=True))
+        conv1.weight: 9,408
+        ...
+        Total: 11,689,512
+    """
     s = 0
     out_str: str = ""
     layer_names = []
@@ -494,10 +854,11 @@ def get_layer_numel_str(
             layer_names.append(name)
             layer_params.append(params)
             s += params.numel()
-    max_name_len = max([len(n) for n in layer_names])
-    if not print_only_total:
-        out_str += '\n'.join([f"{n:<{max_name_len+1}}: {ps.numel():,}" for n, ps in zip(layer_names, layer_params)]) + '\n'
-    out_str += f"Total: {s:,}"
+    if len(layer_names) > 0:
+        max_name_len = max([len(n) for n in layer_names])
+        if not print_only_total:
+            out_str += '\n'.join([f"{n:<{max_name_len+1}}: {ps.numel():,}" for n, ps in zip(layer_names, layer_params)]) + '\n'
+        out_str += f"Total: {s:,}"
     return out_str
 
 def format_to_title(
@@ -506,16 +867,25 @@ def format_to_title(
         pad_symbol: str = '-'
 ) -> str:
     """
-    Centers a title within a given total length, padding with hyphens.
+    Centers a title within a given total length, padding with a specified symbol.
+
+    Wraps the text in square brackets and centers it within the specified total
+    length by padding with the pad_symbol character. If the text is too long,
+    returns it wrapped in brackets without padding.
 
     Args:
-        title (str): The string to be centered.
-        total_length (int): The total desired length of the output string.
+        text (str): The string to be centered.
+        total_length (int, optional): The total desired length of the output string.
+            Defaults to 100.
+        pad_symbol (str, optional): The character to use for padding. Defaults to '-'.
 
     Returns:
-        str: The centered string with hyphen padding.
-             Returns the original title if total_length is less than
-             or equal to the length of the title.
+        str: The centered string with padding. If total_length is less than or equal
+            to the length of "[ text ]", returns just "[ text ]" without padding.
+
+    Example:
+        >>> format_to_title("Results", total_length=20, pad_symbol='-')
+        '-----[ Results ]-----'
     """
     text = f"[ {text} ]"
     if total_length <= len(text):
@@ -539,17 +909,28 @@ def create_diff_mask(
     """
     Creates a binary difference mask from two integer-based segmentation masks.
 
-    The operation is fully vectorized and runs efficiently on CUDA devices.
+    Compares two segmentation masks element-wise and produces a binary mask
+    indicating where they differ. The operation is fully vectorized and runs
+    efficiently on CUDA devices.
 
     Args:
         mask1 (torch.Tensor): The first segmentation mask with class indices.
-                              Expected dtype: torch.long, torch.int, etc.
+            Expected dtype: torch.long, torch.int, or similar integer type.
         mask2 (torch.Tensor): The second segmentation mask with class indices.
-                              Must have the same shape and device as mask1.
+            Must have the same shape and device as mask1.
 
     Returns:
-        torch.Tensor: A mask with value 255 (uint8) where pixels in mask1 and mask2
-                      are different, and 0 where they are the same.
+        torch.Tensor: A binary mask with dtype uint8. Value is 1 where pixels
+            in mask1 and mask2 are different, and 0 where they are the same.
+
+    Raises:
+        AssertionError: If mask1 and mask2 have different shapes.
+
+    Example:
+        >>> gt_mask = torch.randint(0, 21, (224, 224))
+        >>> pred_mask = torch.randint(0, 21, (224, 224))
+        >>> diff = create_diff_mask(gt_mask, pred_mask)
+        >>> error_rate = diff.float().mean()
     """
     # 1. Ensure the masks have the same shape for element-wise comparison.
     assert mask1.shape == mask2.shape, f"Input masks must have the same shape, but got {mask1.shape} and {mask2.shape}"
@@ -568,7 +949,30 @@ def create_cs_masks_(
         alpha: float = 0.55
 ) -> dict[int, torch.Tensor]:
     """
-    Creates class-specific difference masks in a vectorized, GPU-friendly manner.
+    Creates class-specific overlay masks in a vectorized, GPU-friendly manner.
+
+    For each class in sign_classes, creates a binary mask highlighting pixels
+    belonging to that class, then blends it with the source image to create
+    a colored overlay visualization. All operations are vectorized for efficiency.
+
+    Args:
+        sc_img (torch.Tensor): Source image tensor of shape (H, W) or (C, H, W).
+        mask (torch.Tensor): Segmentation mask with class labels, shape (H, W).
+        sign_classes (list[int]): List of class IDs to create overlays for.
+        alpha (float, optional): Blending factor for the overlay (0-1). Defaults to 0.55.
+
+    Returns:
+        dict[int, torch.Tensor]: A dictionary mapping each class ID to its
+            blended overlay image tensor of shape (C, H, W).
+
+    Note:
+        Returns an empty dict if sign_classes is empty. All tensors are moved
+        to the same device as the mask for efficient computation.
+
+    Example:
+        >>> img = torch.rand(3, 224, 224).cuda()
+        >>> mask = torch.randint(0, 21, (224, 224)).cuda()
+        >>> overlays = create_cs_masks_(img, mask, [1, 5, 10])
     """
     if not sign_classes:
         return {}
@@ -615,18 +1019,38 @@ def create_cs_ovr_masks(
     alpha: float = 0.55
 ) -> list[dict[int, torch.Tensor]]:
     """
-    Creates class-specific difference masks for a batch of images in a vectorized, GPU-friendly manner.
+    Creates class-specific overlay masks for a batch of images in a vectorized manner.
+
+    Batch-processes multiple images to create class-specific overlay visualizations.
+    For each image in the batch and each of its specified classes, generates a
+    blended overlay showing pixels belonging to that class. All operations are
+    highly vectorized for GPU efficiency.
 
     Args:
         sc_imgs (torch.Tensor): Batch of source images. Shape: (B, C, H, W).
         masks (torch.Tensor): Batch of segmentation masks. Shape: (B, H, W).
+            Each pixel value represents a class ID.
         batch_sign_classes (list[list[int]]): A list of lists, where each inner list
-            contains the positive class IDs for the corresponding image in the batch.
-        alpha (float): The blending factor for the overlay.
+            contains the class IDs to visualize for the corresponding image in the batch.
+            Length must equal batch size B.
+        alpha (float, optional): The blending factor for the overlay (0-1).
+            Defaults to 0.55.
 
     Returns:
-        list[dict[int, torch.Tensor]]: A list of dictionaries. Each dictionary maps
-            a class ID to its blended mask tensor for the corresponding image.
+        list[dict[int, torch.Tensor]]: A list of dictionaries, one per image in the batch.
+            Each dictionary maps a class ID to its blended overlay tensor of shape (C, H, W).
+            Returns a list of empty dicts if batch_sign_classes is empty.
+
+    Note:
+        Uses advanced indexing and broadcasting for efficient batch processing.
+        All images are processed simultaneously on the GPU.
+
+    Example:
+        >>> imgs = torch.rand(4, 3, 224, 224).cuda()
+        >>> masks = torch.randint(0, 21, (4, 224, 224)).cuda()
+        >>> classes = [[1, 5], [2], [1, 3, 5], [10]]
+        >>> overlays = create_cs_ovr_masks(imgs, masks, classes, alpha=0.5)
+        >>> # overlays[0] contains overlays for classes 1 and 5 of the first image
     """
     # 0. Handle empty input
     if not batch_sign_classes:

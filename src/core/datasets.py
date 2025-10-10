@@ -1,3 +1,43 @@
+"""
+PyTorch Dataset implementations for semantic segmentation tasks.
+
+This module provides dataset classes for working with various segmentation benchmarks
+and custom data formats. It includes support for:
+
+- **PASCAL VOC 2012**: Standard segmentation benchmark with 21 semantic classes
+- **COCO 2017**: Large-scale dataset with 80+ object categories
+- **JSONL datasets**: Efficient lazy-loading for large JSON Lines files
+- **Image-caption pairs**: Combined datasets for vision-language tasks
+
+Key Features:
+    - Unified interface through abstract SegDataset base class
+    - Flexible preprocessing with resizing, center cropping, and device placement
+    - Class remapping support for label alignment across datasets
+    - Memory-efficient lazy loading for large JSONL files
+    - Integration with PyTorch DataLoader for batched training
+
+Classes:
+    SegDataset: Abstract base class for segmentation datasets
+    VOC2012SegDataset: PASCAL VOC 2012 segmentation dataset
+    COCO2017SegDataset: MS COCO 2017 segmentation dataset
+    JSONLDataset: Efficient lazy-loading dataset for JSONL files
+    ImageDataset: Simple dataset for loading image collections
+    ImageCaptionDataset: Combined dataset for image-caption pairs
+
+Example:
+    >>> from pathlib import Path
+    >>> import torch
+    >>> 
+    >>> # Load VOC 2012 dataset
+    >>> dataset = VOC2012SegDataset(
+    ...     root_path=Path("/data/VOCdevkit"),
+    ...     split="train",
+    ...     device=torch.device("cuda"),
+    ...     resize_size=512
+    ... )
+    >>> image, mask = dataset[0]
+"""
+
 from core.config import *
 from core.data import get_image, get_mask
 from core.color_map import full_color_map
@@ -16,15 +56,26 @@ from torchvision.datasets import VOCSegmentation
 
 from pycocotools.coco import COCO
 
-from core._types import ABC, Optional, Literal, RGB_tuple, Callable, Any
+from core._types import ABC, Optional, Literal, RGB_tuple, Callable, Any, deprecated
 import json
 from glob import glob
 
 class SegDataset(Dataset, ABC):
+    """
+    Abstract base class for segmentation datasets.
+    
+    This class provides common interface and utility methods for loading images,
+    ground truth masks, and prediction masks for semantic segmentation tasks.
+    All concrete segmentation dataset implementations should inherit from this class.
+    
+    Attributes:
+        image_UIDs: Array of unique identifiers for images in the dataset.
+    """
     def __init__(self) -> None:
         raise NotImplementedError
     
     def __len__(self) -> int:
+        """Returns the number of images in the dataset."""
         return len(self.image_UIDs)
     
     def get_sc(
@@ -35,6 +86,19 @@ class SegDataset(Dataset, ABC):
         resize_mode: TF.InterpolationMode = TF.InterpolationMode.BILINEAR,
         center_crop: bool = True
     ) -> torch.Tensor:
+        """
+        Load and preprocess a scene image.
+        
+        Args:
+            path: Path to the image file.
+            device: Torch device to load the image tensor to.
+            resize_size: Target size for resizing. Can be int or (height, width) tuple.
+            resize_mode: Interpolation mode for resizing.
+            center_crop: Whether to apply center cropping to make the image square.
+            
+        Returns:
+            Preprocessed image tensor.
+        """
         return get_image(path, device, resize_size, resize_mode, center_crop)
     
     def get_gt(
@@ -46,6 +110,20 @@ class SegDataset(Dataset, ABC):
         resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
         center_crop: Optional[bool] = None
     ) -> torch.Tensor:
+        """
+        Load and preprocess a ground truth segmentation mask.
+        
+        Args:
+            path: Path to the mask file.
+            device: Torch device to load the mask tensor to.
+            class_map: Optional mapping from original class indices to new indices.
+            resize_size: Target size for resizing. Can be int or (height, width) tuple.
+            resize_mode: Interpolation mode for resizing (typically NEAREST for masks).
+            center_crop: Whether to apply center cropping to make the mask square.
+            
+        Returns:
+            Preprocessed ground truth mask tensor.
+        """
         return get_mask(path, device, class_map, resize_size, resize_mode, center_crop)
 
     def get_pr(
@@ -57,18 +135,63 @@ class SegDataset(Dataset, ABC):
         resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
         center_crop: Optional[bool] = None
     ) -> torch.Tensor:
+        """
+        Load and preprocess a prediction segmentation mask.
+        
+        Args:
+            path: Path to the prediction mask file.
+            device: Torch device to load the mask tensor to.
+            class_map: Optional mapping from original class indices to new indices.
+            resize_size: Target size for resizing. Can be int or (height, width) tuple.
+            resize_mode: Interpolation mode for resizing (typically NEAREST for masks).
+            center_crop: Whether to apply center cropping to make the mask square.
+            
+        Returns:
+            Preprocessed prediction mask tensor.
+        """
         return get_mask(path, device, class_map, resize_size, resize_mode, center_crop)
 
 def download_VOC2012(
         root_path: Path
 ) -> None:
-    """Downloads the VOC2012 dataset using torchvision's VOCSegmentation utility."""
+    """
+    Download the PASCAL VOC 2012 dataset.
+    
+    Uses torchvision's VOCSegmentation utility to download the dataset to the specified
+    root directory. Downloads the 'trainval' split which includes both training and
+    validation sets.
+    
+    Args:
+        root_path: Root directory where the dataset will be downloaded and extracted.
+    """
     VOCSegmentation(root=root_path, image_set='trainval', download=True)
 
 class VOC2012SegDataset(SegDataset):
+    """
+    Dataset class for PASCAL VOC 2012 semantic segmentation.
+    
+    This dataset provides access to the PASCAL VOC 2012 segmentation benchmark with
+    support for different splits, image preprocessing, and optional prediction masks.
+    
+    The dataset contains 21 semantic classes including background, with an optional
+    22nd class for unlabeled pixels.
+    
+    Attributes:
+        root_path: Root directory containing the VOC2012 dataset.
+        split: Dataset split ('train', 'val', 'trainval', or 'prompts_split').
+        image_UIDs: Array of image unique identifiers.
+        sc_root_path: Path to scene images directory.
+        gt_root_path: Path to ground truth masks directory.
+        scs_paths: Array of paths to scene images.
+        gts_paths: Array of paths to ground truth masks.
+        prs_paths: Array of paths to prediction masks (if provided).
+        class_map: Mapping from original to target class indices.
+        resize_size: Target size for image/mask resizing.
+        device: Torch device for loading tensors.
+    """
     def get_image_UIDs(
             self,
-            seed: int, # TODO set this CONFIGto ['seed']
+            seed: int,
             split: Literal['trainval',
                            'train'
                            'val',
@@ -76,16 +199,19 @@ class VOC2012SegDataset(SegDataset):
             uids_to_exclude: list[str] = [],
     ) -> np.ndarray[str]:
         """
-        Lists the UIDs of the images stored into a certain path and by split.
-
+        Retrieve image UIDs for the specified dataset split.
+        
+        Reads image identifiers from the VOC2012 split files. For 'prompts_split',
+        shuffles all but the first 23 images and returns the first 80.
+        
         Args:
-            path: root directory of the images.
-            split: split type ('train' or 'class-splitted').
+            seed: Random seed for shuffling in 'prompts_split' mode.
+            split: Dataset split to load. Options are 'train', 'val', 'trainval',
+                or 'prompts_split' (special split for prompt generation).
+            uids_to_exclude: List of image UIDs to exclude from the dataset.
         
         Returns:
-            List of image UIDs.
-
-        Returns a list of image UIDs read in the "splits.txt" file for a specified split.
+            Array of image UIDs for the specified split.
         """
         image_UIDs = []
         prompt_split = False
@@ -93,11 +219,13 @@ class VOC2012SegDataset(SegDataset):
             prompt_split = True
             split = 'trainval'
         with open(self.root_path / 'VOC2012' / 'ImageSets' / 'Segmentation' / f"{split}.txt", "r") as f:
+            i = 0
             for line in f:
+                i += 1
                 image_id = line.strip()  # Remove any leading/trailing whitespace
                 if image_id not in uids_to_exclude:
                     image_UIDs.append(image_id)
-        image_UIDs = sorted(image_UIDs)
+            image_UIDs = sorted(image_UIDs)
         if prompt_split:
             to_shuffle = image_UIDs[23:]
             rng = random.Random(seed)
@@ -124,13 +252,30 @@ class VOC2012SegDataset(SegDataset):
             mask_prs_path: Path = None,
             output_uids: bool = False
     ) -> None:
+        """
+        Initialize the VOC2012 segmentation dataset.
+        
+        Args:
+            root_path: Root directory containing the VOCdevkit/VOC2012 dataset.
+            split: Dataset split ('train', 'val', 'trainval', or 'prompts_split').
+            device: Torch device to load tensors to.
+            resize_size: Target size for resizing images/masks. If None, original size is kept.
+            sc_resize_mode: Interpolation mode for resizing scene images.
+            mask_resize_mode: Interpolation mode for resizing masks.
+            img_idxs: Optional indices or slice to select a subset of images.
+            uids_to_exclude: List of image UIDs to exclude from the dataset.
+            center_crop: Whether to apply center cropping to make images/masks square.
+            with_unlabelled: Whether to include unlabeled pixels as a separate class (22nd class).
+            mask_prs_path: Optional path to prediction masks directory.
+            output_uids: Whether to include image UIDs in the output.
+        """
         self.root_path = root_path
         self.mask_prs_path = mask_prs_path
         self.split = split
         self.img_idxs = img_idxs
         self.device = device
 
-        self.image_UIDs = self.get_image_UIDs(self.split, uids_to_exclude=uids_to_exclude)
+        self.image_UIDs = self.get_image_UIDs(42, self.split, uids_to_exclude=uids_to_exclude)
 
         if self.img_idxs:
             self.image_UIDs = self.image_UIDs[self.img_idxs]
@@ -201,7 +346,6 @@ class VOC2012SegDataset(SegDataset):
             self,
             idx: int | list[int] | slice
     ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
-        self.scs_paths
         if isinstance(idx, int):
             sc = self.get_sc(path=self.scs_paths[idx], device=self.device, resize_size=self.resize_size, center_crop=self.center_crop)
             gt = self.get_gt(path=self.gts_paths[idx], device=self.device, class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
@@ -233,7 +377,30 @@ class VOC2012SegDataset(SegDataset):
                 return self.image_UIDs[indices], scs, gts
             else:
                 return scs, gts
+    
+    def get_imgs_by_uid(
+            self,
+            uids: str | list[str] | np.ndarray[str]
+    ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
+        if isinstance(uids, str):
+            uid = uids
+            sc = self.get_sc(path=self.sc_root_path / f'{uid}.jpg', device=self.device, resize_size=self.resize_size, center_crop=self.center_crop)
+            gt = self.get_gt(path=self.gt_root_path / f'{uid}.png', device=self.device, class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop)
+            if self.output_uids:
+                return uids, sc, gt
+            else:
+                return sc, gt
+        elif isinstance(uids, list):
+            uids = np.array(uids)
+        if isinstance(uids, np.ndarray):
+            scs = [self.get_sc(path=self.sc_root_path / f'{uid}.jpg', device=self.device, resize_size=self.resize_size, center_crop=self.center_crop) for uid in uids]
+            gts = [self.get_gt(path=self.gt_root_path / f'{uid}.png', device=self.device, class_map=self.class_map, resize_size=self.resize_size, center_crop=self.center_crop) for uid in uids]
+            if self.output_uids:
+                return uids, scs, gts
+            else:
+                return scs, gts
             
+    @deprecated('Use the one above')
     def get_img_by_uid(
             self,
             uid: str
@@ -393,7 +560,6 @@ class COCO2017SegDataset(SegDataset):
     def _create_COCO_masks(
             self,
             sc_dict: dict,
-            device: torch.device # TODO set this to CONFIG['device']
     ) -> torch.Tensor:
         """
         Generates a semantic segmentation mask from COCO annotations.
@@ -415,7 +581,7 @@ class COCO2017SegDataset(SegDataset):
         ann_ids = self.coco.getAnnIds(imgIds=sc_dict['id'], catIds=self.cat_ids, iscrowd=None)
         if not ann_ids:
             # Return an empty mask if there are no annotations
-            return torch.zeros((1, h, w), dtype=torch.uint8, device=device)
+            return torch.zeros((1, h, w), dtype=torch.uint8, device=self.device)
             
         anns = self.coco.loadAnns(ann_ids)
 
@@ -434,7 +600,7 @@ class COCO2017SegDataset(SegDataset):
         # 3. Transfer the completed mask to the GPU in one go.
         # torch.from_numpy is slightly more efficient than torch.tensor for this.
         # .to(..., non_blocking=True) is key for performance in data loading pipelines.
-        gt = torch.from_numpy(mask).to(device, non_blocking=True).unsqueeze(0)
+        gt = torch.from_numpy(mask).to(self.device, non_blocking=True).unsqueeze(0)
         
         # The dtype will be torch.uint8, which is what we want.
         return gt
@@ -477,6 +643,24 @@ class COCO2017SegDataset(SegDataset):
 
         return scs, gts
 
+    def get_imgs_by_uid(
+            self,
+            uids: str | list[str] | np.ndarray[str]
+    ) -> list[tuple[torch.Tensor, torch.Tensor]] | tuple[torch.Tensor, torch.Tensor]:
+        if isinstance(uids, str):
+            uid = uids
+            sc_dict = self.coco.loadImgs([int(uid)])[0] # the output is a singleton list
+            sc = self.get_sc(self.scs_root_path / sc_dict["file_name"], self.device, resize_size=self.resize_size, resize_mode=self.sc_resize_mode, center_crop=self.center_crop)
+            gt = self.get_gt(sc_dict, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop)
+            return sc, gt
+        elif isinstance(uids, list):
+            uids = np.array(uids)
+        if isinstance(uids, np.ndarray):
+            scs_dict = self.coco.loadImgs([int(uid) for uid in uids])
+            scs = [self.get_sc(self.scs_root_path / sc_d["file_name"], self.device, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]            
+            gts = [self.get_gt(sc_d, self.class_map, resize_size=self.resize_size, resize_mode=self.mask_resize_mode, center_crop=self.center_crop) for sc_d in scs_dict]
+            return scs, gts
+    
     def get_img_by_uid(
             self,
             uid: str
@@ -496,7 +680,7 @@ def get_answer_objects(
 ) -> dict | list[dict]:
     if idxs is None:
         answer_gts = jsonlio.get_many_item(path, return_state, format_to_dict)
-        return
+        return answer_gts
     if isinstance(idxs, int):
         answer_gt = jsonlio.get_one_item(path, idxs, return_state, format_to_dict)
         return answer_gt
@@ -659,12 +843,14 @@ class ImageDataset(Dataset):
     def __init__(
             self,
             path: Path,
+            device: torch.device,
             resize_size: Optional[int | list[int, int]] = None,
             resize_mode: Optional[str] = None,
             idxs: Optional[list[int] | slice] = None,
             center_crop: bool = False,
     ) -> None:
         self.image_paths = np.array(sorted(glob(str(path / "*.png"))))
+        self.device = device
         if idxs:
             self.image_paths = self.image_paths[idxs]
         self.resize_size = resize_size
@@ -680,10 +866,10 @@ class ImageDataset(Dataset):
     ) -> list[torch.Tensor] | torch.Tensor:
         if isinstance(idx, slice):
             indices = range(*idx.indices(len(self)))
-            imgs = [get_image(path=self.image_paths[i], resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
+            imgs = [get_image(path=self.image_paths[i], device=self.device, resize_size=self.resize_size, center_crop=self.center_crop) for i in indices]
             return imgs
         else:
-            img = get_image(path=self.image_paths[idx], resize_size=self.resize_size, center_crop=self.center_crop)
+            img = get_image(path=self.image_paths[idx], device=self.device, resize_size=self.resize_size, center_crop=self.center_crop)
             return img
 
 

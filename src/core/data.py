@@ -1,3 +1,37 @@
+"""
+Data I/O and Processing Utilities for Computer Vision Tasks.
+
+This module provides utilities for loading, processing, and handling various data formats
+commonly used in computer vision and multimodal machine learning tasks, including:
+
+- **Image Loading and Processing**: Functions for reading images from disk, resizing, 
+  center-cropping, and converting to tensors with proper device placement.
+  
+- **Mask Loading and Processing**: Functions for loading segmentation masks with support 
+  for class remapping, resizing with appropriate interpolation, and center-cropping.
+  
+- **JSONL File Handling**: A comprehensive JsonlIO class for reading and writing JSONL 
+  (JSON Lines) files with special support for state objects and indexed data storage.
+  
+- **Batch Processing**: Collate functions for DataLoader that handle cropping, augmentation, 
+  and preprocessing for both image-mask pairs and multimodal image-text data.
+  
+- **Data Validation**: Utilities for validating the pertinence of class names in predictions, 
+  ensuring outputs contain only relevant class references.
+
+The module is designed to integrate seamlessly with PyTorch and torchvision, handling 
+tensor operations on specified devices (CPU/CUDA) and supporting various data augmentation 
+and preprocessing pipelines.
+
+Key Components:
+    - get_image(): Load and preprocess single images
+    - get_mask(): Load and preprocess segmentation masks
+    - JsonlIO: Class for JSONL file operations with state management
+    - crop_augment_preprocess_batch(): Collate function for supervised segmentation tasks
+    - crop_image_preprocess_image_text_batch(): Collate function for multimodal tasks
+    - validate_pertinence(): Validate class name references in text outputs
+"""
+
 from core.config import *
 from core.utils import extract_uppercase_words
 from core.data_utils import flatten_list, is_state
@@ -26,15 +60,21 @@ def get_image(
 ) -> torch.Tensor:
     """
     Reads a single image from disk and encodes it in a tensor.
-    Optionally resizes and center-crops an image
+    Optionally resizes and center-crops the image.
 
     Args:
         path: Path to the image file.
-        image_size: Target size as int, tuple, or None.
-        center_crop: Whether to center crop the image.
+        device: Target device for the tensor (e.g., CPU or CUDA).
+        resize_size: Target size for resizing. Can be an int (for square), 
+                     tuple of (height, width), or None (no resizing).
+        resize_mode: Interpolation mode for resizing. Defaults to BILINEAR.
+        center_crop: Whether to center crop the image to a square based on 
+                     the minimum dimension. Defaults to True.
+        mode: Color mode for the image (e.g., "RGB", "L"). Defaults to "RGB".
 
     Returns:
-        Image as a torch.Tensor on the global device.
+        Image as a torch.Tensor on the specified device with shape [C, H, W].
+        Grayscale images (1 channel) are expanded to 3 channels.
     """
     img = decode_image(path, mode=mode).to(device)
     if img.shape[0] == 1:
@@ -72,17 +112,22 @@ def get_mask(
         center_crop: Optional[bool] = None
 ) -> torch.Tensor:
     """
-    Loads a mask, applies class mapping, resizes, and optionally center-crops it.
+    Loads a segmentation mask, applies class mapping, resizes, and optionally center-crops it.
 
     Args:
         path: Path to the mask file.
-        class_map: Dictionary mapping class indices.
-        image_size: Target size as int, tuple, or None.
-        resize_mode: Interpolation mode.
-        center_crop: Whether to center crop the mask.
+        device: Target device for the tensor (e.g., CPU or CUDA).
+        class_map: Optional dictionary mapping original class indices to new class indices.
+                   Used for remapping class labels in the mask.
+        resize_size: Target size for resizing. Can be an int (for square), 
+                     tuple of (height, width), or None (no resizing).
+        resize_mode: Interpolation mode for resizing. Defaults to NEAREST 
+                     (appropriate for masks to avoid interpolation artifacts).
+        center_crop: Whether to center crop the mask to a square based on 
+                     the minimum dimension. If None, no cropping is applied.
 
     Returns:
-        Processed mask tensor.
+        Processed mask tensor with shape [1, H, W] on the specified device.
     """
     mask = decode_image(path).to(device)
     mask = mask[:1, :, :]
@@ -95,6 +140,15 @@ def get_mask(
     return mask
 
 def read_json(json_path: Path) -> dict:
+    """
+    Reads a JSON file and returns its contents as a dictionary.
+
+    Args:
+        json_path: Path to the JSON file.
+
+    Returns:
+        Dictionary containing the parsed JSON data.
+    """
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     return data
@@ -119,7 +173,18 @@ def read_txt(
 
 class JsonlIO:
     """
-    TODO
+    Utility class for reading and writing JSONL (JSON Lines) files.
+    
+    JSONL files contain one JSON object per line. This class supports special 
+    "state" objects (typically on the first line) that store metadata about the 
+    file contents. Each regular data object contains an "img_idx" field for 
+    identification and a "content" field for the actual data.
+    
+    The class provides methods for:
+    - Reading individual or multiple objects from JSONL files
+    - Appending objects to JSONL files
+    - Formatting objects for storage or retrieval
+    - Handling state objects separately from data objects
     """
     @staticmethod
     def read_one_jsonl_line(
@@ -267,15 +332,16 @@ class JsonlIO:
             format_to_dict: bool = False
     ) -> dict:
         """
-        Gets a single item from a JSONL file by index, optionally merging with state.
+        Gets a single item from a JSONL file by image index, optionally merging with state.
 
         Args:
             path: Path to the JSONL file.
-            idx: Index of the item to retrieve.
-            return_state: Whether to merge with the state object.
+            idx: Image index (img_idx) of the item to retrieve.
+            return_state: Whether to merge the state object with the returned item.
+            format_to_dict: Whether to format the output as {img_idx: content}.
 
         Returns:
-            The requested item, optionally merged with state.
+            The requested item dictionary, optionally merged with state and formatted.
         """
         state = self.read_state(path)
         item = self.read_one_from_jsonl_by(path, "img_idx", idx)
@@ -288,25 +354,25 @@ class JsonlIO:
             path: Path,
             return_state: bool = False,
             format_to_dict: bool = False
-    ) -> dict | tuple[dict, dict]:
+    ) -> dict | list[dict]:
         """
-        Gets multiple items from a JSONL file, optionally merging with state and formatting as a dictionary.
+        Gets multiple items from a JSONL file, optionally including state and formatting as a dictionary.
 
         Args:
             path: Path to the JSONL file.
-            return_state: Whether to return the state object as well.
-            format_to_dict: Whether to format the output as a dictionary.
+            return_state: Whether to include the state object in the returned list.
+            format_to_dict: Whether to format the output as {img_idx: content} mappings.
 
         Returns:
-            Items from the file, and optionally the state object.
+            If format_to_dict is False: List of item dictionaries (with state prepended if return_state is True).
+            If format_to_dict is True: Dictionary mapping img_idx to content.
         """
         state = self.read_state(path)
         items = self.read_many_from_jsonl(path)
         items = self.format_many_from_jsonl(items) if format_to_dict else items
         if return_state:
-            return items, state
-        else:
-            return items
+            items = [state, *items]
+        return items
         
     @staticmethod
     def format_many_to_jsonl(
@@ -316,10 +382,12 @@ class JsonlIO:
         Formats multiple objects for appending to a JSONL file.
 
         Args:
-            objs: Dictionary of objects to format.
+            objs: Dictionary with a "state" key and img_idx: content mappings.
+                  Expected format: {"state": {...}, img_idx1: content1, img_idx2: content2, ...}
 
         Returns:
-            List of formatted objects.
+            List of formatted dictionaries ready for JSONL serialization.
+            First element is {"state": ...}, followed by {"img_idx": ..., "content": ...} objects.
         """
         objs_list = [{"state": objs["state"]}]
         objs_list.extend([{"img_idx": img_idx, "content": content} for img_idx, content in list(objs.items())[1:]])
@@ -330,7 +398,13 @@ def expand_words_to_variants(
         word: str
 ) -> list[str]:
     """
-    Expands a word in a list of similar word to involve for the pertinence check
+    Expands a word into a list of its variants for pertinence checking.
+
+    Args:
+        word: The word to expand.
+
+    Returns:
+        List containing the original word and its lowercase variant.
     """
     return [word, word.lower()]
 
@@ -340,8 +414,20 @@ def validate_pertinence(
         significant_classes: list[int]
 ) -> None:
     """
-    Asserts if predicted answers only contain upper case words (as all and only class names should be) related to their positive class.
-    The positive class name needs to be there and all other cannot.
+    Validates that predicted answer sentences contain only relevant class names.
+    
+    This function asserts that:
+    1. Uppercase words in sentences (representing class names) are pertinent to their positive class.
+    2. The positive class name appears in the sentence.
+    3. No forbidden class names (classes other than the positive class and BACKGROUND) appear.
+
+    Args:
+        sentences: List of answer sentences to validate.
+        classes: List of all class names.
+        significant_classes: List of positive class indices corresponding to each sentence.
+
+    Raises:
+        AssertionError: If forbidden class names are found or allowed class names are missing.
     """
     for s, pos_class in zip(sentences, significant_classes):
         reason_upper_words = extract_uppercase_words(s)
@@ -350,10 +436,6 @@ def validate_pertinence(
         forbidden_class_names = flatten_list([expand_words_to_variants(cn) for cn in classes if cn not in allowed_class_names])
         assert all(word != fw for word in reason_upper_words for fw in forbidden_class_names), f"Forbidden words found in answer of pos. class '{pos_class_name}'"
         assert [s in reason_upper_words for s in allowed_class_names] , f"Allowed words '{allowed_class_names}' not found in answer '{pos_class_name}'"
-
-
-
-
     
 def crop_augment_preprocess_batch(
         batch: list,
@@ -361,7 +443,34 @@ def crop_augment_preprocess_batch(
         augment_fn: Callable,
         preprocess_fn: Callable,
         output_uids: bool = False
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, torch.Tensor] | tuple[tuple, torch.Tensor, torch.Tensor]:
+    """
+    Processes a batch of images and masks through cropping, augmentation, and preprocessing.
+    
+    This function is designed to be used as a collate_fn by fixing parameters other than 'batch'.
+    It processes images and masks through the following pipeline:
+    1. Unpacks batch (optionally with UIDs)
+    2. Applies cropping to images and masks
+    3. Normalizes images to [0, 1] range
+    4. Applies optional augmentation
+    5. Applies optional preprocessing
+    
+    Input images are expected to be in the range [0, 255] as Float32 tensors.
+
+    Args:
+        batch: List of tuples, either (x, y) or (uid, x, y), where:
+               - uid: Unique identifier (if output_uids is True)
+               - x: Image tensor
+               - y: Mask tensor
+        crop_fn: Function to crop images and masks. Should accept (image, mask) and return (image, mask).
+        augment_fn: Optional function for data augmentation. Should accept (images, masks) and return (images, masks).
+        preprocess_fn: Optional function for preprocessing images. Should accept images and return preprocessed images.
+        output_uids: Whether to output UIDs along with processed data. Defaults to False.
+
+    Returns:
+        If output_uids is False: Tuple of (images, masks) as tensors with shapes [B, C, H, W] and [B, H, W].
+        If output_uids is True: Tuple of (uids, images, masks).
+    """
     # Has to be made into a 'collate_fn' by fixing the parameters other than 'batch'!
     if output_uids:
         uids, x, y = zip(*batch)
@@ -394,7 +503,34 @@ def crop_image_preprocess_image_text_batch(
         preprocess_images_fn: Optional[Callable],
         preprocess_texts_fn: Optional[Callable],
         output_text_metadata: bool = False
-) -> tuple[torch.Tensor, torch.Tensor]:
+) -> tuple[torch.Tensor, list] | tuple[torch.Tensor, list, list[dict]]:
+    """
+    Processes a batch of images and text data through cropping and preprocessing.
+    
+    This function handles multimodal data by:
+    1. Unpacking images and text dictionaries from the batch
+    2. Applying cropping to images
+    3. Normalizing images to [0, 1] range
+    4. Applying optional image preprocessing
+    5. Extracting text content from text dictionaries
+    6. Applying optional text preprocessing
+    
+    Input images are expected to be in the range [0, 255] as Float32 tensors.
+
+    Args:
+        batch: List of (image, text_dict) tuples, where text_dict contains at least a 'content' key.
+        crop_fn: Function to crop images. Should accept an image and return a cropped image.
+        preprocess_images_fn: Optional function for preprocessing images. 
+                              Should accept a batch of images and return preprocessed images.
+        preprocess_texts_fn: Optional function for preprocessing texts. 
+                             Should accept (texts, device) and return preprocessed texts.
+        output_text_metadata: Whether to output full text metadata dictionaries. Defaults to False.
+
+    Returns:
+        If output_text_metadata is False: Tuple of (images, texts) where texts is the preprocessed content.
+        If output_text_metadata is True: Tuple of (images, texts, texts_metadata) where texts_metadata 
+                                         contains the original text dictionaries.
+    """
     imgs, texts = zip(*batch)
 
     # when the images are sampled in the batch, they are:
@@ -419,6 +555,10 @@ def crop_image_preprocess_image_text_batch(
         return imgs, texts
 
 def main() -> None:
+    """
+    Main function for testing and debugging data utilities.
+    Currently contains placeholder/commented code for testing purposes.
+    """
     # jsonl_ds = JSONLDataset(Path("/home/olivieri/exp/data/private/data_gen/VOC2012/flat/train_no_aug_flat.jsonl"))
     # print(jsonl_ds)
     # print(len(jsonl_ds))

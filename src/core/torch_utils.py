@@ -1,6 +1,15 @@
+"""
+PyTorch utility functions for tensor operations, memory management, and model optimization.
+
+This module provides a collection of utility functions for working with PyTorch tensors,
+including tensor mapping and blending, memory management, activation hooks, statistical
+operations, tensor list flattening/unflattening, and model compilation utilities.
+"""
+
 from core.config import *
 
 import gc
+from collections import OrderedDict
 
 import torch
 from torch import nn
@@ -8,11 +17,32 @@ from torch import nn
 from core._types import Callable, TensorStructureInfo, ListStructureInfo
 
 def get_compute_capability() -> float:
+    """
+    Get the CUDA compute capability of the current GPU device.
+    
+    Returns:
+        float: The compute capability as a decimal number where the major version
+               is the integer part and the minor version is the decimal part 
+               (e.g., 7.5 for compute capability 7.5).
+    """
     compute_capability = torch.cuda.get_device_capability()
     compute_capability = compute_capability[0] + 0.1*compute_capability[1]
     return compute_capability
 
 def compile_torch_model(model: torch.nn.Module):
+    """
+    Compile a PyTorch model using torch.compile if the GPU compute capability is sufficient.
+    
+    This function only compiles the model if the CUDA compute capability is 7.0 or higher,
+    as torch.compile requires newer GPU architectures for optimal performance.
+    
+    Args:
+        model (torch.nn.Module): The PyTorch model to compile.
+    
+    Returns:
+        torch.nn.Module: The compiled model if compute capability >= 7.0, otherwise 
+                        the original model unchanged.
+    """
     if get_compute_capability() >= 7.0:
         model = torch.compile(model)
     return model
@@ -21,6 +51,27 @@ def map_tensors(
         input_tensor: torch.Tensor,
         mapping_dict: dict[int, int]
 ) -> torch.Tensor:
+    """
+    Map tensor values according to a dictionary using a lookup tensor for efficient remapping.
+    
+    This function creates a lookup tensor from the mapping dictionary and uses it to remap
+    all values in the input tensor in a vectorized manner. Values not present in the mapping
+    dictionary are mapped to 0 by default.
+    
+    Args:
+        input_tensor (torch.Tensor): The input tensor whose values need to be remapped.
+        mapping_dict (dict[int, int]): A dictionary mapping original values to new values.
+    
+    Returns:
+        torch.Tensor: A tensor with the same shape as input_tensor but with values 
+                     remapped according to mapping_dict. Unmapped values are set to 0.
+    
+    Example:
+        >>> tensor = torch.tensor([1, 2, 3, 1, 2])
+        >>> mapping = {1: 10, 2: 20, 3: 30}
+        >>> result = map_tensors(tensor, mapping)
+        >>> # result: tensor([10, 20, 30, 10, 20])
+    """
     # Find the maximum key in your dictionary to determine the size of the lookup tensor
     max_key = max(mapping_dict.keys()) if mapping_dict else 0
     max_val = max(mapping_dict.values()) if mapping_dict else 0 # For setting default value dtype
@@ -80,10 +131,26 @@ def blend_tensors(
         alpha: float
 ) -> torch.Tensor:
     """
-    Blends two tensors using torch.lerp for a potentially more optimized approach.
+    Blend two tensors using linear interpolation (lerp) and clamp the result to uint8 range.
     
-    torch.lerp(start, end, weight) is equivalent to: start + weight * (end - start)
-    which is algebraically the same as: start * (1 - weight) + end * weight
+    This function performs linear interpolation between two tensors using torch.lerp,
+    which computes: tensor1 + alpha * (tensor2 - tensor1), equivalent to 
+    tensor1 * (1 - alpha) + tensor2 * alpha. The result is clamped to [0, 255] 
+    and converted to uint8, making it suitable for image blending operations.
+    
+    Args:
+        tensor1 (torch.Tensor): The first tensor (start point of interpolation).
+        tensor2 (torch.Tensor): The second tensor (end point of interpolation).
+        alpha (float): The interpolation weight. When alpha=0, returns tensor1;
+                      when alpha=1, returns tensor2; values between 0 and 1
+                      produce a blend.
+    
+    Returns:
+        torch.Tensor: The blended tensor as uint8, clamped to [0, 255].
+    
+    Note:
+        torch.lerp(start, end, weight) computes: start + weight * (end - start),
+        which is algebraically equivalent to: start * (1 - weight) + end * weight
     """
     blended_tensor = torch.lerp(tensor1.float(), tensor2.float(), alpha)
     out_tensor = torch.clamp(blended_tensor, 0, 255).to(torch.uint8)
@@ -93,6 +160,25 @@ def clear_memory(
         ram: bool = True,
         gpu: bool = True,
 ) -> None:
+    """
+    Clear memory by running garbage collection and/or emptying the CUDA cache.
+    
+    This function helps free up memory by triggering Python's garbage collector
+    and clearing PyTorch's CUDA memory cache. It can be useful when dealing with
+    memory-intensive operations or when switching between different models.
+    
+    Args:
+        ram (bool, optional): If True, run Python's garbage collector to free 
+                             CPU memory. Defaults to True.
+        gpu (bool, optional): If True, empty PyTorch's CUDA cache to free 
+                             GPU memory. Defaults to True.
+    
+    Returns:
+        None
+    
+    Note:
+        MemoryError exceptions during cache clearing are silently ignored.
+    """
     gc.collect() if ram else None
     try:
         torch.cuda.empty_cache() if gpu else None
@@ -104,9 +190,29 @@ def get_activation(
         activations: dict[str, torch.Tensor]
 ) -> Callable:
     """
-    This function returns another function (a hook) that will be registered
-    to a layer. The hook will save the output of the layer in the
-    `activation` dictionary.
+    Create a forward hook function to capture layer activations during forward pass.
+    
+    This function returns a hook that can be registered to a PyTorch module using
+    `module.register_forward_hook()`. When the module's forward pass is executed,
+    the hook captures the output activation and stores it in the provided dictionary
+    with the specified name as the key.
+    
+    Args:
+        name (str): The identifier/key under which to store the activation in the
+                   activations dictionary.
+        activations (dict[str, torch.Tensor]): A dictionary to store the captured
+                                               activations. This dict is modified in-place.
+    
+    Returns:
+        Callable: A hook function that can be registered to a PyTorch module to
+                 capture its output activations.
+    
+    Example:
+        >>> activations = {}
+        >>> hook = get_activation('layer1', activations)
+        >>> model.layer1.register_forward_hook(hook)
+        >>> output = model(input)
+        >>> layer1_activation = activations['layer1']
     """
     def hook(
             model: nn.Module,
@@ -119,8 +225,30 @@ def get_activation(
 def nanstd(
         data: torch.Tensor,
         dim: list[int] | int,
-        keepdim: bool =False
-) -> None:
+        keepdim: bool = False
+) -> torch.Tensor:
+    """
+    Compute the standard deviation of a tensor along specified dimensions, ignoring NaN values.
+    
+    This function calculates the standard deviation while treating NaN values as if they
+    don't exist in the computation. It uses the formula: sqrt(mean((x - mean(x))^2)),
+    where mean operations ignore NaN values.
+    
+    Args:
+        data (torch.Tensor): The input tensor containing the data.
+        dim (list[int] | int): The dimension or dimensions along which to compute
+                              the standard deviation.
+        keepdim (bool, optional): If True, the output tensor retains the reduced
+                                 dimension(s) with size 1. Defaults to False.
+    
+    Returns:
+        torch.Tensor: The standard deviation computed along the specified dimension(s),
+                     with NaN values ignored in the calculation.
+    
+    Note:
+        This function uses torch.nanmean for all mean calculations, ensuring NaN
+        values are properly excluded from both the mean and variance computations.
+    """
     result = torch.sqrt(
         torch.nanmean(
             torch.pow(torch.abs(data-torch.nanmean(data, dim=dim).unsqueeze(dim)), 2),
@@ -191,16 +319,27 @@ def unflatten_tensor_list(
         structure_info: ListStructureInfo
 ) -> TensorStructureInfo:
     """
-    Reconstructs an original nested list of tensors from a flattened tensor
-    and its corresponding structure information.
+    Reconstruct a nested list of tensors from a flattened tensor and structure information.
+    
+    This function reverses the operation performed by flatten_tensor_list, reconstructing
+    the original nested list structure from a concatenated tensor and its metadata.
+    The structure_info parameter contains the sizes and nesting information needed to
+    split and reshape the flat tensor back into its original form.
 
     Args:
-        flat_tensor (torch.Tensor): The flattened tensor.
-        structure_info (list): The metadata describing the original nested
-                               structure and tensor sizes.
+        flat_tensor (torch.Tensor): The flattened tensor containing all concatenated data.
+        structure_info (ListStructureInfo): Metadata describing the original nested
+                                           structure and tensor sizes, as returned by
+                                           flatten_tensor_list.
 
     Returns:
-        A nested list of tensors in the same format as the original.
+        TensorStructureInfo: A nested list of tensors reconstructed in the same format
+                            as the original input to flatten_tensor_list.
+    
+    Example:
+        >>> flat, info = flatten_tensor_list([[tensor1, tensor2], [tensor3]])
+        >>> reconstructed = unflatten_tensor_list(flat, info)
+        >>> # reconstructed == [[tensor1, tensor2], [tensor3]]
     """
     # First, get a flat list of all tensor sizes from the structure info
     sizes = []
@@ -238,7 +377,47 @@ def unflatten_tensor_list(
 
     return _rebuild(structure_info)
 
+# TODO currently this method always removes '_orig_mod.'. The prefix should be a parameter.
+def unprefix_state_dict(
+        prefixed_state_dict: OrderedDict,
+        prefix: str
+) -> OrderedDict:
+    """
+    Remove a prefix from all keys in a PyTorch model state dictionary.
+    
+    This function is particularly useful when working with compiled models or models
+    wrapped in certain PyTorch containers that add prefixes to parameter names.
+    The function removes the '_orig_mod.' prefix from all keys in the state dict,
+    which is commonly added by torch.compile().
+    
+    Args:
+        prefixed_state_dict (OrderedDict): The state dictionary with prefixed keys.
+        prefix (str): The prefix to remove from keys. Note: This parameter is currently
+                     not used; the function hardcodes '_orig_mod.' as the prefix.
+    
+    Returns:
+        OrderedDict: A new state dictionary with the prefix removed from all keys.
+    
+    Note:
+        Despite accepting a prefix parameter, this function currently always removes
+        the '_orig_mod.' prefix, regardless of the value passed to the prefix argument.
+    
+    Example:
+        >>> state_dict = {'_orig_mod.layer1.weight': tensor1, '_orig_mod.layer1.bias': tensor2}
+        >>> clean_dict = unprefix_state_dict(state_dict, '')
+        >>> # clean_dict: {'layer1.weight': tensor1, 'layer1.bias': tensor2}
+    """
+    prefix = '_orig_mod.'
+    unprefixed_state_dict = {key.replace(prefix, ''): value for key, value in prefixed_state_dict.items()}
+    return unprefixed_state_dict
+
 def main() -> None:
+    """
+    Main function for testing and demonstrating module functionality.
+    
+    This function serves as an entry point for running tests and examples
+    of the utility functions defined in this module.
+    """
     
     def try_flatten_unflatten_tensor_list() -> None:
         C, H = 3, 4

@@ -9,29 +9,27 @@ import torch
 from dataclasses import dataclass
 
 # Generics
-T = TypeVar("T") # generic type
+T = TypeVar('T') # generic type
+R = TypeVar('R') # return generic type
 K = TypeVar('K') # generic key type
 V = TypeVar('V') # generic value type
-F = TypeVar("F", bound=Callable[..., object]) # generic function
+F = TypeVar('F', bound=Callable[..., object]) # generic function
 
-TensorStructureInfo = list[torch.Tensor, TypeVar('TensorStructureInfo')] # nested list structure
-ListStructureInfo = list[int | TypeVar('ListStructureInfo')] # tenso metadata structure
+TensorStructureInfo: TypeAlias = list[torch.Tensor, 'TensorStructureInfo'] # nested list structure
+ListStructureInfo: TypeAlias = list[int, 'ListStructureInfo'] # tenso metadata structure
 
 # Types for images
-RGB_tuple = tuple[float, float, float]
-ImageMediaMetadata = object
+RGB_tuple: TypeAlias = tuple[float, float, float]
+ImageMediaMetadata: TypeAlias = object
 
 # Types for prompts
-Prompt = list[str | Image.Image]
-Conversation = list[dict[str, str]] # list of chat-templated turns.
-PosClass = int
-ClassSplitted = dict[PosClass, T]
+Prompt: TypeAlias = list[str | Image.Image]
+Conversation: TypeAlias = list[dict[str, str]] # list of chat-templated turns.
+PosClass: TypeAlias = int
+ClassSplitted: TypeAlias = dict[PosClass, T]
 
 # Types for cache
-TensorImage = torch.Tensor
-TextInfo = str
-CacheItem = tuple[TensorImage, TextInfo]
-CacheKey = str
-
-# Types for MLLMs
-GenericClient = TypeVar('GenericClient')
+TensorImage: TypeAlias = torch.Tensor
+TextInfo: TypeAlias = str
+CacheItem: TypeAlias = tuple[TensorImage, TextInfo]
+CacheKey: TypeAlias = str

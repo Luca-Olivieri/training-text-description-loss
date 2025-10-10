@@ -1,6 +1,22 @@
+"""
+Utility module for the core package.
+
+This module provides various utility functions and classes for data processing,
+performance tracking, text manipulation, and negative text generation. It includes:
+
+- JSON data processing and flattening utilities
+- Text parsing and extraction functions
+- Performance tracking decorators for measuring execution time and memory usage
+- Retry decorator for handling transient failures
+- Data subsampling utilities
+- NegativeTextGenerator class for creating text negatives through word substitution
+
+The module is designed to support machine learning workflows, particularly for
+semantic segmentation and vision-language tasks.
+"""
+
 from core.config import *
 
-from torchvision.datasets import VOCSegmentation
 import re
 import ast
 import time
@@ -10,11 +26,10 @@ import asyncio
 import numpy as np
 import xarray as xr
 import pandas as pd
-from abc import ABC
 import json
 import math
 
-from core._types import Callable, TypeVar, Any, Any, TypeVar, ABC, deprecated
+from core._types import Callable, Any, deprecated
 
 @deprecated("Should be split into two methods, one flattening and one writing.")
 def flatten_cs_jsonl(
@@ -24,11 +39,33 @@ def flatten_cs_jsonl(
     """
     Reads a JSONL file, flattens its records, and writes to a new JSONL file.
 
-    - The first line of the input is copied directly to the output.
-    - Each subsequent line is flattened from:
-      {"img_idx": int, "content": {str_key: str_val, ...}}
-    - To multiple lines of:
-      {"img_idx": int, "pos_class": int, "content": str_val}
+    This function processes a JSONL file where each line (after the first) contains
+    an image index and a nested content dictionary. The nested structure is flattened
+    such that each key-value pair in the content dictionary becomes a separate record.
+
+    The first line of the input file (typically containing state/metadata) is copied
+    directly to the output without modification.
+
+    Args:
+        input_path (Path): Path to the input JSONL file to be processed.
+        output_path (Path): Path where the flattened JSONL file will be written.
+
+    Input format (lines after the first):
+        {"img_idx": int, "content": {str_key: str_val, ...}}
+
+    Output format (lines after the first):
+        {"img_idx": int, "pos_class": int, "content": str_val}
+
+    Returns:
+        None: Writes the output directly to a file.
+
+    Raises:
+        FileNotFoundError: If the input file does not exist.
+        Exception: For any other unexpected errors during processing.
+
+    Note:
+        This function is deprecated and should be split into separate flattening
+        and writing methods for better modularity.
     """
     print(f"--- Processing '{input_path}' and writing to '{output_path}' ---")
     
@@ -85,37 +122,68 @@ def flatten_cs_jsonl(
     except Exception as e:
         print(f"An unexpected error occurred: {e}")
 
-def extract_json(text: str) -> str:
-    """Extracts the first JSON object found in a string.
+def extract_json(text: str) -> str | None:
+    """
+    Extracts the first JSON object found in a string.
+
+    Searches for the first occurrence of a JSON object (enclosed in curly braces)
+    within the given text using regex pattern matching. Handles multiline JSON objects.
 
     Args:
-        text (str): The string to search.
+        text (str): The string to search for a JSON object.
 
     Returns:
-        str: The extracted JSON string, or None if not found.
+        str | None: The extracted JSON string if found, None otherwise.
+
+    Example:
+        >>> text = "Some text before {\"key\": \"value\"} and after"
+        >>> extract_json(text)
+        '{"key": "value"}'
     """
     match = re.search(r'\{.*\}', text, re.DOTALL)
     return match.group(0) if match else None
 
 def extract_uppercase_words(text: str) -> list[str]:
-    """Returns a list of all unique uppercase words from the given text.
+    """
+    Extracts all unique uppercase words from the given text.
+
+    Finds all words that consist entirely of uppercase letters (A-Z) and returns
+    them as a sorted list of unique values. Word boundaries are respected.
 
     Args:
-        text (str): The text to search.
+        text (str): The text to search for uppercase words.
 
     Returns:
-        list[str]: The sorted list of unique uppercase words.
+        list[str]: A sorted list of unique uppercase words found in the text.
+
+    Example:
+        >>> extract_uppercase_words("The CAT and DOG are ANIMALS, CAT is small")
+        ['ANIMALS', 'CAT', 'DOG']
     """
     return sorted(set(re.findall(r'\b[A-Z]+\b', text)))
 
-def parse_str_to_dict(text: str) -> dict | str:
-    """Parses a string containing a dictionary representation and returns the dictionary.
+def parse_text_to_dict(text: str) -> dict | str:
+    """
+    Parses a string containing a dictionary representation and returns the dictionary.
+
+    Attempts to extract a JSON object from the text and parse it into a Python dictionary
+    using ast.literal_eval for safe evaluation. If parsing fails, returns the original
+    text string.
 
     Args:
-        text (str): The string to parse.
+        text (str): The string containing a dictionary representation to parse.
 
     Returns:
-        dict | str: The parsed dictionary, or the original string if parsing fails.
+        dict | str: The parsed dictionary if successful, otherwise the original string.
+
+    Note:
+        Prints "Wrong parsing to dict!" to stdout if parsing fails.
+
+    Example:
+        >>> parse_text_to_dict('{"key": "value"}')
+        {'key': 'value'}
+        >>> parse_text_to_dict('not a dict')
+        'not a dict'
     """
     text = extract_json(text)
     try:
@@ -126,13 +194,25 @@ def parse_str_to_dict(text: str) -> dict | str:
         return text
 
 def create_empty_dataarray(dims_to_coords: dict[str, list[Any]]) -> xr.DataArray:
-    """Creates an empty xarray DataArray with the specified dimensions and coordinates.
+    """
+    Creates an empty xarray DataArray with the specified dimensions and coordinates.
+
+    Constructs a multi-dimensional array with shape determined by the length of each
+    coordinate list. The array is initialized with empty object dtype values.
 
     Args:
-        dims_to_coords (dict[str, list[Any]]): A mapping from dimension names to coordinate lists.
+        dims_to_coords (dict[str, list[Any]]): A mapping from dimension names to their
+            coordinate lists. The length of each list determines the size of that dimension.
 
     Returns:
-        xr.DataArray: The created empty DataArray.
+        xr.DataArray: An empty DataArray with the specified dimensions and coordinates,
+            using object dtype.
+
+    Example:
+        >>> dims = {"trial": [0, 1, 2], "metric": ["time", "memory"]}
+        >>> da = create_empty_dataarray(dims)
+        >>> da.shape
+        (3, 2)
     """
     dims, coords = zip(*dims_to_coords.items())
     shape = [len(c) for c in coords]
@@ -140,13 +220,33 @@ def create_empty_dataarray(dims_to_coords: dict[str, list[Any]]) -> xr.DataArray
     return da
 
 def track_performance(n_trials: int = 10) -> Callable:
-    """A decorator that tracks execution time and memory usage of a function over multiple trials.
+    """
+    A decorator factory that tracks execution time and memory usage over multiple trials.
+
+    Creates a decorator that runs the target function multiple times and collects
+    performance metrics (execution time, current memory, peak memory) for each trial.
+    Works with both synchronous and asynchronous functions.
 
     Args:
-        n_trials (int): The number of trials to run.
+        n_trials (int, optional): The number of trials to run. Defaults to 10.
 
     Returns:
-        Callable: The decorated function with performance tracking.
+        Callable: A decorator that wraps the target function with performance tracking.
+
+    The decorated function returns:
+        tuple[Any, pd.DataFrame]: A tuple containing:
+            - The result of the function from the last trial
+            - A pandas DataFrame with performance metrics for all trials
+
+    Note:
+        Uses tracemalloc for memory profiling. Memory values are returned in MB.
+        Execution time is measured using time.perf_counter() in seconds.
+
+    Example:
+        >>> @track_performance(n_trials=5)
+        ... def my_function():
+        ...     return sum(range(1000000))
+        >>> result, perf_data = my_function()
     """
     def decorator(func: Callable) -> Callable:
         """
@@ -154,12 +254,30 @@ def track_performance(n_trials: int = 10) -> Callable:
         and peak memory usage of the decorated function.
         """
         def shared_prologue() -> float:
+            """
+            Starts performance tracking by initializing tracemalloc and recording start time.
+
+            Returns:
+                float: The start time in seconds (from perf_counter).
+            """
             if not tracemalloc.is_tracing():
                 tracemalloc.start()
             start_time = time.perf_counter()
             return start_time
         
         def shared_epilogue(t_0: float) -> tuple[float, float, float]:
+            """
+            Completes performance tracking and computes metrics.
+
+            Args:
+                t_0 (float): The start time from shared_prologue.
+
+            Returns:
+                tuple[float, float, float]: A tuple containing:
+                    - elapsed_time: Execution time in seconds
+                    - current_memory: Current memory usage in MB
+                    - peak_memory: Peak memory usage in MB
+            """
             end_time = time.perf_counter()
             elapsed_time = end_time - t_0 # seconds
             current_memory, peak_memory = tracemalloc.get_traced_memory()
@@ -172,6 +290,16 @@ def track_performance(n_trials: int = 10) -> Callable:
 
         @functools.wraps(func)
         async def async_wrapper(*args, **kwargs) -> tuple[Any, pd.DataFrame]:
+            """
+            Async wrapper for coroutine functions with performance tracking.
+
+            Args:
+                *args: Positional arguments to pass to the wrapped function.
+                **kwargs: Keyword arguments to pass to the wrapped function.
+
+            Returns:
+                tuple[Any, pd.DataFrame]: The function result and performance metrics DataFrame.
+            """
             perf_da = create_empty_dataarray({"trial": range(n_trials), "metric": ["exec_time", "curr_mem", "peak_mem"]})
             for trial in range(n_trials):
                 t_0 = shared_prologue()
@@ -184,6 +312,16 @@ def track_performance(n_trials: int = 10) -> Callable:
 
         @functools.wraps(func)
         def sync_wrapper(*args, **kwargs) -> tuple[Any, pd.DataFrame]:
+            """
+            Synchronous wrapper for regular functions with performance tracking.
+
+            Args:
+                *args: Positional arguments to pass to the wrapped function.
+                **kwargs: Keyword arguments to pass to the wrapped function.
+
+            Returns:
+                tuple[Any, pd.DataFrame]: The function result and performance metrics DataFrame.
+            """
             perf_da = create_empty_dataarray({"trial": range(n_trials), "metric": ["exec_time", "curr_mem", "peak_mem"]})
             for trial in range(n_trials):
                 t_0 = shared_prologue()
@@ -197,97 +335,146 @@ def track_performance(n_trials: int = 10) -> Callable:
             return async_wrapper
         else:
             return sync_wrapper
-        
-# NOTE It does not worked when applied to Google API Studio, likely for a problem of Error type.
+
 def retry(
         max_retries: int,
-        cooldown_seconds: int | float,
-        exceptions_to_catch: list[Exception]
+        cooldown_period: float,
+        exceptions: list[BaseException]
 ) -> Callable:
-    """A decorator that retries a function when it encounters a specified set of exceptions.
+    """
+    A decorator factory to retry a function if it raises specified exceptions.
+
+    Creates a decorator that automatically retries a function when it raises one of
+    the specified exception types. The decorator is async-aware and works correctly
+    with both synchronous and asynchronous functions.
 
     Args:
-        max_retries (int): The maximum number of times to retry the function.
-        cooldown_seconds (int or float): The time in seconds to wait between retries.
-        exceptions_to_catch (list[Exception]): The list of exception types to catch and trigger a retry.
+        max_retries (int): The maximum number of retry attempts.
+        cooldown_period (float): The number of seconds to wait between retry attempts.
+        exceptions (list[BaseException]): A list of exception types that should trigger
+            a retry. If the function raises an exception not in this list, it will
+            propagate immediately without retrying.
 
     Returns:
-        Callable: The decorated function with retry logic.
+        Callable: A decorator that wraps the target function with retry logic.
+
+    Raises:
+        The last exception caught if all retry attempts are exhausted.
+
+    Note:
+        Progress messages are printed to stdout for each retry attempt.
+
+    Example:
+        >>> @retry(max_retries=3, cooldown_period=1.0, exceptions=[ConnectionError])
+        ... def fetch_data():
+        ...     # May raise ConnectionError
+        ...     return download()
     """
-    def decorator(func) -> Callable:
+    exceptions_to_catch = tuple(exceptions)
+
+    def decorator(func):
+        """
+        The actual decorator that wraps the function with retry logic.
+
+        Args:
+            func (Callable): The function to be decorated.
+
+        Returns:
+            Callable: The wrapped function with retry capabilities.
+        """
+        
         @functools.wraps(func)
-        def wrapper(*args, **kwargs) -> Callable:
-            attempts = 0
-            while attempts <= max_retries:
+        async def async_wrapper(*args, **kwargs):
+            """
+            Async wrapper for coroutine functions with retry logic.
+
+            Args:
+                *args: Positional arguments to pass to the wrapped function.
+                **kwargs: Keyword arguments to pass to the wrapped function.
+
+            Returns:
+                The return value of the wrapped function.
+
+            Raises:
+                The last exception caught after all retries are exhausted.
+            """
+            last_exception = None
+            for attempt in range(max_retries):
+                try:
+                    return await func(*args, **kwargs)
+                except exceptions_to_catch as e:
+                    last_exception = e
+                    print(f"Attempt {attempt + 1}/{max_retries} failed with {type(e).__name__}: {e}.")
+                    if attempt < max_retries - 1:
+                        print(f"Retrying in {cooldown_period} seconds...")
+                        await asyncio.sleep(cooldown_period) # Use asyncio.sleep for async
+            
+            print(f"All {max_retries} retries failed. Raising the last exception.")
+            raise last_exception
+
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            """
+            Synchronous wrapper for regular functions with retry logic.
+
+            Args:
+                *args: Positional arguments to pass to the wrapped function.
+                **kwargs: Keyword arguments to pass to the wrapped function.
+
+            Returns:
+                The return value of the wrapped function.
+
+            Raises:
+                The last exception caught after all retries are exhausted.
+            """
+            last_exception = None
+            for attempt in range(max_retries):
                 try:
                     return func(*args, **kwargs)
                 except exceptions_to_catch as e:
-                    attempts += 1
-                    if attempts > max_retries:
-                        print(f"Function '{func.__name__}' failed after {max_retries + 1} attempts due to: {e}")
-                        raise  # Re-raise the last exception if max retries are exceeded
-                    else:
-                        print(f"Attempt {attempts}/{max_retries + 1} failed for '{func.__name__}' due to: {e}. Retrying in {cooldown_seconds} seconds...")
-                        time.sleep(cooldown_seconds)
-                except Exception as e:
-                    # Catch any other unexpected exceptions immediately
-                    print(f"Function '{func.__name__}' encountered an unhandled exception: {e}. Not retrying.")
-                    raise
-        return wrapper
-    return decorator
-    
-    return decorator
+                    last_exception = e
+                    print(f"Attempt {attempt + 1}/{max_retries} failed with {type(e).__name__}: {e}.")
+                    if attempt < max_retries - 1:
+                        print(f"Retrying in {cooldown_period} seconds...")
+                        time.sleep(cooldown_period) # Use time.sleep for sync
+            
+            print(f"All {max_retries} retries failed. Raising the last exception.")
+            raise last_exception
 
-class DictObject(ABC):
-    def __repr__(self) -> str:
-        """Returns a string representation of the object, including its dictionary attributes."""
-        return " ".join([object.__repr__(self), str(self.__dict__)])
-
-    def __getitem__(self, key: str) -> Any:
-        """Gets the value associated with a key from the object's dictionary.
-
-        Args:
-            key (str): The key to retrieve.
-
-        Returns:
-            Any: The value associated with the key.
-
-        Raises:
-            KeyError: If the key does not exist.
-        """
-        try:
-            value = self.__dict__[key]
-            return value
-        except KeyError:
-            raise KeyError(f"'GenParams' object has no attribute '{key}'")
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        """Sets the value for a key in the object's dictionary if the key exists.
-
-        Args:
-            key (str): The key to set.
-            value (Any): The value to assign.
-
-        Raises:
-            KeyError: If the key does not exist.
-        """
-        if key in self.__dict__.keys():
-            self.__dict__[key] = value
+        # Return the appropriate wrapper based on whether the function is async
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
         else:
-            raise KeyError(f"'GenParams' does not have key '{key}'.")
-
-    def get_assigned_keys(self) -> Any:
-        """Returns a list of keys that are valued 'None'.
-
-        Returns:
-            list: The list of keys with non-None values.
-        """
-        return [key for key, value in self.__dict__.items() if value is not None]
+            return sync_wrapper
+            
+    return decorator
 
 def subsample_sign_classes(
         data_list: list,
         k: int
 ) -> list:
+    """
+    Subsamples a list to at most k elements, with special handling for zero.
+
+    If the list has more than k elements, removes 0 (if present and not the only element)
+    and then randomly samples k elements. If the list still exceeds k elements after
+    removing 0, performs random sampling.
+
+    Args:
+        data_list (list): The list of elements to subsample.
+        k (int): The maximum number of elements to keep.
+
+    Returns:
+        list: The subsampled list with at most k elements.
+
+    Note:
+        The function modifies the input list in place by potentially removing 0.
+        Uses random.sample for sampling without replacement.
+
+    Example:
+        >>> subsample_sign_classes([0, 1, 2, 3, 4, 5], k=3)
+        [1, 3, 5]  # Example output, actual values depend on random sampling
+    """
     if len(data_list) > k:
         if 0 in data_list and data_list != [0]:
             data_list.remove(0)
@@ -297,9 +484,26 @@ def subsample_sign_classes(
 
 class NegativeTextGenerator:
     """
-    Generates text negatives by substituting words based on user-defined pools.
-    This version uses a simple string replacement method to handle hyphenated words
-    and has no external dependencies.
+    Generates text negatives by substituting words based on user-defined word pools.
+
+    This class creates negative text examples by replacing words in a positive text
+    with alternatives from semantically related word pools. It's useful for data
+    augmentation in NLP tasks, particularly for generating contrastive examples.
+
+    The generator uses simple string replacement to handle hyphenated words and
+    requires no external dependencies beyond the standard library.
+
+    Attributes:
+        word_to_pool_map (dict[str, dict]): A reverse lookup map from each word to
+            its pool name and sibling words (alternatives within the same pool).
+
+    Example:
+        >>> pools = {
+        ...     "colors": ["red", "blue", "green"],
+        ...     "sizes": ["big", "small", "tiny"]
+        ... }
+        >>> gen = NegativeTextGenerator(word_pools=pools)
+        >>> negatives = gen.generate("The red big ball", num_negatives=2)
     """
     def __init__(
             self,
@@ -308,9 +512,18 @@ class NegativeTextGenerator:
         """
         Initializes the generator and pre-processes the word pools for fast lookups.
 
+        Creates a reverse lookup map that allows efficient retrieval of alternative
+        words (siblings) for any given word. Only pools with at least 2 words are
+        included in the lookup map.
+
         Args:
-            word_pools (Dict[str, List[str]]): A dictionary where keys are pool names
-                and values are lists of words in that pool.
+            word_pools (dict[str, list[str]]): A dictionary where keys are pool names
+                and values are lists of words in that pool. Words in the same pool
+                are considered alternatives to each other.
+
+        Note:
+            Prints a summary of initialization to stdout, including the number of
+            words and pools processed.
         """
         self.word_to_pool_map = self._build_lookup(word_pools)
         print(f"NegativeGenerator initialized. Found {len(self.word_to_pool_map)} words across {len(word_pools)} pools.")
@@ -319,7 +532,22 @@ class NegativeTextGenerator:
             self,
             word_pools: dict[str, list[str]]
     ) -> dict[str, dict]:
-        """Creates a fast reverse-lookup map from a word to its pool and siblings."""
+        """
+        Creates a fast reverse-lookup map from a word to its pool and siblings.
+
+        For each word in each pool, creates a dictionary entry mapping the lowercase
+        version of the word to its pool name and all other words (siblings) in that pool.
+        Pools with fewer than 2 words are skipped.
+
+        Args:
+            word_pools (dict[str, list[str]]): The word pools to process.
+
+        Returns:
+            dict[str, dict]: A mapping where each key is a lowercase word and the value
+                is a dict containing:
+                    - 'pool_name': The name of the pool the word belongs to
+                    - 'siblings': A list of alternative words from the same pool
+        """
         lookup_map = {}
         for pool_name, words_in_pool in word_pools.items():
             if len(words_in_pool) < 2:
@@ -337,7 +565,21 @@ class NegativeTextGenerator:
             text: str
     ) -> list[str]:
         """
-        A simple tokenizer that splits by whitespace and also separates hyphens.
+        A simple tokenizer that splits by whitespace and separates punctuation.
+
+        Separates hyphens and common punctuation marks (commas, semicolons, colons,
+        periods, exclamation marks, question marks) into individual tokens by padding
+        them with spaces before splitting on whitespace.
+
+        Args:
+            text (str): The text to tokenize.
+
+        Returns:
+            list[str]: A list of tokens including words and separated punctuation marks.
+
+        Example:
+            >>> self._tokenize("Hello-world, how are you?")
+            ['Hello', '-', 'world', ',', 'how', 'are', 'you', '?']
         """
         # Pad hyphens with spaces, so they become separate tokens after splitting
         text = text.replace('-', ' - ')
@@ -350,7 +592,21 @@ class NegativeTextGenerator:
             tokens: list[str]
     ) -> str:
         """
-        Reconstructs text from tokens, correctly rejoining hyphenated words.
+        Reconstructs text from tokens, correctly rejoining hyphenated words and punctuation.
+
+        Reverses the tokenization process by joining tokens with spaces and then
+        removing spaces around hyphens and punctuation marks (commas, semicolons,
+        colons, periods, exclamation marks, question marks).
+
+        Args:
+            tokens (list[str]): The list of tokens to reconstruct into text.
+
+        Returns:
+            str: The reconstructed text with proper spacing and punctuation.
+
+        Example:
+            >>> self._reconstruct_text(['Hello', '-', 'world', ',', 'how', 'are', 'you', '?'])
+            'Hello-world, how are you?'
         """
         text = " ".join(tokens)
         # Reverse the hyphen padding and clean up other common punctuation
@@ -365,7 +621,21 @@ class NegativeTextGenerator:
             tokens: list[str]
     ) -> str:
         """
-        Backup method to shuffle tokens if no substitutions are possible.
+        Backup method to shuffle tokens if no word substitutions are possible.
+
+        Used when the input text contains no words that can be replaced from the
+        word pools. Randomly shuffles the tokens to create a negative example.
+        If the text has fewer than 2 tokens, returns the original joined text.
+
+        Args:
+            tokens (list[str]): The list of tokens to shuffle.
+
+        Returns:
+            str: The reconstructed text with shuffled tokens.
+
+        Note:
+            Ensures the shuffled result is different from the original order
+            (unless there's only one possible permutation).
         """
         if len(tokens) < 2:
             return " ".join(tokens)
@@ -385,6 +655,33 @@ class NegativeTextGenerator:
     ) -> list[str]:
         """
         Generates a batch of unique negative texts from a single positive text.
+
+        Creates negative examples by substituting words from the positive text with
+        alternatives from the word pools. Guarantees at least one word is changed
+        per negative, with additional changes controlled by change_probability.
+
+        If no substitutable words are found, falls back to token shuffling.
+
+        Args:
+            positive_text (str): The original positive text to generate negatives from.
+            num_negatives (int, optional): The number of unique negative examples to
+                generate. Defaults to 1.
+            change_probability (float, optional): The probability (0.0-1.0) of changing
+                each additional substitutable word beyond the first forced change.
+                Defaults to 0.5.
+
+        Returns:
+            list[str]: A list of unique negative text examples. May contain fewer than
+                num_negatives elements if maximum unique variations are exhausted.
+
+        Note:
+            Prints a warning to stdout if unable to generate the requested number of
+            unique negatives after a maximum number of attempts (num_negatives * 20 + 10).
+
+        Example:
+            >>> gen = NegativeTextGenerator({"colors": ["red", "blue"]})
+            >>> gen.generate("The red ball", num_negatives=2)
+            ['The blue ball', 'The blue ball']  # Actual results vary due to randomness
         """
         # --- MODIFICATION: Use our simple custom tokenizer ---
         original_tokens = self._tokenize(positive_text)
@@ -444,6 +741,25 @@ class NegativeTextGenerator:
         return list(generated_negatives)
 
 diff_text_word_pools = {
+    """
+    Predefined word pools for generating negative text examples in segmentation tasks.
+
+    This dictionary contains semantically related word groups used by NegativeTextGenerator
+    to create contrastive text examples for semantic segmentation evaluation. Each pool
+    contains words that are semantically similar and can be substituted for each other
+    to create meaningful but incorrect variations.
+
+    The pools cover various aspects of segmentation quality and object properties:
+    - Spatial/positional terms (top, bottom, left, right, etc.)
+    - Colors and visual properties
+    - Size descriptors (absolute and relative)
+    - Quality descriptors (precise, rough, clean, etc.)
+    - Segmentation-specific terms (oversegmented, undersegmented, etc.)
+    - Object class names from PASCAL VOC dataset
+
+    These pools are specifically designed for evaluating vision-language models on
+    segmentation tasks where nuanced language understanding is critical.
+    """
     "positional": ["top", "bottom", "left", "right", "middle", "center"],
     "positional_2": ["downwards", "upwards"],
     "colors": ["red", "blue", "green", "yellow"],
@@ -469,6 +785,19 @@ diff_text_word_pools = {
 }
 
 def try_NegativeTextGenerator() -> None:
+    """
+    Demonstrates the usage of NegativeTextGenerator with example text.
+
+    This function serves as a test/demo for the NegativeTextGenerator class,
+    showing how to create an instance with predefined word pools and generate
+    negative text examples from a sample segmentation evaluation description.
+
+    The example uses diff_text_word_pools and generates 32 unique negative
+    variations of a ground truth evaluation statement.
+
+    Returns:
+        None: Prints the generated negative examples to stdout.
+    """
     # 1. Define your word pools
 
     # 2. Create an instance of the generator
