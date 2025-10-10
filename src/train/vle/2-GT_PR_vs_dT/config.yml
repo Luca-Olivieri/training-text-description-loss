@@ -1,0 +1,49 @@
+root_exp_path: '/home/olivieri/exp/data/private/exps/vle'
+exp_name: '2-GT_PR_vs_dT'
+exp_desc: "test run" # Optional
+var_name: ""
+
+vle:
+  pretrained_weights_root_path: '/home/olivieri/exp/data/private/torch_weights/vle/flair'
+  image_size: 224
+  new_layers: ['concat_adapter']
+  train:
+    batch_size: 128
+    num_epochs: 16
+    old_layers_to_train: ['text_post']
+    precision: 'amp_bfloat16' # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
+    lr_schedule:
+      policy: 'cosine'
+      base_lr: 5.0e-4 # 5e-4
+      warmup_length: 100 # 0 for no warmup
+      epochs_cooldown: null
+      lr_cooldown_power: null
+      lr_cooldown_end: null
+    grad_clip_norm: 10.0 # optional
+    resume_path: null # optional if no resume
+    log_only_to_stdout: False
+    log_every: 10
+
+seg:
+  pretrained_weights_path: '/home/olivieri/exp/data/private/torch_weights/seg/lraspp_mobilenet_v3_large/no_text/lraspp_mobilenet_v3_large-full-pt.pth'
+  image_size: 520
+
+datasets_paths:
+  voc2012:
+    train:
+      imgs: '/home/olivieri/exp/data/private/data_gen/VOC2012/train/images_L'
+      jsonl: '/home/olivieri/exp/data/private/data_gen/VOC2012/train/captions.jsonl'
+    val:
+      imgs: '/home/olivieri/exp/data/private/data_gen/VOC2012/val/images_L'
+      jsonl: '/home/olivieri/exp/data/private/data_gen/VOC2012/val/captions.jsonl'
+  coco2017:
+    train:
+      imgs:
+        l0: '/home/olivieri/exp/data/private/data_gen/COCO2017/train/images_L'
+        l1: '/home/olivieri/exp/data/private/data_gen/COCO2017/l1_train/images_L'
+      jsonl:
+        l0: '/home/olivieri/exp/data/private/data_gen/COCO2017/train/captions.jsonl'
+        l1: '/home/olivieri/exp/data/private/data_gen/COCO2017/l1_train/captions.jsonl'
+    val:
+      imgs: '/home/olivieri/exp/data/private/data_gen/COCO2017/val/images_L'
+      jsonl: '/home/olivieri/exp/data/private/data_gen/COCO2017/val/captions.jsonl'
