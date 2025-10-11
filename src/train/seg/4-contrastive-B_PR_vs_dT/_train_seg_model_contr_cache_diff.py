@@ -3,7 +3,7 @@ from data import VOC2012SegDataset, crop_augment_preprocess_batch, apply_classma
 from models.seg import SegModelWrapper, SEGMODELS_REGISTRY
 from models.mllm import GenParams, OllamaMLLMAdapter
 from models.vle import VLE_REGISTRY, VLEncoder
-from train.loss import GroupedPairedNegativeSigLipLoss
+from train.seg.loss import GroupedPairedNegativeSigLipLoss
 from core.prompter import FastPromptBuilder
 from core.logger import LogManager
 from core.path import get_mask_prs_path
@@ -497,7 +497,7 @@ async def main() -> None:
     vle.model.logit_scale = nn.Parameter(torch.tensor(1.0, device=CONFIG['device']))
     vle.model.logit_bias = nn.Parameter(torch.tensor(0.0, device=CONFIG['device']))
     
-    vle.set_vision_trainable_params(None)
+    vle.set_trainable_params(None)
 
     del vle.model.visual_proj
     clear_memory()
