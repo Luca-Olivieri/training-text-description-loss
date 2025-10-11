@@ -1,0 +1,6 @@
+seed: 42
+device: "cuda"
+
+datasets:
+  COCO2017_root_path: '/home/olivieri/exp/data/shared/coco2017'
+  VOC2012_root_path: '/home/olivieri/exp/data/private/VOCdevkit'
