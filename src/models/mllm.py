@@ -79,8 +79,6 @@ class MLLMGenParams:
     min_p: Optional[float] = None
     answer_format: Optional[str | dict[str, str]] = None
 
-# TODO Generate text in the dict default format, not in the JSONL format.
-
 @dataclass()
 class MLLMResponse:
     """Container for MLLM generation response.
@@ -95,9 +93,7 @@ class MLLMResponse:
     text: str
     num_tokens: Optional[int] = None
 
-# TODO the JSONL saving logic for the MLLMs is embedded in the text generation logic, decouple it.
-
-# TODO save the text predictions as separate objects (like for the synthetic diff dataset), the MLLM should consider as individual samples the positive samples (not the variable-sized class-splitted ones). Then, when we need to fetch whole cs-splitted elements used the Grouped Sampler approach (see 'https://aistudio.google.com/app/prompts?state=%7B%22ids%22:%5B%221kDHqSTnRIaWOO7nN4CD9GVARKI44IsXK%22%5D,%22action%22:%22open%22,%22userId%22:%22101546796642867554797%22,%22resourceKeys%22:%7B%7D%7D&usp=sharing'). The MLLM should have no notion of class-splitting.
+# TODO When we need to fetch whole cs-splitted elements used the Grouped Sampler approach (see 'https://aistudio.google.com/app/prompts?state=%7B%22ids%22:%5B%221kDHqSTnRIaWOO7nN4CD9GVARKI44IsXK%22%5D,%22action%22:%22open%22,%22userId%22:%22101546796642867554797%22,%22resourceKeys%22:%7B%7D%7D&usp=sharing'). The MLLM should have no notion of class-splitting.
 
 class MLLMAdapter(ABC):
     """Abstract base class for Multimodal Large Language Model adapters.
@@ -340,8 +336,6 @@ class OllamaMLLMAdapter(MLLMAdapter):
             client = ollama.Client(host=http_endpoint)
         return client
     
-    
-    # TODO split the internal logic of this method into simpler functions.
     def _preprocess_prompt(
             self,
             user_prompt: Prompt,
@@ -632,12 +626,6 @@ class HuggingFaceMLLM(MLLMAdapter):
     
     Placeholder for future implementation of HuggingFace Transformers integration.
     Will provide support for locally-hosted or HF-hosted multimodal models.
-    
-    TODO: Implement HuggingFace adapter with:
-        - Model loading from HuggingFace Hub
-        - Local inference support
-        - Processor/tokenizer handling
-        - Image preprocessing pipeline
     """
     ...
 

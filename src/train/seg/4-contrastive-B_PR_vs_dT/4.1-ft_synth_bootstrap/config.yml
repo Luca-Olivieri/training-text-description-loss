@@ -1,17 +1,17 @@
-root_exp_path: '/home/olivieri/exp/data/private/exps/seg'
-exp_name: '2-xen-rescale'
-var_name: 'alpha10_b8'
+root_exp_path: '/home/olivieri/exp/data/private/exps/seg/4-contrastive-B_PR_vs_dT'
+exp_name: '4.1-ft_synth_bootstrap'
+var_name: 'lambda0.1'
 exp_desc: "" # Optional
 
 seg:
-  pretrained_weights_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/base/good_ckp_b8-251010_0642/weights/lraspp_mobilenet_v3_large-base-good_ckp_b8-251010_0642.pth'
+  pretrained_weights_path: '/home/olivieri/exp/data/private/exps/seg/3-contrastive-B_vs_dT/3.1-ft_synth_bootstrap/base/phase_1-b8_for_20_epochs-251010_0805/weights/lraspp_mobilenet_v3_large-base-phase_1-b8_for_20_epochs-251010_0805.pth'
   checkpoint_path: null
   image_size: 520
-  adaptation: null
+  adaptation: 'contrastive_diff'
   train:
     train_decoder_only: False
-    batch_size: 8
-    num_epochs: 29
+    batch_size: 32
+    num_epochs: 25
     precision: 'amp_bfloat16' # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
     regularizers: ['dropout']
     lr_schedule:
@@ -22,22 +22,24 @@ seg:
       lr_cooldown_power: null
       lr_cooldown_end: null
     grad_clip_norm: 10.0 # optional
-    resume_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/base/good_ckp_b8-251010_0642/weights/lraspp_mobilenet_v3_large-base-good_ckp_b8-251010_0642.pth' # optional (no resume)
+    resume_path: '/home/olivieri/exp/data/private/exps/seg/4-contrastive-B_PR_vs_dT/4.1-ft_synth_bootstrap/base/phase_2-b32_lambda0.1_for_5_epochs-251013_1243/weights/lraspp_mobilenet_v3_large-base-phase_2-b32_lambda0.1_for_5_epochs-251013_1243.pth' # optional (if null, no resume)
     log_only_to_stdout: False
     log_every: 5
     with_text:
       with_text: True
       with_cache: True # is set to False if 'with_text' == False
-      cache_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/cache/cache_k=0'
-      rescale_alpha: 10.0
+      cache_path: '/home/olivieri/exp/data/private/exps/seg/4-contrastive-B_PR_vs_dT/4.1-ft_synth_bootstrap/cache/cache_k=0'
+      loss_lambda: 0.1
+      num_synth_negs: null # if null, this is set to batch_size-1
+      change_prob: 0.5
       sign_classes_filter_k: 0
       cache_update_policy_percentile: 0.4
 
 vle:
   pretrained_weights_root_path: '/home/olivieri/exp/data/private/torch_weights/vle/flair'
-  checkpoint_path: '/home/olivieri/exp/data/private/exps/vle/1-dM_vs_dT/250902_2047/weights/flair-flair-cc3m-recap.pt-text_proj_L_b256_250902_2047.pth'
+  checkpoint_path: '/home/olivieri/exp/data/private/exps/vle/2-GT_PR_vs_dT/250930_1351/weights/flair-flair-cc3m-recap.pt-diff_concat_adapter_gt-pr__t_L_b128_250930_1351.pth'
   image_size: 224
-  new_layers: []
+  new_layers: ['concat_adapter']
 
 vlm:
   image_size: 224

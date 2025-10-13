@@ -462,6 +462,7 @@ class PairedNegativeSigLipLoss(VariableTextSigLipLoss):
 
         return {"contrastive_loss": loss} if output_dict else loss
     
+
 class GroupedPairedNegativeSigLipLoss(VariableTextSigLipLoss):
     """
     Sigmoid Loss for Language Image Pre-Training (SigLIP) with grouped, paired data.
@@ -489,6 +490,23 @@ class GroupedPairedNegativeSigLipLoss(VariableTextSigLipLoss):
     Attributes:
         Inherits from VariableTextSigLipLoss (negative_loss_agg, ignore_no_positive_samples).
     """
+    def __init__(
+        self,
+        negative_loss_agg: str = 'sum',
+        ignore_no_positive_samples: bool = True
+    ):
+        """
+        Args:
+            negative_loss_agg (str): Aggregation method for negative losses, inherited.
+                                     Not used in this implementation as negatives are paired.
+            ignore_no_positive_samples (bool): If True, the loss contribution from images
+                                               that have no associated positive text is set to 0.
+        """
+        super().__init__(
+            negative_loss_agg=negative_loss_agg,
+            ignore_no_positive_samples=ignore_no_positive_samples
+        )
+
     def forward(
         self,
         image_features: torch.Tensor,
@@ -509,7 +527,8 @@ class GroupedPairedNegativeSigLipLoss(VariableTextSigLipLoss):
         3. Map all images to groups (including creating isolated groups for images without positives)
         4. Aggregate positive and negative losses by group
         5. Normalize each group's total loss by the number of images in that group
-        6. Return mean loss across all groups
+        6. If `ignore_no_positive_samples` is True, zero out the loss for groups of isolated images.
+        7. Return mean loss across all groups
 
         Args:
             image_features (torch.Tensor): Shape (N, D), where N is the total number of images
@@ -555,7 +574,6 @@ class GroupedPairedNegativeSigLipLoss(VariableTextSigLipLoss):
             neg_pairwise_loss = -F.logsigmoid(-neg_logits)
             
             neg_loss_per_image = neg_pairwise_loss.sum(dim=1)
-            # There is no 'mean' choice for negatives, since the negatives are not in-batch and not of variable grouping.
 
         # --- Step 2: Calculate Positive Loss for all PAIRS ---
         true_pos_losses = torch.tensor([], device=device)
@@ -600,13 +618,11 @@ class GroupedPairedNegativeSigLipLoss(VariableTextSigLipLoss):
              return {"contrastive_loss": loss} if output_dict else loss
 
         # Aggregate positive and negative losses by their final group index
-        pos_loss_per_group = torch.zeros(num_total_groups, device=device)
+        pos_loss_per_group: torch.Tensor = torch.zeros(num_total_groups, device=device, dtype=true_pos_losses.dtype)
         if num_pos_pairs > 0:
-            print(f"pos_loss_per_group.dtype: {pos_loss_per_group.dtype}")
-            print(f"true_pos_losses.dtype: {true_pos_losses.dtype}")
             pos_loss_per_group.scatter_add_(0, group_indices_for_pos_pairs, true_pos_losses)
 
-        neg_loss_per_group = torch.zeros(num_total_groups, device=device)
+        neg_loss_per_group: torch.Tensor = torch.zeros(num_total_groups, device=device)
         neg_loss_per_group.scatter_add_(0, group_indices_for_images, neg_loss_per_image)
         
         total_loss_per_group = pos_loss_per_group + neg_loss_per_group
@@ -619,6 +635,13 @@ class GroupedPairedNegativeSigLipLoss(VariableTextSigLipLoss):
         # Normalize the total loss of each group by its size
         group_normalizer = torch.clamp(group_sizes, min=1).float()
         normalized_loss_per_group = total_loss_per_group / group_normalizer
+        
+        # If specified, zero out the loss contribution from isolated images
+        # (those without any positive text pairs). These form their own groups.
+        if self.ignore_no_positive_samples and num_isolated > 0:
+            # The isolated groups are the ones appended at the end
+            isolated_group_start_index = num_positive_groups
+            normalized_loss_per_group[isolated_group_start_index:] = 0.0
         
         # The final loss is the mean of the normalized per-group losses
         loss = normalized_loss_per_group.mean()
