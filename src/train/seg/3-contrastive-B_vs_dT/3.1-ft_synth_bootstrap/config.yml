@@ -7,6 +7,7 @@ seg:
   pretrained_weights_path: '/home/olivieri/exp/data/private/exps/seg/3-contrastive-B_vs_dT/3.1-ft_synth_bootstrap/base/phase_1-b8_for_20_epochs-251010_0805/weights/lraspp_mobilenet_v3_large-base-phase_1-b8_for_20_epochs-251010_0805.pth'
   checkpoint_path: null
   image_size: 520
+  adaptation: 'contrastive_global'
   train:
     train_decoder_only: False
     batch_size: 32

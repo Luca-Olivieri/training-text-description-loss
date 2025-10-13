@@ -7,6 +7,7 @@ seg:
   pretrained_weights_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/base/good_ckp_b8-251010_0642/weights/lraspp_mobilenet_v3_large-base-good_ckp_b8-251010_0642.pth'
   checkpoint_path: null
   image_size: 520
+  adaptation: null
   train:
     train_decoder_only: False
     batch_size: 8
@@ -25,8 +26,8 @@ seg:
     log_only_to_stdout: False
     log_every: 5
     with_text:
-      with_text: True
-      with_cache: True # is set to False if 'with_text' == False
+      with_text: False
+      with_cache: False # is set to False if 'with_text' == False
       cache_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/cache/cache_k=0'
       rescale_alpha: 10.0
       sign_classes_filter_k: 0

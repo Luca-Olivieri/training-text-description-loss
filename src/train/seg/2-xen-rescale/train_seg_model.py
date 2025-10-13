@@ -85,8 +85,6 @@ async def train_loop(
         checkpoint_dict: Optional[dict] = None,
         sign_classes_filter: Optional[Callable[[list[int]], list[int]]] = None,
 ) -> None:
-
-    # TODO build b8 mIoU>0.3 start, put it in resume path
     
     # --- 1. Initialization and State Restoration ---
     start_epoch = 0
@@ -331,7 +329,7 @@ async def train_loop(
                     train_metrics_score |= {'metric_diff_mean': metric_diffs_values.nanmean(), 'metric_diff_std': nanstd(metric_diffs_values, dim=0)}
                 train_metrics_score['cs_mult'] = torch.tensor(cs_mult)
                 train_metrics_score['filtered_perc'] = torch.tensor(filtered_perc)
-                train_metrics_score['rescale_mult'] = rescale_mult
+                train_metrics_score['rescale_mult'] = torch.tensor(rescale_mult)
                 train_metrics_score['lr'] = torch.tensor(optimizer.param_groups[0]['lr'])
                 train_metrics_score['grad_norm'] = grad_norm
                 # train_metrics_score |= {"quantile": torch.tensor(mask_text_cache.update_policy.trend.get_current_value())}
@@ -415,7 +413,7 @@ async def main() -> None:
         'lraspp_mobilenet_v3_large',
         pretrained_weights_path=seg_config['pretrained_weights_path'],
         device=config['device'],
-        adaptation=None
+        adaptation=seg_config['adaptation']
     )
 
     segmodel.adapt()

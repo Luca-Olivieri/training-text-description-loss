@@ -250,7 +250,7 @@ async def main() -> None:
         'lraspp_mobilenet_v3_large',
         pretrained_weights_path=seg_config['pretrained_weights_path'],
         device=config['device'],
-        adaptation=None
+        adaptation=seg_config['adaptation']
     )
 
     if seg_config['checkpoint_path']:
