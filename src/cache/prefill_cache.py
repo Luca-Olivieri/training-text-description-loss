@@ -45,7 +45,6 @@ ckp_config['var_name'] += f'-{ckp_config["timestamp"]}'
 
 
 # NOTE overriding the original checkpoint config
-ckp_seg_train_config['num_epochs'] = 1
 ckp_seg_train_config['lr_schedule']['base_lr'] = 0.0
 ckp_seg_train_with_text_config['loss_lambda'] = 0.0
 
@@ -121,6 +120,7 @@ async def train_loop(
     
     # --- 6. Main Training Loop ---
     train_metrics = tm.MetricCollection(metrics_dict)
+    ckp_seg_train_config["num_epochs"] = start_epoch+1 # only one epoch is done
     for epoch in range(start_epoch, ckp_seg_train_config["num_epochs"]):
         
         train_metrics.reset() # in theory, this can be removed
@@ -240,7 +240,7 @@ async def main() -> None:
         'lraspp_mobilenet_v3_large',
         pretrained_weights_path=ckp_seg_config['pretrained_weights_path'],
         device=ckp_config['device'],
-        adaptation='contrastive_global'
+        adaptation=ckp_seg_config['adaptation']
     )
 
     segmodel.adapt()
