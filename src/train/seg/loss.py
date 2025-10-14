@@ -809,6 +809,198 @@ class GroupedPairedNegativeSigLipLoss(VariableTextSigLipLoss):
         loss = normalized_loss_per_group.mean()
 
         return {"contrastive_loss": loss} if output_dict else loss
+    
+
+class GroupedSlackedNegativeSigLipLoss(VariableTextSigLipLoss):
+    """
+    Sigmoid Loss for Language Image Pre-Training (SigLIP) with grouped data,
+    using a combination of in-batch and slacked negatives.
+
+    This loss is designed for grouped datasets where each image is contrasted
+    against a target number of negatives, primarily sourced from in-batch texts
+    and supplemented by a dedicated "slack" tensor.
+
+    The key features are:
+    
+    1.  **One-to-One Pairing:** Each positive text corresponds to a single image instance.
+    2.  **Grouping:** Positive image-text pairs are assigned to groups.
+    3.  **Group Normalization:** The total loss (positive + negative) for each
+        group is normalized by the number of images in that group. This ensures
+        that large groups do not dominate the final batch loss.
+    4.  **Combined Negatives (In-batch + Slack):**
+        - The primary source of negatives for an image are the other positive
+          texts present in the batch (in-batch negatives).
+        - A dedicated `slacked_negative_text_features` tensor of shape (N, M, D)
+          provides supplemental negatives. `M` serves as the target number of
+          negatives per image.
+        - If the number of available in-batch negatives is less than `M`, the
+          deficit is filled by taking negatives from the slack tensor.
+    5.  **Isolated Images:** Images without a positive text are handled correctly,
+        contributing only negative loss (from all `P` in-batch texts + slacked
+        negatives) and forming their own "group of one" for loss calculation.
+
+    Attributes:
+        Inherits from VariableTextSigLipLoss (ignore_no_positive_samples).
+    """
+    def __init__(
+        self,
+        ignore_no_positive_samples: bool = True
+    ):
+        """
+        Args:
+            ignore_no_positive_samples (bool): If True, the loss contribution from images
+                                               that have no associated positive text is set to 0.
+        """
+        # negative_loss_agg is not relevant here because the negative sampling
+        # logic is more complex than a simple aggregation.
+        super().__init__(
+            negative_loss_agg='sum', # Placeholder, not directly used.
+            ignore_no_positive_samples=ignore_no_positive_samples
+        )
+
+    def forward(
+        self,
+        image_features: torch.Tensor,
+        positive_text_features: torch.Tensor,
+        image_indices_for_pos_texts: torch.Tensor,
+        group_indices_for_pos_pairs: torch.Tensor,
+        slacked_negative_text_features: torch.Tensor,
+        logit_scale: torch.Tensor,
+        logit_bias: Optional[torch.Tensor] = None,
+        output_dict: bool = False,
+    ) -> torch.Tensor | dict[str, torch.Tensor]:
+        """
+        Computes the SigLIP loss for grouped data with in-batch and slacked negatives.
+
+        Args:
+            image_features (torch.Tensor): Shape (N, D), where N is the total number of images
+                                          and D is the embedding dimension.
+            positive_text_features (torch.Tensor): Shape (P, D), where P is the total number of
+                                                  positive texts (P <= N).
+            image_indices_for_pos_texts (torch.Tensor): Shape (P,), maps each positive text
+                to its corresponding image index.
+            group_indices_for_pos_pairs (torch.Tensor): Shape (P,), maps each positive pair
+                to a group index.
+            slacked_negative_text_features (torch.Tensor): Shape (N, M, D), providing M
+                supplemental negatives for each of the N images. `M` is the target
+                total number of negatives per image.
+            logit_scale (torch.Tensor): The learnable temperature scaling parameter.
+            logit_bias (Optional[torch.Tensor]): The learnable bias parameter.
+            output_dict (bool): If True, returns a dictionary with 'contrastive_loss'.
+
+        Returns:
+            torch.Tensor | dict[str, torch.Tensor]: The computed loss scalar tensor,
+                                                    or a dictionary if output_dict is True.
+        """
+        device = image_features.device
+        num_images = image_features.shape[0]
+        num_pos_pairs = positive_text_features.shape[0]
+
+        if num_images == 0:
+            loss = torch.tensor(0.0, device=device, requires_grad=True)
+            return {"contrastive_loss": loss} if output_dict else loss
+
+        # --- Step 1: Calculate Logits and Positive Loss ---
+        # Logits between all images and all positive texts (N, P)
+        all_logits = self.get_logits(image_features, positive_text_features, logit_scale, logit_bias)
+        
+        true_pos_losses = torch.tensor([], device=device)
+        if num_pos_pairs > 0:
+            # Loss for positive pairs is -log(sigmoid(logit))
+            pos_pairwise_loss = -F.logsigmoid(all_logits)
+            
+            # Extract the loss for the true positive pairs
+            text_indices = torch.arange(num_pos_pairs, device=device)
+            true_pos_losses = pos_pairwise_loss[image_indices_for_pos_texts, text_indices]
+        
+        # --- Step 2: Calculate Combined Negative Loss (In-batch + Slack) ---
+        neg_loss_per_image = torch.zeros(num_images, device=device)
+
+        # 2a. Calculate in-batch negative loss
+        if num_pos_pairs > 0:
+            # Pairwise loss for all (image, text) pairs as negatives
+            neg_pairwise_loss = -F.logsigmoid(-all_logits)
+            
+            # For images with a positive, we must exclude it from the negative sum.
+            # We do this by setting its contribution to zero.
+            if num_pos_pairs > 0:
+                neg_pairwise_loss[image_indices_for_pos_texts, text_indices] = 0.0
+            
+            # Sum up all in-batch negative losses for each image
+            in_batch_neg_loss = neg_pairwise_loss.sum(dim=1)
+            neg_loss_per_image += in_batch_neg_loss
+
+        # 2b. Determine how many slacked negatives are needed
+        target_num_negatives = slacked_negative_text_features.shape[1]
+        
+        # Images with a positive text have P-1 in-batch negatives.
+        # Images without a positive text have P in-batch negatives.
+        num_in_batch_negs = torch.full((num_images,), num_pos_pairs, dtype=torch.long, device=device)
+        if num_pos_pairs > 0:
+            # Create a mask for images that have at least one positive
+            has_positive_mask = torch.zeros(num_images, dtype=torch.bool, device=device)
+            has_positive_mask.scatter_(0, torch.unique(image_indices_for_pos_texts), True)
+            num_in_batch_negs[has_positive_mask] -= 1
+
+        num_slacked_needed = torch.clamp(target_num_negatives - num_in_batch_negs, min=0)
+
+        # 2c. Calculate slacked negative loss
+        if slacked_negative_text_features.numel() > 0 and num_slacked_needed.sum() > 0:
+            slacked_logits = torch.einsum('nd,nmd->nm', image_features, slacked_negative_text_features)
+            slacked_logits = logit_scale * slacked_logits
+            if logit_bias is not None:
+                slacked_logits += logit_bias
+
+            slacked_pairwise_loss = -F.logsigmoid(-slacked_logits) # Shape (N, M)
+
+            # Create a mask to select only the required number of slacked negatives
+            m_indices = torch.arange(target_num_negatives, device=device)
+            mask = m_indices[None, :] < num_slacked_needed[:, None] # Shape (N, M)
+
+            slacked_neg_loss = (slacked_pairwise_loss * mask).sum(dim=1)
+            neg_loss_per_image += slacked_neg_loss
+            
+        # --- Step 3: Map all images to groups and aggregate losses ---
+        num_positive_groups = 0
+        if num_pos_pairs > 0:
+            num_positive_groups = int(group_indices_for_pos_pairs.max().item()) + 1
+
+        group_indices_for_images = torch.full((num_images,), -1, dtype=torch.long, device=device)
+        if num_pos_pairs > 0:
+            group_indices_for_images.scatter_(0, image_indices_for_pos_texts, group_indices_for_pos_pairs)
+
+        isolated_mask = (group_indices_for_images == -1)
+        num_isolated = isolated_mask.sum()
+        isolated_group_indices = torch.arange(num_positive_groups, num_positive_groups + num_isolated, device=device)
+        group_indices_for_images[isolated_mask] = isolated_group_indices
+        
+        num_total_groups = num_positive_groups + num_isolated
+        
+        if num_total_groups == 0:
+             loss = torch.tensor(0.0, device=device, requires_grad=True)
+             return {"contrastive_loss": loss} if output_dict else loss
+
+        pos_loss_per_group: torch.Tensor = torch.zeros(num_total_groups, device=device, dtype=true_pos_losses.dtype)
+        if num_pos_pairs > 0:
+            pos_loss_per_group.scatter_add_(0, group_indices_for_pos_pairs, true_pos_losses)
+
+        neg_loss_per_group: torch.Tensor = torch.zeros(num_total_groups, device=device)
+        neg_loss_per_group.scatter_add_(0, group_indices_for_images, neg_loss_per_image)
+        
+        total_loss_per_group = pos_loss_per_group + neg_loss_per_group
+
+        # --- Step 4: Normalize by group size and compute final loss ---
+        group_sizes = torch.bincount(group_indices_for_images, minlength=num_total_groups)
+        group_normalizer = torch.clamp(group_sizes, min=1).float()
+        normalized_loss_per_group = total_loss_per_group / group_normalizer
+        
+        if self.ignore_no_positive_samples and num_isolated > 0:
+            isolated_group_start_index = num_positive_groups
+            normalized_loss_per_group[isolated_group_start_index:] = 0.0
+        
+        loss = normalized_loss_per_group.mean()
+
+        return {"contrastive_loss": loss} if output_dict else loss
 
 
 # Rescaling functions for loss weighting transformations
