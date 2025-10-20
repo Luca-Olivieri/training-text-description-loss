@@ -228,12 +228,12 @@ async def train_loop(
 
                     filtered_scs_down = torch.stack([sc for sc, uid in zip(scs_down, cs_dict.keys()) if uid in uids_to_update])
                     filtered_prs_down = torch.stack([pr for pr, uid in zip(prs_down, cs_dict.keys()) if uid in uids_to_update])
-                    cs_ovr_masks_gt = [torch.stack(list(cs_ovr_mask.values())) for cs_ovr_mask in create_cs_ovr_masks(filtered_scs_down, filtered_prs_down.squeeze(1), sign_classes_to_update, alpha=0.55)] # list of n tensors (., 3, H, W)
-                    flat_cs_ovr_masks_gt = torch.cat(cs_ovr_masks_gt, dim=0)# (P, 3, H, W)
-                    flat_cs_ovr_masks_gt = vle.preprocess_images(flat_cs_ovr_masks_gt/255.)
+                    cs_ovr_masks_pr = [torch.stack(list(cs_ovr_mask.values())) for cs_ovr_mask in create_cs_ovr_masks(filtered_scs_down, filtered_prs_down.squeeze(1), sign_classes_to_update, alpha=0.55)] # list of n tensors (., 3, H, W)
+                    flat_cs_ovr_masks_pr = torch.cat(cs_ovr_masks_pr, dim=0)# (P, 3, H, W)
+                    flat_cs_ovr_masks_pr = vle.preprocess_images(flat_cs_ovr_masks_pr/255.)
 
                     with torch.no_grad():
-                        flat_cs_vle_output = vle.encode_and_project(images=flat_cs_ovr_masks_gt, texts=flat_cs_concat_texts, broadcast=False, pool=False)
+                        flat_cs_vle_output = vle.encode_and_project(images=flat_cs_ovr_masks_pr, texts=flat_cs_concat_texts, broadcast=False, pool=False)
 
                     cs_global_text_token = flat_cs_vle_output.global_text_token.squeeze(1) # (P + P*M, D)
                     pos_cs_global_text_token = cs_global_text_token[:P] # (P, D)
