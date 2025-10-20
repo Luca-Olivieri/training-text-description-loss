@@ -547,7 +547,7 @@ def crop_image_preprocess_image_text_batch(
     texts = [d['content'] for d in texts]
 
     if preprocess_texts_fn:
-        texts = preprocess_texts_fn(texts, imgs.device)
+        texts = preprocess_texts_fn(texts)
 
     if output_text_metadata:
         return imgs, texts, texts_metadata

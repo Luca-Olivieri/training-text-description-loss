@@ -482,6 +482,7 @@ def subsample_sign_classes(
             return random.sample(data_list, k)
     return data_list
 
+
 class NegativeTextGenerator:
     """
     Generates text negatives by substituting words based on user-defined word pools.
@@ -616,36 +617,62 @@ class NegativeTextGenerator:
         # text.strip()
         return text
 
-    def _backup_perturbation(
+    def _backup_perturbation_by_shuffle(
             self,
             tokens: list[str]
     ) -> str:
-        """
-        Backup method to shuffle tokens if no word substitutions are possible.
-
-        Used when the input text contains no words that can be replaced from the
-        word pools. Randomly shuffles the tokens to create a negative example.
-        If the text has fewer than 2 tokens, returns the original joined text.
-
-        Args:
-            tokens (list[str]): The list of tokens to shuffle.
-
-        Returns:
-            str: The reconstructed text with shuffled tokens.
-
-        Note:
-            Ensures the shuffled result is different from the original order
-            (unless there's only one possible permutation).
-        """
+        """Backup method to shuffle tokens."""
         if len(tokens) < 2:
             return " ".join(tokens)
         
+        original_text = self._reconstruct_text(tokens)
         shuffled_tokens = list(tokens)
-        while shuffled_tokens == tokens:
-            random.shuffle(shuffled_tokens)
         
-        # Reconstruct the shuffled text to handle any hyphens correctly
+        # Keep shuffling until it's different, for up to 10 tries.
+        max_shuffles = 10
+        count = 0
+        while self._reconstruct_text(shuffled_tokens) == original_text and count < max_shuffles:
+            random.shuffle(shuffled_tokens)
+            count += 1
+        
         return self._reconstruct_text(shuffled_tokens)
+    
+    def _backup_perturbation_by_removal(
+        self,
+        tokens: list[str]
+    ) -> str:
+        """
+        Third-stage backup method to remove a random number of tokens.
+
+        This method removes a number of words, `k`, where `k` is randomly chosen
+        to be between 1 and half the total number of words in the sentence. The
+        words are removed from random, non-adjacent positions.
+
+        Args:
+            tokens (list[str]): The list of tokens to modify.
+
+        Returns:
+            str: The reconstructed text with tokens removed.
+        """
+        n = len(tokens)
+        if n < 2:
+            # Cannot remove 1 to n//2 words if there are fewer than 2.
+            return ""
+
+        # Determine how many words to remove: from 1 up to half the total words.
+        max_to_remove = n // 2
+        k = random.randint(1, max_to_remove)
+        
+        # Choose k unique indices to remove from the list of tokens.
+        indices_to_remove = set(random.sample(range(n), k))
+        
+        # Build a new list of tokens, keeping only those whose indices were not selected for removal.
+        new_tokens = [
+            token for i, token in enumerate(tokens) 
+            if i not in indices_to_remove
+        ]
+
+        return self._reconstruct_text(new_tokens)
 
     def generate(
         self,
@@ -656,11 +683,15 @@ class NegativeTextGenerator:
         """
         Generates a batch of unique negative texts from a single positive text.
 
-        Creates negative examples by substituting words from the positive text with
-        alternatives from the word pools. Guarantees at least one word is changed
-        per negative, with additional changes controlled by change_probability.
+        This method GUARANTEES to return a list of the requested `num_negatives` length.
 
-        If no substitutable words are found, falls back to token shuffling.
+        It uses a three-stage fallback process:
+        1. Primary: Substitutes words using the provided word pools.
+        2. Backup: Shuffles the order of words.
+        3. Final Fallback: Removes a random number of words (1 to 50%) from the text.
+
+        If all methods fail to generate enough unique negatives, the returned list
+        will be padded with empty strings ('') to meet the requested length.
 
         Args:
             positive_text (str): The original positive text to generate negatives from.
@@ -671,74 +702,72 @@ class NegativeTextGenerator:
                 Defaults to 0.5.
 
         Returns:
-            list[str]: A list of unique negative text examples. May contain fewer than
-                num_negatives elements if maximum unique variations are exhausted.
-
-        Note:
-            Prints a warning to stdout if unable to generate the requested number of
-            unique negatives after a maximum number of attempts (num_negatives * 20 + 10).
-
-        Example:
-            >>> gen = NegativeTextGenerator({"colors": ["red", "blue"]})
-            >>> gen.generate("The red ball", num_negatives=2)
-            ['The blue ball', 'The blue ball']  # Actual results vary due to randomness
+            list[str]: A list of negative text examples of length `num_negatives`.
         """
-        # --- MODIFICATION: Use our simple custom tokenizer ---
         original_tokens = self._tokenize(positive_text)
-        
-        # Identify candidate indices based on the lowercase version of tokens
         candidate_indices = [
             i for i, token in enumerate(original_tokens)
             if token.lower() in self.word_to_pool_map
         ]
-
-        # Case 1: No substitutable words found, use backup
-        if not candidate_indices:
-            generated_negatives = set()
-            max_possible_permutations = math.factorial(len(original_tokens))
-            num_to_generate = min(num_negatives, max_possible_permutations)
-            max_attempts = num_to_generate * 20 + 10
-            attempts = 0
-
-            while len(generated_negatives) < num_to_generate and attempts < max_attempts:
-                generated_negatives.add(self._backup_perturbation(original_tokens))
-                attempts += 1
-            
-            return list(generated_negatives)
-
-        # Case 2: Substitutable words exist
+        
         generated_negatives = set()
-        max_attempts = num_negatives * 20 + 10
-        attempts = 0
+        
+        # --- Stage 1: Primary Generation (Word Substitution) ---
+        if candidate_indices:
+            max_attempts = num_negatives * 20 + 10
+            attempts = 0
+            while len(generated_negatives) < num_negatives and attempts < max_attempts:
+                tokens_to_modify = list(original_tokens)
+                indices_to_consider = list(candidate_indices)
+                forced_choice_idx = random.choice(indices_to_consider)
+                word_to_replace = tokens_to_modify[forced_choice_idx].lower()
+                siblings = self.word_to_pool_map[word_to_replace]['siblings']
+                tokens_to_modify[forced_choice_idx] = random.choice(siblings)
+                indices_to_consider.remove(forced_choice_idx)
+                for idx in indices_to_consider:
+                    if random.random() < change_probability:
+                        word_to_replace = tokens_to_modify[idx].lower()
+                        siblings = self.word_to_pool_map[word_to_replace]['siblings']
+                        tokens_to_modify[idx] = random.choice(siblings)
+                reconstructed_text = self._reconstruct_text(tokens_to_modify)
+                if reconstructed_text != positive_text:
+                    generated_negatives.add(reconstructed_text)
+                attempts += 1
 
-        while len(generated_negatives) < num_negatives and attempts < max_attempts:
-            tokens_to_modify = list(original_tokens)
-            
-            indices_to_consider = list(candidate_indices)
-            
-            # 1. Force one change
-            forced_choice_idx = random.choice(indices_to_consider)
-            word_to_replace = tokens_to_modify[forced_choice_idx].lower()
-            siblings = self.word_to_pool_map[word_to_replace]['siblings']
-            tokens_to_modify[forced_choice_idx] = random.choice(siblings)
-            indices_to_consider.remove(forced_choice_idx)
-            
-            # 2. Change others based on probability
-            for idx in indices_to_consider:
-                if random.random() < change_probability:
-                    word_to_replace = tokens_to_modify[idx].lower()
-                    siblings = self.word_to_pool_map[word_to_replace]['siblings']
-                    tokens_to_modify[idx] = random.choice(siblings)
-            
-            # Reconstruct the text using our custom method
-            reconstructed_text = self._reconstruct_text(tokens_to_modify)
-            generated_negatives.add(reconstructed_text)
-            attempts += 1
+        # --- Stage 2: Backup Generation (Token Shuffling) ---
+        if len(generated_negatives) < num_negatives:
+            needed = num_negatives - len(generated_negatives)
+            max_backup_attempts = needed * 20 + 10 
+            backup_attempts = 0
+            while len(generated_negatives) < num_negatives and backup_attempts < max_backup_attempts:
+                shuffled = self._backup_perturbation_by_shuffle(original_tokens)
+                if shuffled != positive_text:
+                    generated_negatives.add(shuffled)
+                backup_attempts += 1
+        
+        # --- Stage 3: Final Fallback (Word Removal) ---
+        if len(generated_negatives) < num_negatives:
+            needed = num_negatives - len(generated_negatives)
+            max_removal_attempts = needed * len(original_tokens) + 10
+            removal_attempts = 0
+            while len(generated_negatives) < num_negatives and removal_attempts < max_removal_attempts:
+                removed = self._backup_perturbation_by_removal(original_tokens)
+                if removed != positive_text:
+                    generated_negatives.add(removed)
+                removal_attempts += 1
 
-        if attempts >= max_attempts and len(generated_negatives) < num_negatives:
-            print(f"Warning: Could only generate {len(generated_negatives)} unique negatives out of the requested {num_negatives}.")
+        # --- Final Assembly and Padding ---
+        final_negatives = list(generated_negatives)
 
-        return list(generated_negatives)
+        # If we are still short, pad with empty strings
+        if len(final_negatives) < num_negatives:
+            slack = num_negatives - len(final_negatives)
+            print(f"Warning: Could only generate {len(final_negatives)} unique negatives. Padding with {slack} empty string(s) to meet request.")
+            final_negatives.extend([' '] * slack)
+        
+        # Return a list of exactly the requested size
+        return final_negatives[:num_negatives]
+
 
 diff_text_word_pools = {
     """
@@ -807,7 +836,7 @@ def try_NegativeTextGenerator() -> None:
     answer = "The ground truth PERSON region is almost entirely missed by the prediction. The prediction fails to identify any of the regions which are classified as PERSON in the ground truth mask. The prediction is mainly black, indicating the model is classifying all regions as unlabelled classes."
     print(f"ANSWER: {repr(answer)}")
     neg_answer = neg_generator.generate(answer, num_negatives=32)
-    print("\nGenerated 3 negatives (using backup word shuffling):")
+    print("\nNEGATIVES:")
     for neg in neg_answer:
         print(f"  - {repr(neg)}")
     print("-" * 30)
