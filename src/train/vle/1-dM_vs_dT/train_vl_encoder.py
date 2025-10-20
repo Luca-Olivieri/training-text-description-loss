@@ -5,7 +5,7 @@ from core.datasets import JSONLDataset, ImageDataset, ImageCaptionDataset
 from core.viz import get_layer_numel_str
 from core.utils import get_torch_gen # Assuming get_torch_gen is in utils
 from core.logger import LogManager
-from core.torch_utils import compile_torch_model
+from core.torch_utils import compile_torch_model, unprefix_state_dict
 
 from models.vle import VLE_REGISTRY, VLEncoder, NewLayer, OldFLAIRLayer
 
@@ -267,7 +267,7 @@ def main() -> None:
         resume_path = Path(vle_train_config['resume_path'])
         if resume_path.exists():
             checkpoint_dict = torch.load(resume_path, map_location=config['device'])
-            vle.model.load_state_dict(checkpoint_dict['model_state_dict'])
+            vle.model.load_state_dict(unprefix_state_dict(checkpoint_dict['model_state_dict'], prefix='_orig_mod.'))
         else:
             raise AttributeError(f"ERROR: Resume path '{resume_path}' not found.")
         

@@ -5,7 +5,7 @@ from core.data_utils import dispatch_and_process_in_batches
 
 from core.viz import get_layer_numel_str
 from core.logger import LogManager
-from core.torch_utils import compile_torch_model, map_tensors
+from core.torch_utils import compile_torch_model, map_tensors, unprefix_state_dict
 from core.pipeline import format_pos_ovr_masks
 
 from models.vle import VLE_REGISTRY, VLEncoder, NewLayer, OldFLAIRLayer
@@ -188,7 +188,7 @@ def train_loop(
 
             ovr_concat_masks = format_pos_ovr_masks(scs_img, concat_masks, pos_classes)
 
-            ovr_concat_masks = vle.preprocess_images(ovr_concat_masks, device=config['device'])
+            ovr_concat_masks = vle.preprocess_images(ovr_concat_masks)
 
             # --- Forward Pass and Loss Calculation ---
             optimizer.zero_grad()
@@ -343,7 +343,7 @@ def evaluate(
 
                 ovr_concat_masks = format_pos_ovr_masks(scs_img, concat_masks, pos_classes)
 
-                ovr_concat_masks = vle.preprocess_images(ovr_concat_masks, device=config['device'])
+                ovr_concat_masks = vle.preprocess_images(ovr_concat_masks)
                 
                 b = len(gts)
                 vle_output = vle.encode_and_project(ovr_concat_masks, texts, broadcast=False, pool=False)
@@ -478,7 +478,7 @@ def main() -> None:
         resume_path = Path(vle_train_config['resume_path'])
         if resume_path.exists():
             checkpoint_dict = torch.load(resume_path, map_location=config['device'])
-            vle.model.load_state_dict(checkpoint_dict['model_state_dict'])
+            vle.model.load_state_dict(unprefix_state_dict(checkpoint_dict['model_state_dict'], prefix='_orig_mod.'))
         else:
             raise AttributeError(f"ERROR: Resume path '{resume_path}' not found.")
         
