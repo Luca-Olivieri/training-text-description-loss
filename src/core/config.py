@@ -64,6 +64,8 @@ def setup_config(
     # Ollama configs
     config |= {'ollama_container_name': os.getenv("OLLAMA_CONTAINER_NAME")} # 'ollama_container_name' is passed to the Docker environment
     config |= {'ollama_http_endpoint': f'http://{config["ollama_container_name"]}:11434'}
+    # HuggingFace
+    os.environ["HF_HOME"] = config['HF_home']
     # Timestamp to univocally define config
     config['timestamp'] = f'{datetime.now().strftime("%y%m%d_%H%M")}' # add datetime to exp name
     config = convert_paths_in_dict(config)

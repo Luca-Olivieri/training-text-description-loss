@@ -79,10 +79,9 @@ class VLEncoder(ABC):
     and training utilities.
     """
     
-    @abstractmethod
-    def __init__(self, *args, **kwargs) -> None:
+    def __init__(self) -> None:
         """Initialize the vision-language encoder."""
-        raise NotImplementedError
+        self.viz_attn_heads_idx: Optional[list[int]] = None
     
     @abstractmethod
     @torch.inference_mode()
@@ -210,7 +209,6 @@ class VLEncoder(ABC):
             upsample_size: Optional[int | tuple[int]] = None,
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
             broadcast: bool = False,
-            attn_heads_idx: Optional[list[int]] = None # [0, 3, 5, 7] are selected by the authors for FLAIR
     ) -> torch.Tensor:
         """
         Compute attention maps from the visual projection layer.
@@ -225,7 +223,6 @@ class VLEncoder(ABC):
             upsample_mode: Interpolation mode for upsampling
             broadcast: If True, compute attention for all image-text pairs
             attn_heads_idx: Indices of attention heads to average. If None, average all heads.
-                For FLAIR, [0, 3, 5, 7] are recommended by the authors
             
         Returns:
             Tuple of (attention_maps, min_attn, max_attn) where:
@@ -237,8 +234,8 @@ class VLEncoder(ABC):
         vle_output = self.encode_and_project(images, texts, broadcast)
         # NOTE 'B_t' = 1 if 'broadcast' = False
 
-        if attn_heads_idx:
-            vle_output.attn_maps_flat = vle_output.attn_maps_flat[:, attn_heads_idx, ...].mean(dim=1, keepdim=False)
+        if self.viz_attn_heads_idx:
+            vle_output.attn_maps_flat = vle_output.attn_maps_flat[:, self.viz_attn_heads_idx, ...].mean(dim=1, keepdim=False)
         else:
             vle_output.attn_maps_flat = vle_output.attn_maps_flat.mean(dim=1, keepdim=False)
 
@@ -248,13 +245,12 @@ class VLEncoder(ABC):
         # reshape attention maps
         num_patches_per_axis = int(math.sqrt(image_num_patches))
         attn_maps: torch.Tensor = vle_output.attn_maps_flat[:, :, :-1].view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, sqrt(n_i), sqrt(n_i)]
-        min_attn, max_attn = attn_maps.min(), attn_maps.max() # max token attention
         
         # upsampling
         if upsample_size:
             attn_maps: torch.Tensor = TF.resize(attn_maps, upsample_size, interpolation=upsample_mode) # [B_i, B_t, H, W]
 
-        return attn_maps, min_attn, max_attn
+        return attn_maps
     
     @torch.inference_mode()
     def get_sim_maps(
@@ -300,13 +296,12 @@ class VLEncoder(ABC):
         # reshape similarity maps
         num_patches_per_axis = int(math.sqrt(image_num_patches))
         sim_maps = sim_maps.view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, n_i, n_i]
-        min_sim, max_sim = sim_maps.min(), sim_maps.max() # max token similarity
         
         # upsampling
         if upsample_size:
             sim_maps: torch.Tensor = TF.resize(sim_maps, upsample_size, interpolation=upsample_mode) # [B_i, B_t, H, W]
         
-        return sim_maps, min_sim, max_sim
+        return sim_maps
     
     def set_trainable_params(self, *arg, **kwargs) -> None:
         """
@@ -418,7 +413,6 @@ class OldFLAIRLayer(Enum):
     IMAGE_POST = 'image_post'
     TEXT_POST = 'text_post'
     VISUAL_PROJ = 'visual_proj'
-    
 
 @dataclass
 class FLAIROutput(VLEncoderOutputWithAttn):
@@ -458,7 +452,8 @@ class FLAIRAdapter(VLEncoder):
                              'flair-merged30m.pt'],
             pretrained_weights_root_path: Path,
             new_layers: list[NewLayer],
-            device: torch.device
+            device: torch.device,
+            viz_attn_heads_idx: Optional[list[int]] = [0, 3, 5, 7] # recommended by the authors
     ) -> None:
         """
         Initialize FLAIR adapter.
@@ -469,12 +464,17 @@ class FLAIRAdapter(VLEncoder):
             new_layers: List of new adapter layers to add to the model
             device: Device to load the model on
         """
+        super().__init__()
+
         self.device = device
         self.version = version
 
         # Model
-        pretrained = hf_hub_download(repo_id='xiaorui638/flair', filename=version, cache_dir=pretrained_weights_root_path)
-        model, _, preprocess_fn = flair.create_model_and_transforms('ViT-B-16-FLAIR', pretrained=pretrained, device=self.device)
+        model, _, preprocess_fn = flair.create_model_and_transforms(
+            'ViT-B-16-FLAIR',
+            pretrained=hf_hub_download(repo_id='xiaorui638/flair', filename=version, cache_dir=pretrained_weights_root_path),
+            device=self.device
+        )
         
         self.model: FLAIR = model
         self.new_layers = new_layers
@@ -492,6 +492,8 @@ class FLAIRAdapter(VLEncoder):
         # Tokenizer
         self.tokenizer: SimpleTokenizer = flair.get_tokenizer('ViT-B-16-FLAIR')
         self.context_length = self.tokenizer.context_length
+
+        self.viz_attn_heads_idx = viz_attn_heads_idx
 
     def init_new_layers_weights(self) -> None:
         """
@@ -577,7 +579,7 @@ class FLAIRAdapter(VLEncoder):
 
         if texts is not None:
             # get the raw embeddings from the encoders
-            global_text_token, local_text_tokens = self.model.encode_text(texts)        # [B_t, d_t], [B_t, n_t, d_t]
+            global_text_token, local_text_tokens = self.model.encode_text(texts)       # [B_t, d_t], [B_t, n_t, d_t]
             # project the raw embeddings into the same space
             global_text_token: torch.Tensor = self.model.text_post(global_text_token)       # [B_t, D]
             local_text_tokens: torch.Tensor = self.model.text_post(local_text_tokens)       # [B_t, n_t, D]
@@ -715,7 +717,7 @@ class FLAIRAdapter(VLEncoder):
         Returns:
             Number of tokens including SoT and EoT special tokens
         """
-        tokenizer = flair.get_tokenizer('ViT-B-16-FLAIR', context_length=1000) # I do not expect to use text longer than 1000 tokens. If so, increase it to working upper bound.
+        tokenizer = flair.get_tokenizer('ViT-B-16-FLAIR', context_length=1000) # If in need, increase it to working upper bound.
         return len(tokenizer.encode(text)) + 2 # 'SoT' and 'EoT' are added.
 
     def add_new_layers(self) -> None:
@@ -767,8 +769,10 @@ class FG_CLIPAdapter(VLEncoder):
     
     def __init__(
             self,
-            checkpoint: Literal['fg-clip-base', 
-                                'fg-clip-large'],
+            version: Literal[
+                'fg-clip-base',
+                'fg-clip-large'],
+            pretrained_weights_root_path: Path,
             device: torch.device,
             long_captions = True
     ) -> None:
@@ -776,18 +780,23 @@ class FG_CLIPAdapter(VLEncoder):
         Initialize FG-CLIP adapter.
         
         Args:
-            checkpoint: FG-CLIP checkpoint to load ('fg-clip-base' or 'fg-clip-large')
+            version: FG-CLIP version to load ('fg-clip-base' or 'fg-clip-large')
             device: Device to load the model on
             long_captions: If True, use context length of 248, else 77
         """
-        model_root = f'qihoo360/{checkpoint}'
-        ckp_2_imgsize = {
+        super().__init__()
+
+        self.device = device
+
+        model_root = f'qihoo360/{version}' # NOTE HF repo ID 
+
+        vers_2_imgsize = {
             'fg-clip-base': 224,
             'fg-clip-large': 336
         }
-        self.image_size = ckp_2_imgsize[checkpoint]
-        model = AutoModelForCausalLM.from_pretrained(model_root, trust_remote_code=True)
-        model.to(device)
+        self.image_size = vers_2_imgsize[version]
+        model = AutoModelForCausalLM.from_pretrained(model_root, trust_remote_code=True, cache_dir=pretrained_weights_root_path)
+        model.to(self.device)
         model.eval()
         self.model = model
         
@@ -799,22 +808,21 @@ class FG_CLIPAdapter(VLEncoder):
             self.walk_short_pos = True
             self.context_length = 77
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_root, use_fast=True, model_max_length=self.context_length)
-        self.image_processor = AutoImageProcessor.from_pretrained(model_root, use_fast=True)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_root, use_fast=True, model_max_length=self.context_length, cache_dir=pretrained_weights_root_path)
+        self.image_processor = AutoImageProcessor.from_pretrained(model_root, use_fast=True, cache_dir=pretrained_weights_root_path)
 
     @torch.inference_mode()
     def preprocess_images(
             self, 
             images: torch.Tensor | list[torch.Tensor] | list[Image.Image],
-            device: torch.device
     ) -> torch.Tensor:
         if isinstance(images, torch.Tensor) or isinstance(images[0], torch.Tensor):
             images = [to_pil_image(img) for img in images]
         
         images = [img.resize((self.image_size, self.image_size)) for img in images]
-        # image = TF.resize(...)
+        # TODO parallelise this by providing tensors directly
 
-        imgs_tensor = self.image_processor.preprocess(images, return_tensors='pt')['pixel_values'].to(device) # [1, 3, H_vle, W_vle]
+        imgs_tensor = self.image_processor.preprocess(images, return_tensors='pt')['pixel_values'].to(self.device) # [1, 3, H_vle, W_vle]
 
         return imgs_tensor
     
@@ -822,7 +830,6 @@ class FG_CLIPAdapter(VLEncoder):
     def preprocess_texts(
             self, 
             texts: list[str],
-            device: torch.device
     ) -> torch.Tensor:
         """
         Tokenize texts for FG-CLIP encoder.
@@ -834,7 +841,7 @@ class FG_CLIPAdapter(VLEncoder):
         Returns:
             Tokenized text tensor of shape [B, context_length]
         """
-        texts_tensor = torch.tensor(self.tokenizer(texts, max_length=self.context_length, padding="max_length", truncation=True).input_ids, dtype=torch.long, device=device) # # [B, context_length]
+        texts_tensor = torch.tensor(self.tokenizer(texts, max_length=self.context_length, padding="max_length", truncation=True).input_ids, dtype=torch.long, device=self.device) # [B, context_length]
         return texts_tensor
 
     def encode_and_project(

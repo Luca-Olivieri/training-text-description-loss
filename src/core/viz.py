@@ -17,9 +17,11 @@ to provide end-to-end support for model evaluation workflows, especially in Jupy
 """
 
 from core.config import *
-from core.prompter import Prompt
+from core.prompter import Prompt, get_significant_classes
+from core.color_map import apply_colormap
 from core.torch_utils import blend_tensors
-from core.datasets import JsonlIO, get_answer_objects
+from core.datasets import JsonlIO, get_answer_objects, VOC2012SegDataset
+from models.vle import VLEncoder, MapComputeMode
 
 from IPython.display import Markdown, display
 
@@ -35,9 +37,10 @@ from tqdm import tqdm
 import torchmetrics as tm
 from torch import nn
 from torch.utils.data import DataLoader
-from torchvision.transforms.functional import to_pil_image
+from torchvision.transforms.v2.functional import to_pil_image
+import torchvision.transforms.v2.functional as TF
 
-from core._types import Iterable
+from core._types import Iterable, Literal, Optional
 
 def print_file_content(
         filename: str
@@ -1119,3 +1122,106 @@ def create_cs_ovr_masks(
         output_list[original_batch_idx][class_val] = all_blended_masks[i]
 
     return output_list
+
+def compute_maps_with_captions(
+        model: VLEncoder,
+        images: torch.Tensor,
+        captions: list[str],
+        map_compute_mode: MapComputeMode,
+        map_alpha: int,
+        viz_image_size: Optional[int | list[int]] = None,
+        map_resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+        normalize: bool = True,
+) -> list[tuple[Image.Image, str]]:
+    image_text_list = []
+
+    for img, text in zip(images, captions):
+        img_tensor = model.preprocess_images([img])
+        text_tensor = model.preprocess_texts([text])
+        sim = model.get_similarity(img_tensor, text_tensor, broadcast=False)
+        map = model.get_maps(
+            images=img_tensor,
+            texts=text_tensor,
+            map_compute_mode=map_compute_mode,
+            upsample_size=viz_image_size,
+            upsample_mode=map_resize_mode,
+        ) # [1, 1, H, W], m, M
+        map = map.squeeze(0) # [H, W]
+        if viz_image_size:
+            img = TF.resize(img, size=viz_image_size, interpolation=TF.InterpolationMode.BILINEAR)
+        ovr_img = overlay_map(img, map, normalize=normalize, alpha=map_alpha) # (H_viz, W_viz)
+
+        image_text_list.append((ovr_img, f"SIM = {sim.item():.2f}", f"MIN VALUE = {sim.max().item():.2f}, MAX VALUE = {sim.min().item():.2f}", text, "---"))
+
+    return image_text_list
+
+def compute_cs_maps_with_captions(
+        viz_ds: VOC2012SegDataset,
+        img_idxs: list[int],
+        jsonl_path: Path,
+        vle: VLEncoder,
+        mask_color: Literal['L', 'RB'],
+        alpha: float,
+        map_alpha: float,
+        map_compute_mode: MapComputeMode,
+        map_resize_mode: TF.InterpolationMode,
+        viz_image_size: int | tuple[int, int],
+        normalize: bool,
+        contrastive: bool = False,
+) -> list[str | Image.Image]:
+    cs_answers = get_answer_objects(jsonl_path, idxs=None, jsonlio=JsonlIO(), return_state=False, format_to_dict=True)
+    cs_answers_text = [list(cs_answers[i].values()) for i in img_idxs]
+    
+    scs, gts, prs = viz_ds[:]
+
+    cs_ovr_mask_prs = []
+
+    for sc, gt, pr in zip(scs, gts, prs):
+        gt_sign_classes = get_significant_classes(gt)
+        pr_sign_classes = get_significant_classes(pr)
+        sign_classes = list(set(gt_sign_classes + pr_sign_classes))
+        if 0 in sign_classes and sign_classes != [0]:
+            sign_classes.remove(0)
+        sign_classes = sorted(sign_classes)
+
+        ovr_mask_prs = []
+
+        for pos_c in sign_classes:
+            pos_class_gt = (gt == pos_c)
+            pos_class_pr = (pr == pos_c)
+
+            diff_mask = create_diff_mask(pos_class_gt, pos_class_pr)
+
+            # L overlay image
+            ovr_diff_mask_L = blend_tensors(sc, diff_mask*255, alpha)
+
+            # RB overlay image
+            diff_mask += (diff_mask*pos_class_gt) # sets to 2 the false negatives
+            diff_mask_col_RB = apply_colormap([diff_mask], {0: (0, 0, 0), 1: (255, 0, 0), 2: (0, 0, 255)}).squeeze()
+            ovr_diff_mask_RB = blend_tensors(sc, diff_mask_col_RB, alpha)
+
+            if mask_color == 'L':
+                ovr_mask_prs.append(ovr_diff_mask_L)
+            elif mask_color == 'RB':
+                ovr_mask_prs.append(ovr_diff_mask_RB)
+
+        if contrastive:
+            ovr_mask_prs = [ovr_mask_prs[0]]*int(len(ovr_mask_prs)) # instead of show consider positive images, show only the first one.
+
+        cs_ovr_mask_prs.append(ovr_mask_prs)
+    
+    cs_pr_image_text_list = [
+        compute_maps_with_captions(
+            model=vle,
+            images=ovr_mask_prs,
+            captions=answers_pr_text,
+            map_compute_mode=map_compute_mode,
+            map_alpha=map_alpha,
+            viz_image_size=viz_image_size,
+            map_resize_mode=map_resize_mode,
+            normalize=normalize,
+        )
+        for ovr_mask_prs, answers_pr_text in zip(cs_ovr_mask_prs, cs_answers_text)
+    ]
+    
+    return cs_pr_image_text_list

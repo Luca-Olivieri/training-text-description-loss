@@ -1,9 +1,0 @@
-vle:
-  pretrained_weights_root_path: '/home/olivieri/exp/data/private/torch_weights/vle/flair'
-  image_size: 224
-  new_layers: []
-
-seg:
-  image_size: 520
-
-mask_prs_path: '/home/olivieri/exp/data/private/prompts_data/by_model/LRASPP_MobileNet_V3/_mask_prs_'
