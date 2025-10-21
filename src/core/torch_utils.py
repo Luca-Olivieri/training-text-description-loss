@@ -377,7 +377,6 @@ def unflatten_tensor_list(
 
     return _rebuild(structure_info)
 
-# TODO currently this method always removes '_orig_mod.'. The prefix should be a parameter.
 def unprefix_state_dict(
         prefixed_state_dict: OrderedDict,
         prefix: str
@@ -387,27 +386,21 @@ def unprefix_state_dict(
     
     This function is particularly useful when working with compiled models or models
     wrapped in certain PyTorch containers that add prefixes to parameter names.
-    The function removes the '_orig_mod.' prefix from all keys in the state dict,
+    E.g., the function can remove the '_orig_mod.' prefix from all keys in the state dict,
     which is commonly added by torch.compile().
     
     Args:
         prefixed_state_dict (OrderedDict): The state dictionary with prefixed keys.
-        prefix (str): The prefix to remove from keys. Note: This parameter is currently
-                     not used; the function hardcodes '_orig_mod.' as the prefix.
+        prefix (str): The prefix to remove from keys.
     
     Returns:
         OrderedDict: A new state dictionary with the prefix removed from all keys.
     
-    Note:
-        Despite accepting a prefix parameter, this function currently always removes
-        the '_orig_mod.' prefix, regardless of the value passed to the prefix argument.
-    
     Example:
         >>> state_dict = {'_orig_mod.layer1.weight': tensor1, '_orig_mod.layer1.bias': tensor2}
-        >>> clean_dict = unprefix_state_dict(state_dict, '')
+        >>> clean_dict = unprefix_state_dict(state_dict, '_orig_mod.')
         >>> # clean_dict: {'layer1.weight': tensor1, 'layer1.bias': tensor2}
     """
-    prefix = '_orig_mod.'
     unprefixed_state_dict = {key.replace(prefix, ''): value for key, value in prefixed_state_dict.items()}
     return unprefixed_state_dict
 

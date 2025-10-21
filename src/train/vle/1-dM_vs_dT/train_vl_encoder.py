@@ -209,7 +209,7 @@ def train_loop(
                 new_checkpoint_dict = {
                     'epoch': epoch,
                     'global_step': global_step,
-                    'model_state_dict': vle.model.state_dict(),
+                    'model_state_dict': vle.model._orig_mod.state_dict(),
                     'optimizer_state_dict': optimizer.state_dict(),
                 }
                 if scaler:

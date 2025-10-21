@@ -488,7 +488,7 @@ async def main() -> None:
     if vle_config['checkpoint_path']:
         vle_checkpoint_path = Path(vle_config['checkpoint_path'])
         if vle_checkpoint_path.exists():
-            vle.model.load_state_dict(unprefix_state_dict(torch.load(vle_checkpoint_path, map_location=config['device'])['model_state_dict'], prefix='_orig_mod'))
+            vle.model.load_state_dict(unprefix_state_dict(torch.load(vle_checkpoint_path, map_location=config['device'])['model_state_dict'], prefix='_orig_mod.'))
         else:
             raise AttributeError(f"ERROR: VLE weights path '{vle_checkpoint_path}' not found.")
     
