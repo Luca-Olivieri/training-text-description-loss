@@ -41,7 +41,7 @@ EOF
 
 echo ${POSTFIX}
 
-PROJECT_NAME="${USER}-ttdl-proj-gpu${GPU_DEVICE//,/.}-cpu${CPU_SET}"
+PROJECT_NAME="${USER}-ttdl-proj-gpu${GPU_DEVICE//,/_}-cpu${CPU_SET}"
 
 # 3. Execute 'docker compose' UP or DOWN
 
