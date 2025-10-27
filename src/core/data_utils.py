@@ -346,8 +346,8 @@ def batch_cs_list(
     return batches
 
 def flatten_list_of_lists(
-        nested_list: list[list[Any]]
-) -> tuple[list[Any], list[int]]:
+        nested_list: list[list[T]]
+) -> tuple[list[T], list[int]]:
     """
     Flattens a list of lists into a single list and a list of lengths.
 

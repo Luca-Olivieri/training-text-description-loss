@@ -242,15 +242,14 @@ async def train_loop(
                                 
                                 img_tensor = vle.preprocess_images([ovr_diff_mask_L])
                                 text_tensor = vle.preprocess_texts([ans])
-                                map, min_value, max_value = vle.get_maps(
+                                map, _ = vle.get_maps(
                                     img_tensor,
                                     text_tensor,
                                     map_compute_mode=MapComputeMode.ATTENTION,
                                     upsample_size=seg_config['image_size'],
                                     upsample_mode=TF.InterpolationMode.BILINEAR,
-                                    attn_heads_idx=[0, 3, 5, 7] # as done by the authors
-                                ) # [1, 1, H, W], m, M
-                                map = map.squeeze(0).squeeze(0) # [H, W]
+                                ) # [1, H, W]
+                                map = map.squeeze(0) # [H, W]
 
                                 cs_maps.append(map)
                         else:

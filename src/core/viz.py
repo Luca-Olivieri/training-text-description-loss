@@ -20,11 +20,14 @@ from core.config import *
 from core.prompter import Prompt, get_significant_classes
 from core.color_map import apply_colormap
 from core.torch_utils import blend_tensors
-from core.datasets import JsonlIO, get_answer_objects, VOC2012SegDataset
-from models.vle import VLEncoder, MapComputeMode
+from core.datasets import JsonlIO, get_answer_objects, VOC2012SegDataset, SegDataset
+from core.data_utils import flatten_list_of_lists
+from core.pipeline import format_pos_ovr_masks
+from models.vle import VLEncoder, MapComputeMode, VLEImageOutput, VLETextOutput
 
 from IPython.display import Markdown, display
 
+import PIL
 from PIL import Image
 import torch
 import seaborn as sns
@@ -39,8 +42,9 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.transforms.v2.functional import to_pil_image
 import torchvision.transforms.v2.functional as TF
+from functools import partial
 
-from core._types import Iterable, Literal, Optional
+from core._types import Iterable, Literal, Optional, Callable
 
 def print_file_content(
         filename: str
@@ -324,7 +328,7 @@ def display_prompt(full_prompt: str | Prompt) -> None:
     
 def write_html_multi_row_image_caption(
         title: str,
-        rows: dict[str: list[Image.Image]],
+        rows: dict[str, list[Image.Image]],
         captions: list[str]
 ) -> None:
     """
@@ -333,7 +337,7 @@ def write_html_multi_row_image_caption(
     Creates an interactive HTML gallery where images are organized in rows
     (one row per key in the rows dict) and columns (one column per caption).
     The gallery scrolls horizontally and displays all images with their
-    corresponding captions.
+    corresponding captions. The container sizes scale with the image sizes.
 
     Args:
         title (str): The title for the HTML page and the output filename.
@@ -350,21 +354,170 @@ def write_html_multi_row_image_caption(
         IOError: If the file cannot be written.
 
     Example:
-        >>> rows = {"Row1": [img1, img2], "Row2": [img3, img4]}
-        >>> captions = ["Caption A", "Caption B"]
-        >>> write_html_multi_row_image_caption("Gallery", rows, captions)
+        >>> from PIL import Image
+        >>> img1 = Image.new('RGB', (100, 50), color = 'red')
+        >>> img2 = Image.new('RGB', (120, 50), color = 'green')
+        >>> img3 = Image.new('RGB', (100, 80), color = 'blue')
+        >>> img4 = Image.new('RGB', (120, 90), color = 'yellow')
+        >>> rows = {"Row A": [img1, img2], "Row B": [img3, img4]}
+        >>> captions = ["Caption 1", "Caption 2"]
+        >>> write_html_multi_row_image_caption("Dynamic_Gallery", rows, captions)
     """
     row_labels = list(rows.keys())
+    # Transpose the data from row-major to column-major for the gallery function
     column_data = [list(x) for x in list(zip(*list(rows.values())))]
 
     generated_html = create_multi_row_gallery(title, row_labels, column_data, captions)
 
+    output_filename = f"{title}.html"
     try:
-        with open(f"{title}.html", "w") as file:
+        with open(output_filename, "w", encoding="utf-8") as file:
             file.write(generated_html)
-        print("Successfully created index.html. Open it in your browser to see the result.")
+        print(f"Successfully created {output_filename}. Open it in your browser to see the result.")
     except IOError as e:
         print(f"Error writing to file: {e}")
+
+def create_multi_row_gallery(
+        title: str,
+        row_labels: list[str],
+        column_data: list[list[Image.Image]],
+        captions: list[str]
+) -> str:
+    """
+    Generates HTML for a multi-row image gallery with dynamically sized cells.
+
+    Creates a styled HTML page with a grid layout where the size of each column
+    and row is determined by the largest image within it. The gallery uses
+    Tailwind CSS for styling and supports horizontal scrolling.
+
+    Args:
+        title (str): The page title displayed at the top and in the browser tab.
+        row_labels (list[str]): A list of strings for the row headers.
+        column_data (list[list[Image.Image]]): A list where each inner list contains
+            PIL Image objects for one vertical column.
+        captions (list[str]): A list of captions, one for each column.
+
+    Returns:
+        str: The complete HTML content as a string.
+    """
+    # --- Data Validation ---
+    num_columns = len(column_data)
+    num_rows = len(row_labels)
+    if num_columns != len(captions):
+        print("Error: Number of columns must match number of captions.")
+        return "Error page: data mismatch."
+    for i, col in enumerate(column_data):
+        if len(col) != num_rows:
+            print(f"Error: Column {i+1} has {len(col)} images, but there are {num_rows} row labels.")
+            return "Error page: data mismatch."
+
+    # --- Pre-calculate dimensions and encode images ---
+    image_details = [] # Stores (base64_src, width, height) for each image
+    max_column_widths = [0] * num_columns
+    max_row_heights = [0] * num_rows
+
+    for col_idx, col in enumerate(column_data):
+        col_details = []
+        for row_idx, image in enumerate(col):
+            base64_src, _ = get_image_base64_data(image)
+            width, height = image.size if image else (0, 0)
+            
+            col_details.append({'src': base64_src, 'width': width, 'height': height})
+
+            # Update max dimensions
+            if width > max_column_widths[col_idx]:
+                max_column_widths[col_idx] = width
+            if height > max_row_heights[row_idx]:
+                max_row_heights[row_idx] = height
+        image_details.append(col_details)
+
+    # --- Generate CSS for the dynamic grid ---
+    # Add a small buffer (16px) for padding (p-2 is 8px on each side)
+    grid_cols_css = ' '.join([f'{w + 16}px' for w in max_column_widths])
+    grid_rows_css = ' '.join([f'{h + 16}px' for h in max_row_heights])
+    
+    # --- Grid Generation ---
+    grid_items_html = []
+    
+    # Generate image rows
+    for row_idx, label_text in enumerate(row_labels):
+        grid_items_html.append(f"""
+        <div class="sticky left-0 bg-gray-100 p-4 flex items-center justify-end z-10">
+            <span class="font-bold text-gray-600 text-right">{label_text}</span>
+        </div>""")
+
+        for col_idx in range(num_columns):
+            details = image_details[col_idx][row_idx]
+            if details['src']:
+                grid_items_html.append(f"""
+                <div class="bg-white shadow-lg rounded-lg overflow-hidden flex items-center justify-center p-2">
+                    <img src="{details['src']}" alt="Image for {captions[col_idx]}" class="max-w-full max-h-full object-contain">
+                </div>""")
+            else:
+                grid_items_html.append('<div class="bg-gray-200 shadow-lg rounded-lg flex items-center justify-center"><span class="text-xs text-gray-500">Image not found</span></div>')
+
+    # Generate caption row
+    grid_items_html.append('<div class="sticky left-0 bg-gray-100 z-10"></div>')
+    for caption_text in captions:
+        grid_items_html.append(f"""
+        <figcaption class="pt-2 text-gray-700 text-sm leading-relaxed">
+            {caption_text}
+        </figcaption>""")
+
+    # --- HTML and CSS Generation ---
+    html_content = f"""
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{title}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        body {{
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6; /* bg-gray-100 */
+        }}
+        .horizontal-scroll-container {{
+            scrollbar-width: thin;
+            scrollbar-color: #9ca3af #e5e7eb;
+        }}
+        .horizontal-scroll-container::-webkit-scrollbar {{ height: 12px; }}
+        .horizontal-scroll-container::-webkit-scrollbar-track {{ background: #e5e7eb; }}
+        .horizontal-scroll-container::-webkit-scrollbar-thumb {{
+            background-color: #9ca3af;
+            border-radius: 10px;
+            border: 3px solid #f3f4f6;
+        }}
+        .horizontal-scroll-container::-webkit-scrollbar-thumb:hover {{ background: #6b7280; }}
+        
+        .gallery-grid {{
+            display: inline-grid;
+            grid-auto-flow: row;
+            /* Dynamically set column and row sizes */
+            grid-template-columns: 10rem {grid_cols_css};
+            grid-template-rows: {grid_rows_css} auto;
+            gap: 1rem;
+        }}
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center p-4 sm:p-8">
+
+    <div class="w-full max-w-screen-xl mx-auto">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-8">{title}</h1>
+        
+        <div class="horizontal-scroll-container overflow-x-auto pb-4">
+            <div class="gallery-grid">
+                {''.join(grid_items_html)}
+            </div>
+        </div>
+    </div>
+
+</body>
+</html>
+"""
+    return html_content
 
 def get_image_base64_data(image):
     """
@@ -674,150 +827,6 @@ def class_pixel_distribution(
         class_pixel_distribution_percentage = (class_pixel_counts.float() / total_pixels) * 100
         return class_pixel_counts, class_pixel_distribution_percentage
 
-def create_multi_row_gallery(
-        title: str,
-        row_labels: list[str],
-        column_data: list[list[Image.Image]],
-        captions: list[str]
-) -> str:
-    """
-    Generates HTML for a multi-row image gallery with horizontal scrolling.
-
-    Creates a styled HTML page with a grid layout where images are organized in
-    rows and columns. Each column has a caption below it, and row labels appear
-    on the left. The gallery uses Tailwind CSS for styling and supports horizontal
-    scrolling for viewing many columns.
-
-    Args:
-        title (str): The page title displayed at the top and in the browser tab.
-        row_labels (list[str]): A list of strings for the row headers (sticky left column).
-        column_data (list[list[Image.Image]]): A list where each inner list contains
-            PIL Image objects for one vertical column. Each inner list must have
-            the same length as row_labels.
-        captions (list[str]): A list of captions, one for each column. Length must
-            match len(column_data).
-
-    Returns:
-        str: The complete HTML content as a string, ready to be written to a file.
-
-    Note:
-        Images are base64-encoded and embedded directly in the HTML. The function
-        prints error messages if data validation fails.
-
-    Example:
-        >>> html = create_multi_row_gallery("Results", ["GT", "Pred"],
-        ...                                  [[img1, img2], [img3, img4]],
-        ...                                  ["Sample 1", "Sample 2"])
-    """
-    # --- Data Validation ---
-    num_columns = len(column_data)
-    num_rows = len(row_labels)
-    if num_columns != len(captions):
-        print("Error: The number of columns in COLUMN_IMAGE_PATHS must match the number of CAPTION_TEXTS.")
-        return "Error page: data mismatch."
-    for i, col in enumerate(column_data):
-        if len(col) != num_rows:
-            print(f"Error: Column {i+1} has {len(col)} images, but there are {num_rows} row labels. These must match.")
-            return "Error page: data mismatch."
-
-    # --- Grid Generation ---
-    grid_items_html = []
-
-    # Generate image rows
-    for row_idx, label_text in enumerate(row_labels):
-        # Add the sticky row label for this row (Grid Item 1 in the row)
-        grid_items_html.append(f"""
-        <div class="sticky left-0 bg-gray-100 p-4 flex items-center justify-end">
-            <span class="font-bold text-gray-600 text-right">{label_text}</span>
-        </div>""")
-
-        # Add all images for this row across the columns
-        for col_idx in range(num_columns):
-            image = column_data[col_idx][row_idx]
-            base64_src, _ = get_image_base64_data(image)
-            if base64_src:
-                grid_items_html.append(f"""
-                <div class="bg-white shadow-lg rounded-lg overflow-hidden flex items-center justify-center p-2">
-                    <img src="{base64_src}" alt="Image for {captions[col_idx]}" class="max-w-full max-h-48 object-contain">
-                </div>""")
-            else:
-                grid_items_html.append('<div class="bg-gray-200 shadow-lg rounded-lg flex items-center justify-center"><span class="text-xs text-gray-500">Image not found</span></div>')
-
-    # Generate caption row
-    # Add a spacer for the label column (Grid Item 1 in the row)
-    grid_items_html.append('<div class="sticky left-0 bg-gray-100"></div>')
-
-    for caption_text in captions:
-        grid_items_html.append(f"""
-        <figcaption class="pt-2 text-gray-700 text-sm leading-relaxed">
-            {caption_text}
-        </figcaption>""")
-
-    # --- HTML and CSS Generation ---
-    html_content = f"""
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title}</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap" rel="stylesheet">
-    <style>
-        body {{
-            font-family: 'Inter', sans-serif;
-            background-color: #f3f4f6; /* bg-gray-100 */
-        }}
-        /* The main scrollable container */
-        .horizontal-scroll-container {{
-            -ms-overflow-style: auto; /* IE and Edge */
-            scrollbar-width: thin;   /* Firefox */
-        }}
-        .horizontal-scroll-container::-webkit-scrollbar {{
-            height: 12px;
-        }}
-        .horizontal-scroll-container::-webkit-scrollbar-track {{
-            background: #e5e7eb; /* bg-gray-200 */
-        }}
-        .horizontal-scroll-container::-webkit-scrollbar-thumb {{
-            background-color: #9ca3af; /* bg-gray-400 */
-            border-radius: 10px;
-            border: 3px solid #f3f4f6; /* bg-gray-100 */
-        }}
-        .horizontal-scroll-container::-webkit-scrollbar-thumb:hover {{
-            background: #6b7280; /* bg-gray-500 */
-        }}
-        /* Define the grid layout */
-        .gallery-grid {{
-            display: inline-grid;
-            grid-auto-flow: row;
-            /* {num_rows + 1} rows: N image rows + 1 caption row */
-            grid-template-rows: repeat({num_rows}, auto) auto;
-            /* {num_columns + 1} columns: 1 label column + M data columns */
-            grid-template-columns: 10rem repeat({num_columns}, 20rem);
-            gap: 1rem; /* Defines the visual separator space */
-        }}
-    </style>
-</head>
-<body class="min-h-screen flex flex-col items-center justify-center p-4 sm:p-8">
-
-    <div class="w-full max-w-screen-xl mx-auto">
-        <h1 class="text-3xl font-bold text-center text-gray-800 mb-8">{title}</h1>
-        
-        <!-- The horizontally scrolling container -->
-        <div class="horizontal-scroll-container overflow-x-auto pb-4">
-            <!-- The grid that holds all content and ensures alignment -->
-            <div class="gallery-grid">
-                {''.join(grid_items_html)}
-            </div>
-        </div>
-    </div>
-
-</body>
-</html>
-"""
-    return html_content
-
 def get_layer_numel_str(
         module: nn.Module,
         print_only_total: bool = False,
@@ -1124,7 +1133,7 @@ def create_cs_ovr_masks(
     return output_list
 
 def compute_maps_with_captions(
-        model: VLEncoder,
+        vle: VLEncoder,
         images: torch.Tensor,
         captions: list[str],
         map_compute_mode: MapComputeMode,
@@ -1132,26 +1141,39 @@ def compute_maps_with_captions(
         viz_image_size: Optional[int | list[int]] = None,
         map_resize_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
         normalize: bool = True,
+        with_patch_text: bool = False,
+        font_path: Path = Path('/home/olivieri/exp/resources/Arial.ttf'),
+        font_size: int = 24,
 ) -> list[tuple[Image.Image, str]]:
     image_text_list = []
 
     for img, text in zip(images, captions):
-        img_tensor = model.preprocess_images([img])
-        text_tensor = model.preprocess_texts([text])
-        sim = model.get_similarity(img_tensor, text_tensor, broadcast=False)
-        map = model.get_maps(
-            images=img_tensor,
-            texts=text_tensor,
+        img_tensor = vle.preprocess_images([img])
+        text_tensor = vle.preprocess_texts([text])
+        img_output = vle.encode_and_project_images(img_tensor)
+        txt_output = vle.encode_and_project_texts(text_tensor)
+        sim = vle.get_similarity(img_output, txt_output, broadcast=False)
+        map, indices = vle.get_maps(
+            img_output,
+            txt_output,
             map_compute_mode=map_compute_mode,
             upsample_size=viz_image_size,
             upsample_mode=map_resize_mode,
-        ) # [1, 1, H, W], m, M
-        map = map.squeeze(0) # [H, W]
+            broadcast=False
+        ) # [1, H, W]
+        patches_dims = (np.array(img_tensor.shape[-2:])//np.array(vle.patch_size)).astype(int).tolist()
+        if indices is not None:
+            indices = indices.view(indices.shape[0], *patches_dims)
         if viz_image_size:
             img = TF.resize(img, size=viz_image_size, interpolation=TF.InterpolationMode.BILINEAR)
         ovr_img = overlay_map(img, map, normalize=normalize, alpha=map_alpha) # (H_viz, W_viz)
+        viz_patch_size = (np.array([vle.patch_size])*(np.array(viz_image_size))/np.array(img_tensor.shape[-2:])).astype(int).tolist()[0]
+        if with_patch_text and (indices is not None):
+            texts_np = text_tensor[0, indices[0]].cpu().numpy()
+            texts_np = vle.decode_tokens(texts_np)
+            ovr_img = draw_text_in_patches_center(ovr_img, patch_size=viz_patch_size, texts_np=texts_np, font_path=font_path, font_size=font_size, text_color='black')
 
-        image_text_list.append((ovr_img, f"SIM = {sim.item():.2f}", f"MIN VALUE = {sim.max().item():.2f}, MAX VALUE = {sim.min().item():.2f}", text, "---"))
+        image_text_list.append((ovr_img, f"SIM = {sim.item():.2f}", f"MIN VALUE = {map.min().item():.2f}, MAX VALUE = {map.max().item():.2f}", text, "---"))
 
     return image_text_list
 
@@ -1168,6 +1190,9 @@ def compute_cs_maps_with_captions(
         viz_image_size: int | tuple[int, int],
         normalize: bool,
         contrastive: bool = False,
+        with_patch_text: bool = False,
+        font_path: Path = Path('/home/olivieri/exp/resources/Arial.ttf'),
+        font_size: int = 24,
 ) -> list[str | Image.Image]:
     cs_answers = get_answer_objects(jsonl_path, idxs=None, jsonlio=JsonlIO(), return_state=False, format_to_dict=True)
     cs_answers_text = [list(cs_answers[i].values()) for i in img_idxs]
@@ -1212,7 +1237,7 @@ def compute_cs_maps_with_captions(
     
     cs_pr_image_text_list = [
         compute_maps_with_captions(
-            model=vle,
+            vle=vle,
             images=ovr_mask_prs,
             captions=answers_pr_text,
             map_compute_mode=map_compute_mode,
@@ -1220,8 +1245,209 @@ def compute_cs_maps_with_captions(
             viz_image_size=viz_image_size,
             map_resize_mode=map_resize_mode,
             normalize=normalize,
+            with_patch_text=with_patch_text,
+            font_path=font_path,
+            font_size=font_size,
         )
         for ovr_mask_prs, answers_pr_text in zip(cs_ovr_mask_prs, cs_answers_text)
     ]
     
     return cs_pr_image_text_list
+
+@torch.inference_mode()
+def compute_cs_gt_pr_maps_with_captions(
+        viz_ds: VOC2012SegDataset,
+        img_idxs: Optional[list[int] | slice],
+        jsonl_path: Path,
+        vle: VLEncoder,
+        mask_color: Literal['L', 'RB'],
+        mask_alpha: float,
+        map_alpha: float,
+        map_compute_mode: MapComputeMode,
+        map_resize_mode: TF.InterpolationMode,
+        viz_image_size: int | tuple[int, int],
+        normalize: bool,
+        with_patch_text: bool = False,
+        font_path: Path = Path('/home/olivieri/exp/resources/Arial.ttf'),
+        font_size: int = 24,
+) -> list[str | Image.Image]:
+    cs_answers_dict: dict[int, dict[int, str]] = get_answer_objects(jsonl_path, idxs=img_idxs, jsonlio=JsonlIO(), return_state=False, format_to_dict=True)
+
+    cs_dict = {uid: list(pos_classes.keys()) for uid, pos_classes in cs_answers_dict.items()}
+
+    uids = list(cs_dict.keys())
+    pos_classes = list(cs_dict.values())
+    flat_pos_classes, _ = flatten_list_of_lists(pos_classes)
+    flat_pos_classes = [int(pos_c) for pos_c in flat_pos_classes]
+
+    cs_texts = [list(cs_a.values()) for cs_a in cs_answers_dict.values()]
+    flat_cs_texts, lengths = flatten_list_of_lists(cs_texts)
+    flat_cs_texts_t = vle.preprocess_texts(flat_cs_texts) # list of class-splitted tensors (P, tokens)
+
+    P = len(flat_cs_texts_t)
+    
+    scs_img, gts, prs = viz_ds[img_idxs]
+
+    scs_img = torch.stack(scs_img) # (B, 3, H, W)
+    gts = torch.stack(gts) # (B, 1, H, W)
+    prs = torch.stack(prs) # (B, 1, H, W)
+
+    unrolled_scs_img = torch.cat([sc.unsqueeze(0).expand(len(cs_dict[uid]), -1, -1, -1) for sc, uid in zip(scs_img, uids)]) # (P, 3, H, W)
+    unrolled_gts = torch.cat([gt.unsqueeze(0).expand(len(cs_dict[uid]), -1, -1, -1) for gt, uid in zip(gts, uids)]) # (P, 1, H, W)
+    unrolled_prs = torch.cat([pr.unsqueeze(0).expand(len(cs_dict[uid]), -1, -1, -1) for pr, uid in zip(prs, uids)]) # (P, 1, H, W)
+
+    concat_masks = torch.cat([unrolled_gts, unrolled_prs], dim=0) # (2P, H, W)
+
+    ovr_concat_masks_img = format_pos_ovr_masks(unrolled_scs_img, concat_masks, flat_pos_classes, mask_alpha) # (2P, 3, H, W)
+
+    ovr_concat_masks = vle.preprocess_images(ovr_concat_masks_img) # (2P, 3, H, W)
+
+    img_output = vle.encode_and_project_images(ovr_concat_masks) # (2P, D)
+    txt_output = vle.encode_and_project_texts(flat_cs_texts_t) # # (P, D)
+
+    # TODO the following computation can be further sped up by splitting in the end, after the concat_adapter
+
+    gt_global_image_token = img_output.global_image_token[:P] # (P, D)
+    gt_local_image_tokens = img_output.local_image_tokens[:P] # (P, D)
+
+    pr_global_image_token = img_output.global_image_token[P:] # (P, D)
+    pr_local_image_tokens = img_output.local_image_tokens[P:] # (P, D)
+
+    lhs_global: torch.Tensor = vle.model.concat_adapter(torch.cat([gt_global_image_token, pr_global_image_token], dim=-1)) # (P, D)
+    lhs_local: torch.Tensor = vle.model.concat_adapter(torch.cat([gt_local_image_tokens, pr_local_image_tokens], dim=-1)) # (P, D)
+
+    new_img_output = VLEImageOutput(lhs_global, lhs_local)
+    new_txt_output = VLETextOutput(txt_output.global_text_token, txt_output.local_text_tokens)
+
+    sims = vle.get_similarity(new_img_output, new_txt_output, broadcast=False)
+
+    maps, indices = vle.get_maps(
+        new_img_output,
+        new_txt_output,
+        map_compute_mode=map_compute_mode,
+        upsample_size=viz_image_size,
+        upsample_mode=map_resize_mode,
+        broadcast=False,
+    )
+
+    patches_dims = (np.array(ovr_concat_masks.shape[-2:])//np.array(vle.patch_size)).astype(int).tolist()
+    if indices is not None:
+        indices = indices.view(indices.shape[0], *patches_dims)
+
+    cs_pr_image_text_list = []
+
+    for i, map in enumerate(maps):
+        # RB overlay image
+        sc = unrolled_scs_img[i]
+        pos_c = flat_pos_classes[i]
+        gt = (unrolled_gts[i] == pos_c)
+        pr = (unrolled_prs[i] == pos_c)
+        diff_mask = create_diff_mask(gt, pr)
+        diff_mask += (diff_mask*gt) # sets to 2 the false negatives
+        if mask_color == 'L':
+            ovr_img = blend_tensors(sc, diff_mask*255, mask_alpha)
+        elif mask_color == 'RB':
+            diff_mask_col_RB = apply_colormap([diff_mask], {0: (0, 0, 0), 1: (255, 0, 0), 2: (0, 0, 255)}).squeeze()
+            ovr_img = blend_tensors(sc, diff_mask_col_RB, mask_alpha)
+        if viz_image_size:
+            ovr_img = TF.resize(ovr_img, size=viz_image_size, interpolation=TF.InterpolationMode.BILINEAR)
+        
+        ovr_img = overlay_map(ovr_img, map.unsqueeze(0), normalize=normalize, alpha=map_alpha) # (H_viz, W_viz)
+
+        viz_patch_size = (np.array([vle.patch_size])*(np.array(viz_image_size))/np.array(ovr_concat_masks.shape[-2:])).astype(int).tolist()[0]
+
+        if with_patch_text and (indices is not None):
+            # texts_np=np.array(["BACKGROUND"]*196).reshape(14, 14)
+            # texts_np = indices[i].cpu().numpy()
+            # texts_np = np.vectorize(lambda i: str(i))(texts_np)
+            texts_np = flat_cs_texts_t[i, indices[i]].cpu().numpy()
+            texts_np = vle.decode_tokens(texts_np)
+            ovr_img = draw_text_in_patches_center(ovr_img, patch_size=viz_patch_size, texts_np=texts_np, font_path=font_path, font_size=font_size, text_color='black')
+
+        sim = sims[i]
+
+        text = flat_cs_texts[i]
+
+        cs_pr_image_text_list.append((ovr_img, f"SIM = {sim.item():.2f}", f"MIN VALUE = {map.min().item():.2f}, MAX VALUE = {map.max().item():.2f}", text, "---"))
+
+    # TODO implement contrastive
+
+    return cs_pr_image_text_list
+
+def draw_text_in_patches_center(
+        image: Image.Image,
+        patch_size: tuple[int, int],
+        texts_np: np.ndarray[str],
+        font_path: Path,
+        font_size: int = 24,
+        text_color: str = "black"
+) -> Image.Image:
+    """
+    Draws a specific text string centered in each conceptual patch of an image.
+
+    Args:
+        image (PIL.Image.Image): The input image.
+        patch_size (tuple): A tuple (width, height) for the patch size.
+        texts (list of lists): A 2D list of strings. Its dimensions MUST match the
+                               number of patches (rows x columns).
+        font_size (int): The desired font size.
+        font_path (str): Path to the .ttf or .otf font file.
+        text_color (str or tuple): The color of the text.
+        
+    Raises:
+        ValueError: If the dimensions of the `texts` grid do not match the
+                    number of patches calculated from the image and patch size.
+    """
+    patch_width, patch_height = patch_size
+    img_width, img_height = image.size
+
+    # Calculate the number of patches in each dimension
+    num_cols = img_width // patch_width
+    num_rows = img_height // patch_height
+
+    # --- VALIDATION BLOCK ---
+    # 1. Check if the number of rows in the text grid matches
+    if len(texts_np) != num_rows:
+        raise ValueError(
+            f"The number of rows in 'texts' ({len(texts_np)}) does not match the "
+            f"calculated number of patch rows ({num_rows})."
+        )
+    # 2. Check if the number of columns in each row of the text grid matches
+    for i, row_of_texts in enumerate(texts_np):
+        if len(row_of_texts) != num_cols:
+            raise ValueError(
+                f"The number of columns in row {i} of 'texts' ({len(row_of_texts)}) "
+                f"does not match the calculated number of patch columns ({num_cols})."
+            )
+    # --- END VALIDATION BLOCK ---
+
+    # Create a drawing context
+    draw = PIL.ImageDraw.Draw(image)
+    
+    # Load the font
+    try:
+        font = PIL.ImageFont.truetype(font_path, font_size)
+    except IOError:
+        print(f"Font not found at '{font_path}'. Using default font.")
+        font = PIL.ImageFont.load_default()
+
+    # Iterate over each patch
+    for row in range(num_rows):
+        for col in range(num_cols):
+            # Calculate the center of the patch
+            center_x = (col * patch_width) + (patch_width / 2)
+            center_y = (row * patch_height) + (patch_height / 2)
+
+            # Get the text for the current patch
+            text = texts_np[row][col]
+
+            # Draw the text, centered on the coordinate
+            draw.text(
+                (center_x, center_y),
+                text,
+                font=font,
+                fill=text_color,
+                anchor="mm"  # Requires Pillow 10.0.0+
+            )
+
+    return image

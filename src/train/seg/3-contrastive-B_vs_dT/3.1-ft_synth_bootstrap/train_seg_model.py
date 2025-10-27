@@ -224,9 +224,10 @@ async def train_loop(
                         if uid in list(cs_dict_to_update.keys()):
                             cs_texts = list(cs_a.values()) # gather the text for each pos. class of this image
                             cs_texts = vle.preprocess_texts(cs_texts)
-                            cs_vle_output = vle.encode_and_project(images=None, texts=cs_texts, broadcast=False)
+                            # cs_vle_output = vle.encode_and_project(images=None, texts=cs_texts, broadcast=False)
+                            cs_vle_txt_output = vle.encode_and_project_texts(cs_texts)
 
-                            cs_global_text_token: torch.Tensor = cs_vle_output.global_text_token # [N_cs, D]
+                            cs_global_text_token: torch.Tensor = cs_vle_txt_output.global_text_token # [N_cs, D]
                             cs_global_text_token: torch.Tensor = segmodel.model.bottleneck_adapter.mlp(cs_global_text_token)
 
                             filtered_cs_counter += len(cs_global_text_token)

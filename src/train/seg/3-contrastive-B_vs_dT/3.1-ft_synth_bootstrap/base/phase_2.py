@@ -203,10 +203,11 @@ async def train_loop(
                             cs_texts.append(cs_text)
 
                         cs_texts = vle.preprocess_texts(cs_texts)
-                        cs_vle_output = vle.encode_and_project(images=None, texts=cs_texts, broadcast=False)
+                        # cs_vle_output = vle.encode_and_project(images=None, texts=cs_texts, broadcast=False)
+                        cs_vle_txt_output = vle.encode_and_project_texts(cs_texts)
 
-                        cs_global_text_token = cs_vle_output.global_text_token # [N_cs, D]
-                        cs_global_text_token = segmodel.model.bottleneck_adapter.mlp(cs_global_text_token)
+                        cs_global_text_token: torch.Tensor = cs_vle_txt_output.global_text_token # [N_cs, D]
+                        cs_global_text_token: torch.Tensor = segmodel.model.bottleneck_adapter.mlp(cs_global_text_token)
 
                         cs_global_text_tokens[uid] = cs_global_text_token
                     

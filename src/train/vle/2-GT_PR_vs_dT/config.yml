@@ -1,7 +1,7 @@
 root_exp_path: '/home/olivieri/exp/data/private/exps/vle'
 exp_name: '2-GT_PR_vs_dT'
-exp_desc: "test run" # Optional
-var_name: ""
+exp_desc: "" # Optional
+var_name: "b128"
 
 vle:
   pretrained_weights_root_path: '/home/olivieri/exp/data/private/torch_weights/vle/flair'
@@ -10,7 +10,7 @@ vle:
   train:
     batch_size: 128
     num_epochs: 16
-    old_layers_to_train: ['text_post']
+    old_layers_to_train: []
     precision: 'amp_bfloat16' # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
     lr_schedule:
       policy: 'cosine'

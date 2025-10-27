@@ -233,14 +233,16 @@ async def train_loop(
                     flat_cs_ovr_masks_pr = vle.preprocess_images(flat_cs_ovr_masks_pr/255.)
 
                     with torch.no_grad():
-                        flat_cs_vle_output = vle.encode_and_project(images=flat_cs_ovr_masks_pr, texts=flat_cs_concat_texts, broadcast=False, pool=False)
+                        # flat_cs_vle_output = vle.encode_and_project(images=flat_cs_ovr_masks_pr, texts=flat_cs_concat_texts, broadcast=False, pool=False)
+                        flat_cs_vle_img_output = vle.encode_and_project_images(flat_cs_ovr_masks_pr)
+                        flat_cs_vle_txt_output = vle.encode_and_project_texts(flat_cs_concat_texts)
 
-                    cs_global_text_token = flat_cs_vle_output.global_text_token.squeeze(1) # (P + P*M, D)
+                    cs_global_text_token = flat_cs_vle_txt_output.global_text_token.squeeze(1) # (P + P*M, D)
                     pos_cs_global_text_token = cs_global_text_token[:P] # (P, D)
                     neg_cs_global_text_token = cs_global_text_token[P:] # (P*M, D)
                     neg_cs_global_text_token = neg_cs_global_text_token.view(cs_neg_texts.shape[0], cs_neg_texts.shape[1], neg_cs_global_text_token.shape[-1]) # (P, M, D)
                     
-                    pr_global_image_token = flat_cs_vle_output.global_image_token # (P, D)
+                    pr_global_image_token = flat_cs_vle_img_output.global_image_token # (P, D)
                     
                     bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, 32, 32, 960)
                     bottleneck_out: torch.Tensor = segmodel.adapt_tensor(bottleneck_out) # (B, 960)

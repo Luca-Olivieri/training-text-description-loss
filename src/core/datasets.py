@@ -685,11 +685,12 @@ def get_answer_objects(
         answer_gt = jsonlio.get_one_item(path, idxs, return_state, format_to_dict)
         return answer_gt
     answer_gts = jsonlio.get_many_item(path, return_state, format_to_dict)
-    # if isinstance(idxs, slice):
-        # indices = range(*idxs.indices(len(self)))
     if isinstance(idxs, list):
-        indices = idxs
-    answer_gts = [gt for i, gt in enumerate(answer_gts) if i in indices]
+        if format_to_dict:
+            answer_gts = {idx: answer_gts[idx] for idx in idxs}
+        else:
+            raise NotImplementedError
+
     return answer_gts
 
 

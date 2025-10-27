@@ -137,11 +137,12 @@ def train_loop(
             # --- Forward Pass and Loss Calculation ---
             optimizer.zero_grad()
             with autocast():
-                vle_output = vle.encode_and_project(images, texts, broadcast=False)
+                img_output = vle.encode_and_project_images(images)
+                txt_output = vle.encode_and_project_texts(texts)
                 losses = criterion(
-                    image_features=vle_output.global_image_token,
-                    image_tokens=vle_output.local_image_tokens.clone(),
-                    text_features=vle_output.global_text_token.squeeze(1),
+                    image_features=img_output.global_image_token,
+                    image_tokens=img_output.local_image_tokens.clone(),
+                    text_features=txt_output.global_text_token,
                     logit_scale=vle.model.logit_scale.exp(),
                     logit_bias=vle.model.logit_bias,
                     visual_proj=vle.model.visual_proj,

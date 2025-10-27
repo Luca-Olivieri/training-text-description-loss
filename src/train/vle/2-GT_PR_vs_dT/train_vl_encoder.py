@@ -195,18 +195,20 @@ def train_loop(
             with autocast():
                 b = len(texts)
 
-                vle_output = vle.encode_and_project(ovr_concat_masks, texts, broadcast=False, pool=False)
+                # vle_output = vle.encode_and_project(ovr_concat_masks, texts, broadcast=False, pool=False)
+                vle_img_output = vle.encode_and_project_images(ovr_concat_masks)
+                vle_txt_output = vle.encode_and_project_texts(texts)
                 
-                gt_global_image_token = vle_output.global_image_token[:b]
-                pr_global_image_token = vle_output.global_image_token[b:]
+                gt_global_image_token = vle_img_output.global_image_token[:b]
+                gt_local_image_tokens = vle_img_output.local_image_tokens[:b]
 
-                gt_local_image_tokens = vle_output.local_image_tokens[:b]
-                pr_local_image_tokens = vle_output.local_image_tokens[b:]
+                pr_global_image_token = vle_img_output.global_image_token[b:]
+                pr_local_image_tokens = vle_img_output.local_image_tokens[b:]
 
                 lhs_global: torch.Tensor = vle.model.concat_adapter(torch.cat([gt_global_image_token, pr_global_image_token], dim=-1))
                 lhs_local: torch.Tensor = vle.model.concat_adapter(torch.cat([gt_local_image_tokens, pr_local_image_tokens], dim=-1))
 
-                rhs = vle_output.global_text_token.squeeze(1)
+                rhs = vle_txt_output.global_text_token.squeeze(1)
                 
                 losses = criterion(
                     image_features=lhs_global,
@@ -346,18 +348,20 @@ def evaluate(
                 ovr_concat_masks = vle.preprocess_images(ovr_concat_masks)
                 
                 b = len(gts)
-                vle_output = vle.encode_and_project(ovr_concat_masks, texts, broadcast=False, pool=False)
+                # vle_output = vle.encode_and_project(ovr_concat_masks, texts, broadcast=False, pool=False)
+                vle_img_output = vle.encode_and_project_images(ovr_concat_masks)
+                vle_txt_output = vle.encode_and_project_texts(texts)
                 
-                gt_global_image_token = vle_output.global_image_token[:b]
-                pr_global_image_token = vle_output.global_image_token[b:]
+                gt_global_image_token = vle_img_output.global_image_token[:b]
+                gt_local_image_tokens = vle_img_output.local_image_tokens[:b]
 
-                gt_local_image_tokens = vle_output.local_image_tokens[:b]
-                pr_local_image_tokens = vle_output.local_image_tokens[b:]
+                pr_global_image_token = vle_img_output.global_image_token[b:]
+                pr_local_image_tokens = vle_img_output.local_image_tokens[b:]
 
                 lhs_global: torch.Tensor = vle.model.concat_adapter(torch.cat([gt_global_image_token, pr_global_image_token], dim=-1))
                 lhs_local: torch.Tensor = vle.model.concat_adapter(torch.cat([gt_local_image_tokens, pr_local_image_tokens], dim=-1))
 
-                rhs = vle_output.global_text_token.squeeze(1)
+                rhs = vle_txt_output.global_text_token.squeeze(1)
                 
                 losses = criterion(
                     image_features=lhs_global,

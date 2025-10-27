@@ -1,5 +1,6 @@
 from core.config import *
 from core.registry import Registry
+from core.torch_utils import unprefix_state_dict
 
 import torch
 from torch import nn
@@ -12,14 +13,13 @@ from abc import abstractmethod, ABC
 import math
 from PIL import Image
 from dataclasses import dataclass
-from collections import OrderedDict
 from huggingface_hub import hf_hub_download
+from functools import partial
 
 # FLAIR
 from vendors.flair.src import flair
-from open_clip.tokenizer import HFTokenizer, SimpleTokenizer
+from open_clip.tokenizer import SimpleTokenizer
 from vendors.flair.src.flair.loss import FlairLoss
-from vendors.flair.src.flair.train import backward, unwrap_model
 
 # FG-CLIP
 from transformers import AutoImageProcessor, AutoTokenizer, AutoModelForCausalLM
@@ -27,6 +27,8 @@ from transformers import AutoImageProcessor, AutoTokenizer, AutoModelForCausalLM
 from typing import Optional, Literal
 from vendors.flair.src.flair.model import FLAIR
 from enum import Enum
+
+from core._types import deprecated, override, Callable
 
 class MapComputeMode(Enum):
     """
@@ -38,8 +40,12 @@ class MapComputeMode(Enum):
     """
     SIMILARITY = 'similarity'
     ATTENTION = 'attention'
+    MAX_TEXT_TOKEN_SIM = 'max_text_token_sim'
+    AVG_TEXT_TOKEN_SIM = 'avg_text_token_sim'
+    MAX_TEXT_TOKEN_ATTN = 'max_text_token_attn'
+    AVG_TEXT_TOKEN_ATTN = 'avg_text_token_attn'
 
-
+@deprecated("Image and text about is not split.")
 @dataclass
 class VLEncoderOutput:
     """
@@ -57,7 +63,25 @@ class VLEncoderOutput:
     local_image_tokens: Optional[torch.Tensor] = None   # [B_i, n_i, D]
     local_text_tokens: Optional[torch.Tensor] = None    # [B_t, n_t, D]
 
+@dataclass
+class VLEImageOutput:
+    global_image_token: torch.Tensor # (B_i, D)
+    local_image_tokens: torch.Tensor # (B_i, n_i, D)
+    
 
+@dataclass
+class VLETextOutput:
+    global_text_token: torch.Tensor # (B_i, D)
+    local_text_tokens: torch.Tensor # (B_t, n_t, D)
+
+
+@dataclass
+class VLEPoolOutput:
+    pooled_image_token: torch.Tensor # (B_i, D) or (B_i, B_t, D) if broadcast
+    attn_maps_flat: torch.Tensor # (B_i, H, 1, n_i+1) or (B_i, H, B_t, n_i+1) if broadcast
+
+
+@deprecated("Pool output is return separately from the main VLE output.")
 @dataclass
 class VLEncoderOutputWithAttn(VLEncoderOutput):
     """
@@ -82,6 +106,16 @@ class VLEncoder(ABC):
     def __init__(self) -> None:
         """Initialize the vision-language encoder."""
         self.viz_attn_heads_idx: Optional[list[int]] = None
+
+    def load_model_state_dict(
+            self,
+            checkpoint_path: Path
+    ) -> None:
+        # TODO check if map_location='cpu' can improve the vRAM usage somewhere else in the codebase.
+        if checkpoint_path.exists():
+            self.model.load_state_dict(unprefix_state_dict(torch.load(checkpoint_path, map_location='cpu')['model_state_dict'], prefix='_orig_mod.'))
+        else:
+            raise ValueError(f"VLE weights path '{checkpoint_path}' not found.")
     
     @abstractmethod
     @torch.inference_mode()
@@ -122,6 +156,44 @@ class VLEncoder(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def encode_and_project_images(
+            self,
+            images: torch.Tensor,
+            **kwargs
+    ) -> VLEImageOutput:
+        """
+        Encode and project images into a shared embedding space.
+        
+        Args:
+            images: Preprocessed image tensor
+            **kwargs: Additional encoding arguments
+            
+        Returns:
+            VLEncoderOutput containing global and local tokens for images.
+        """
+        raise NotImplementedError
+    
+    @abstractmethod
+    def encode_and_project_texts(
+            self,
+            texts: torch.Tensor,
+            **kwargs
+    ) -> VLETextOutput:
+        """
+        Encode and project texts into a shared embedding space.
+        
+        Args:
+            texts: Preprocessed text tensor
+            **kwargs: Additional encoding arguments
+            
+        Returns:
+            VLEncoderOutput containing global and local tokens for texts.
+        """
+        raise NotImplementedError
+    
+    # TODO separate pool from this and see if it makes sense to split this method into image and text versions.
+    @deprecated("Separated into multiple functions.")
+    @abstractmethod
     def encode_and_project(
             self,
             images: Optional[torch.Tensor],
@@ -142,39 +214,28 @@ class VLEncoder(ABC):
             VLEncoderOutput containing global and local tokens for images and texts
         """
         raise NotImplementedError
-    
+
     @abstractmethod
     @torch.inference_mode()
     def get_similarity(
             self,
-            images: torch.Tensor,
-            texts: torch.Tensor,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
             broadcast: bool = False
     ) -> torch.Tensor:
-        """
-        Compute similarity scores between images and texts.
-        
-        Args:
-            images: Preprocessed image tensor
-            texts: Preprocessed text tensor
-            broadcast: If True, compute similarity for all image-text pairs
-            
-        Returns:
-            Similarity scores tensor. Shape [B_i, B_t] if broadcast=True, else [B] where B=B_i=B_t
-        """
         raise NotImplementedError
     
     @torch.inference_mode()
     def get_maps(
             self,
-            images: torch.Tensor,
-            texts: torch.Tensor,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
             map_compute_mode: MapComputeMode = MapComputeMode.SIMILARITY,
             upsample_size: Optional[int | tuple[int]] = None,
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
             broadcast: bool = False,
             **kwargs
-    ) -> torch.Tensor:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """
         Compute spatial maps (similarity or attention) between images and texts.
         
@@ -194,116 +255,109 @@ class VLEncoder(ABC):
             ValueError: If map_compute_mode is not recognized
         """
         match map_compute_mode:
-            case MapComputeMode.ATTENTION:
-                return self.get_attn_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast, **kwargs)
             case MapComputeMode.SIMILARITY:
-                return self.get_sim_maps(images, texts, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast, **kwargs)
+                return self.get_sim_maps(image_output, text_output, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast, **kwargs)
+            case MapComputeMode.ATTENTION:
+                return self.get_attn_maps(image_output, text_output, upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast, **kwargs)
+            case MapComputeMode.MAX_TEXT_TOKEN_SIM:
+                return self.get_aggr_text_token_sim_maps(image_output, text_output, lambda x: ((r:=torch.max(x, dim=-1)).values, r.indices), upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast)
+            case MapComputeMode.AVG_TEXT_TOKEN_SIM:
+                return self.get_aggr_text_token_sim_maps(image_output, text_output, lambda x: (torch.mean(x, dim=-1), None), upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast)
+            case MapComputeMode.MAX_TEXT_TOKEN_ATTN:
+                return self.get_aggr_text_token_attn_maps(image_output, text_output, lambda x: ((r:=torch.max(x, dim=-2)).values, r.indices), upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast)
+            case MapComputeMode.AVG_TEXT_TOKEN_ATTN:
+                return self.get_aggr_text_token_attn_maps(image_output, text_output, lambda x: (torch.mean(x, dim=-2), None), upsample_size=upsample_size, upsample_mode=upsample_mode, broadcast=broadcast)
             case _:
                 raise ValueError(f"Unknown mode: {map_compute_mode}. The only supported types are {[c.name for c in MapComputeMode]}.")
     
     @torch.inference_mode()
-    def get_attn_maps(
+    def get_sim_maps(
             self,
-            images: torch.Tensor,
-            texts: torch.Tensor,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
             upsample_size: Optional[int | tuple[int]] = None,
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
             broadcast: bool = False,
-    ) -> torch.Tensor:
-        """
-        Compute attention maps from the visual projection layer.
-        
-        Encodes images and texts, then extracts attention weights from the cross-attention
-        mechanism that conditions text queries on image patches.
-        
-        Args:
-            images: Preprocessed image tensor
-            texts: Preprocessed text tensor
-            upsample_size: Target size for upsampling attention maps
-            upsample_mode: Interpolation mode for upsampling
-            broadcast: If True, compute attention for all image-text pairs
-            attn_heads_idx: Indices of attention heads to average. If None, average all heads.
-            
-        Returns:
-            Tuple of (attention_maps, min_attn, max_attn) where:
-                - attention_maps: Tensor of shape [B_i, B_t, H, W] (or [B_i, B_t, sqrt(n_i), sqrt(n_i)] if not upsampled)
-                - min_attn: Minimum attention value across all maps
-                - max_attn: Maximum attention value across all maps
-        """
-        # _, [B_i, B_t, D], [B_i, n_i, D], _, _, [B_i, B_t, n_i+1]
-        vle_output = self.encode_and_project(images, texts, broadcast)
-        # NOTE 'B_t' = 1 if 'broadcast' = False
+    ) -> tuple[torch.Tensor, None]:
+        # normalize token embds for cosine similarity
+        local_image_features = F.normalize(image_output.local_image_tokens, dim=-1)  # (B_i, n_i, D)
+        global_text_features = F.normalize(text_output.global_text_token, dim=-1) # (B_t, D)
 
-        if self.viz_attn_heads_idx:
-            vle_output.attn_maps_flat = vle_output.attn_maps_flat[:, self.viz_attn_heads_idx, ...].mean(dim=1, keepdim=False)
+        n_i = local_image_features.shape[1]
+        l_i = int(math.sqrt(n_i)) # number of patches per axis
+
+        if broadcast:
+            sim_maps_flat = torch.einsum('ind,td->itn', local_image_features, global_text_features) # (B_i, B_t, n_i)
         else:
-            vle_output.attn_maps_flat = vle_output.attn_maps_flat.mean(dim=1, keepdim=False)
+            sim_maps_flat = torch.einsum('ind,id->in', local_image_features, global_text_features) # (B_i, n_i)
 
-        text_batch_size = vle_output.global_text_token.shape[1] # B_t
-        image_batch_size, image_num_patches = vle_output.local_image_tokens.shape[:2] # B_i, n_i
-        
-        # reshape attention maps
-        num_patches_per_axis = int(math.sqrt(image_num_patches))
-        attn_maps: torch.Tensor = vle_output.attn_maps_flat[:, :, :-1].view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, sqrt(n_i), sqrt(n_i)]
+        # arrange the flattened patches into a grid
+        sim_maps = sim_maps_flat.view(*sim_maps_flat.shape[:-1], l_i, l_i) # [B_i, l_i, l_i] or [B_i, B_t, l_i, l_i] if broadcast
         
         # upsampling
         if upsample_size:
-            attn_maps: torch.Tensor = TF.resize(attn_maps, upsample_size, interpolation=upsample_mode) # [B_i, B_t, H, W]
-
-        return attn_maps
+            sim_maps = TF.resize(sim_maps, size=upsample_size, interpolation=upsample_mode) # [B_i, H, W] or [B_i, B_t, H, W] if broadcast
+        
+        return sim_maps, None
     
     @torch.inference_mode()
-    def get_sim_maps(
+    def get_attn_maps(
             self,
-            images: torch.Tensor,
-            texts: torch.Tensor,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
             upsample_size: Optional[int | tuple[int]] = None,
             upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
-            broadcast: bool = False
-    ) -> torch.Tensor:
-        """
-        Compute similarity maps using cosine similarity between text and image tokens.
-        
-        Computes cosine similarity between global text tokens and local image patch tokens
-        to produce spatial similarity maps.
-        
-        Args:
-            images: Preprocessed image tensor
-            texts: Preprocessed text tensor
-            upsample_size: Target size for upsampling similarity maps
-            upsample_mode: Interpolation mode for upsampling
-            broadcast: If True, compute similarity for all image-text pairs
-            
-        Returns:
-            Tuple of (similarity_maps, min_sim, max_sim) where:
-                - similarity_maps: Tensor of shape [B_i, B_t, H, W] (or [B_i, B_t, sqrt(n_i), sqrt(n_i)] if not upsampled)
-                - min_sim: Minimum similarity value across all maps
-                - max_sim: Maximum similarity value across all maps
-        """
-        # _, [B_i, B_t, D], [B_i, n_i, D], _, _, _
-        # _, global_text_token, local_image_tokens, _, _, _ = self.encode_and_project(images, texts, broadcast)
-        vle_output = self.encode_and_project(images, texts, broadcast)
-        text_batch_size = vle_output.global_text_token.shape[1] # B_t
-        image_batch_size, image_num_patches = vle_output.local_image_tokens.shape[:2] # B_i, n_i
-        
+            broadcast: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        raise NotImplementedError
+    
+    @torch.inference_mode()
+    def get_aggr_text_token_sim_maps(
+            self,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
+            aggr_fn: Callable[[torch.Tensor], tuple[torch.Tensor, Optional[torch.Tensor]]],
+            upsample_size: Optional[int | tuple[int]] = None,
+            upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+            broadcast: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
         # normalize token embds for cosine similarity
-        norm_global_text_token = F.normalize(vle_output.global_text_token, p=2, dim=-1)    # [B_i, B_t, D]
-        norm_local_image_tokens = F.normalize(vle_output.local_image_tokens, p=2, dim=-1)  # [B_i, n_i, D]
+        local_image_features = F.normalize(image_output.local_image_tokens, dim=-1)  # (B_i, n_i, D)
+        local_text_tokens = F.normalize(text_output.local_text_tokens, dim=-1) # (B_t, n_t, D)
 
-        # [B_t, D] @ [n_i, D] --> [B_t, n_i] (in a B_i batch)
-        sim_maps = torch.bmm(norm_global_text_token, norm_local_image_tokens.swapaxes(-1, -2)) # batched matrix multiplication
+        n_i = local_image_features.shape[1]
+        l_i = int(math.sqrt(n_i)) # number of patches per axis
+
+        if broadcast:
+            sim_maps_flat_per_txt_token = torch.einsum('inf,tmf->itnm', local_image_features, local_text_tokens) # (B_i, B_t, n_i, n_t)
+        else:
+            sim_maps_flat_per_txt_token = torch.einsum('inf,imf->inm', local_image_features, local_text_tokens) # (B_i, n_i, n_t)
+        sim_maps_flat, indices = aggr_fn(sim_maps_flat_per_txt_token) # aggregate the maximum along the text tokens
         
-        # reshape similarity maps
-        num_patches_per_axis = int(math.sqrt(image_num_patches))
-        sim_maps = sim_maps.view(image_batch_size, text_batch_size, num_patches_per_axis, num_patches_per_axis) # [B_i, B_t, n_i, n_i]
+        # NOTE 'n_i' should always be kept as final dimension for the subsequent operations
+
+        # arrange the flattened patches into a grid
+        sim_maps = sim_maps_flat.view(*sim_maps_flat.shape[:-1], l_i, l_i) # [B_i, l_i, l_i] or [B_i, B_t, l_i, l_i] if broadcast
         
         # upsampling
         if upsample_size:
-            sim_maps: torch.Tensor = TF.resize(sim_maps, upsample_size, interpolation=upsample_mode) # [B_i, B_t, H, W]
+            sim_maps = TF.resize(sim_maps, size=upsample_size, interpolation=upsample_mode) # [B_i, H, W] or [B_i, B_t, H, W] if broadcast
         
-        return sim_maps
+        return sim_maps, indices
     
-    def set_trainable_params(self, *arg, **kwargs) -> None:
+    @torch.inference_mode()
+    def get_aggr_text_token_attn_maps(
+            self,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
+            aggr_fn: Callable[[torch.Tensor], tuple[torch.Tensor, Optional[torch.Tensor]]],
+            upsample_size: Optional[int | tuple[int]] = None,
+            upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+            broadcast: bool = False,
+    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+        raise NotImplementedError
+    
+    def set_trainable_params(self, **kwargs) -> None:
         """
         Configure which parameters of the model should be trainable.
         
@@ -313,7 +367,7 @@ class VLEncoder(ABC):
         """
         raise NotImplementedError
     
-    def create_loss(self, *args, **kwargs) -> nn.Module:
+    def create_loss(self, **kwargs) -> nn.Module:
         """
         Create and return the loss function for training this encoder.
         
@@ -326,6 +380,7 @@ class VLEncoder(ABC):
         """
         raise NotImplementedError
 
+    # TODO this method should not belong here, since the loss can vary. This should be in the train-script-specific
     def evaluate(
             self,
             dl: DataLoader,
@@ -349,12 +404,14 @@ class VLEncoder(ABC):
         with torch.no_grad():
             for step, (images, texts) in enumerate(dl):
 
-                vle_output = self.encode_and_project(images, texts, broadcast=False)
+                # vle_output = self.encode_and_project(images, texts, broadcast=False)
+                img_output = self.encode_and_project_images(images)
+                txt_output = self.encode_and_project_texts(texts)
 
                 batch_losses = criterion(
-                        image_features=vle_output.global_image_token,
-                        image_tokens=vle_output.local_image_tokens.clone(),
-                        text_features=vle_output.global_text_token.squeeze(1),
+                        image_features=img_output.global_image_token,
+                        image_tokens=img_output.local_image_tokens.clone(),
+                        text_features=txt_output.global_text_token.squeeze(1),
                         logit_scale=self.model.logit_scale.exp(),
                         visual_proj=self.model.visual_proj,
                         logit_bias=self.model.logit_bias,
@@ -386,7 +443,34 @@ class VLEncoder(ABC):
         """
         raise NotImplementedError
 
+    @torch.inference_mode()
+    def decode_tokens(
+            self,
+            token_ids: torch.Tensor
+    ) -> np.ndarray[str]:
+        raise NotImplementedError
+
 VLE_REGISTRY = Registry[VLEncoder]()
+
+class _SupportsPooling(ABC):
+    @abstractmethod
+    def pool(
+        self,
+        image_output: VLEImageOutput,
+        text_output: VLETextOutput,
+        broadcast: bool = False,
+        **kwargs
+    ) -> VLEPoolOutput:
+        raise NotImplementedError
+    
+    @abstractmethod
+    def pool_by_local_text_tokens(
+            self,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
+            broadcast: bool = False
+    ) -> VLEPoolOutput:
+        raise NotImplementedError
 
 class NewLayer(Enum):
     """
@@ -414,6 +498,7 @@ class OldFLAIRLayer(Enum):
     TEXT_POST = 'text_post'
     VISUAL_PROJ = 'visual_proj'
 
+@deprecated("No longer used since pooling is implemented in a separate method.")
 @dataclass
 class FLAIROutput(VLEncoderOutputWithAttn):
     """
@@ -426,7 +511,7 @@ class FLAIROutput(VLEncoderOutputWithAttn):
     local_image_features: Optional[torch.Tensor] = None # [B_i, B_t, D]
 
 @VLE_REGISTRY.register("flair")
-class FLAIRAdapter(VLEncoder):
+class FLAIRAdapter(VLEncoder, _SupportsPooling):
     """
     Adapter for the FLAIR (Fine-grained Late-interaction Representation) model.
     
@@ -471,7 +556,7 @@ class FLAIRAdapter(VLEncoder):
 
         # Model
         model, _, preprocess_fn = flair.create_model_and_transforms(
-            'ViT-B-16-FLAIR',
+            model_name='ViT-B-16-FLAIR',
             pretrained=hf_hub_download(repo_id='xiaorui638/flair', filename=version, cache_dir=pretrained_weights_root_path),
             device=self.device
         )
@@ -495,6 +580,23 @@ class FLAIRAdapter(VLEncoder):
 
         self.viz_attn_heads_idx = viz_attn_heads_idx
 
+        self.patch_size = self.model.visual.patch_size
+
+    def add_new_layers(self) -> None:
+        """
+        Add new adapter layers to the FLAIR model.
+        
+        Creates linear adapter layers (without bias or activation) and registers them
+        as submodules of the model.
+        """
+        # NOTE the authors do not use a bias nor an activation function, I won't use them either.
+        if NewLayer.VISION_ADAPTER in self.new_layers:
+            self.model.vision_adapter = nn.Linear(512, 512, bias=False, device=self.device)
+        if NewLayer.TEXT_ADAPTER in self.new_layers:
+            self.model.text_adapter = nn.Linear(512, 512, bias=False, device=self.device)
+        if NewLayer.CONCAT_ADAPTER in self.new_layers:
+            self.model.concat_adapter = nn.Linear(1024, 512, bias=False, device=self.device)
+    
     def init_new_layers_weights(self) -> None:
         """
         Initialize weights of newly added adapter layers.
@@ -537,7 +639,187 @@ class FLAIRAdapter(VLEncoder):
         """
         texts_tensor = self.tokenizer(texts).to(self.device) # [B, context_length]
         return texts_tensor
+
+    @override
+    def encode_and_project_images(
+            self,
+            images: torch.Tensor,
+    ) -> VLEImageOutput:
+        """
+        Encode and project images into a shared embedding space.
+        
+        Args:
+            images: Preprocessed image tensor
+            
+        Returns:
+            VLEImageOutput containing global and local tokens for images.
+        """
+        # get the raw embeddings from the encoders
+        global_image_token: torch.Tensor
+        local_image_tokens: torch.Tensor
+        global_image_token, local_image_tokens = self.model.encode_image(images) # (B_i, d_i), (B_i, n_i, d_i)
+        # concatenate tokens for parallelism
+        concat_image_tokens = torch.cat([global_image_token.unsqueeze(1), local_image_tokens], dim=1) # (B_i, n_i+1, d_i)
+        # project the raw embeddings into the same space
+        concat_image_tokens: torch.Tensor = self.model.image_post(concat_image_tokens) # (B_i, n_i+1, D)
+        # apply vision adapter
+        if NewLayer.VISION_ADAPTER in self.new_layers:
+            concat_image_tokens: torch.Tensor = self.model.vision_adapter(concat_image_tokens) # (B_i, n_i+1, D)
+        # split the concatenated tokens into the global and text tokens
+        global_image_token, local_image_tokens = concat_image_tokens[:, 0], concat_image_tokens[:, 1:] # (B_i, D), (B_i, n_i, D)
+
+        return VLEImageOutput(global_image_token, local_image_tokens)
     
+    @override
+    def encode_and_project_texts(
+            self,
+            texts: torch.Tensor,
+    ) -> VLETextOutput:
+        """
+        Encode and project texts into a shared embedding space.
+        
+        Args:
+            texts: Preprocessed text tensor
+            
+        Returns:
+            VLETextOutput containing global and local tokens for texts.
+        """
+        # get the raw embeddings from the encoders
+        global_text_token: torch.Tensor
+        local_text_tokens: torch.Tensor
+        global_text_token, local_text_tokens = self.model.encode_text(texts) # (B_t, d_t), (B_t, n_t, d_t)
+        # concatenate tokens for parallelism
+        concat_text_tokens = torch.cat([global_text_token.unsqueeze(1), local_text_tokens], dim=1) # (B_t, n_t+1, d_t)
+        # project the raw embeddings into the same space
+        concat_text_tokens: torch.Tensor = self.model.text_post(concat_text_tokens) # (B_t, n_t+1, D)
+        # apply text adapter
+        if NewLayer.TEXT_ADAPTER in self.new_layers:
+            concat_text_tokens = self.model.text_adapter(concat_text_tokens) # (B_t, n_t+1, D)
+        # split the concatenated tokens into the global and text tokens
+        global_text_token, local_text_tokens = concat_text_tokens[:, 0], concat_text_tokens[:, 1:] # (B_t, D), (B_t, n_t, D)
+
+        return VLETextOutput(global_text_token, local_text_tokens)
+    
+    @override
+    def pool(
+            self,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
+            broadcast: bool = False
+    ) -> VLEPoolOutput:
+        local_image_tokens = image_output.local_image_tokens # (B_i, n_i, D)
+        global_text_token = text_output.global_text_token # (B_t, D)
+
+        global_text_token = self._arrange_global_text_token_for_pooling(
+            global_text_token,
+            local_image_tokens,
+            broadcast=broadcast
+        ) # (B_i, 1, D) or (B_i, B_t, D) if broadcast
+
+        # perform the attention pooling: condition the 'global_text_token' (Q) on the 'local_image_tokens' (K and V)
+        # NOTE: the +1 is there for the added 'cls' token
+        pooled_image_token, attn_maps_flat = self.model.visual_proj(
+            global_text_token, # (B_i, 1, D) or (B_i, B_t, D) if broadcast
+            local_image_tokens, # (B_i, n_i, D)
+            local_image_tokens, # (B_i, n_i, D)
+            output_attn_weights=True,
+            average_attn_weights=False
+        )
+        pooled_image_token: torch.Tensor # (B_i, 1, D) or (B_i, B_t, D) if broadcast
+        attn_maps_flat: torch.Tensor # (B_i, H, 1, n_i+1) or (B_i, H, B_t, n_i+1) if broadcast
+        
+        if broadcast:
+            pooled_image_token: torch.Tensor # (B_i, B_t, D)
+            attn_maps_flat: torch.Tensor # (B_i, H, B_t, n_i+1)
+        else:
+            pooled_image_token = pooled_image_token.squeeze(-2) # (B_i, D)
+            attn_maps_flat = attn_maps_flat.squeeze(-2) # (B_i, H, n_i+1)
+
+        return VLEPoolOutput(pooled_image_token, attn_maps_flat)
+
+    def _arrange_global_text_token_for_pooling(
+            self,
+            global_text_token: torch.Tensor,
+            local_image_tokens: torch.Tensor,
+            broadcast: bool = False
+    ) -> torch.Tensor:
+        # global_text_token is (B_t, D)
+        # local_image_tokens is (B_i, n_i, D)
+        if len(global_text_token.shape) != 2:
+            raise ValueError(f"'global_text_token' should be of (B_t, D), got {global_text_token.shape}.")
+        if len(local_image_tokens.shape) != 3:
+            raise ValueError(f"'local_image_tokens' should be of (B_i, n_i, D), got {local_image_tokens.shape}.")
+        
+        B_i = local_image_tokens.shape[0]
+        B_t = global_text_token.shape[0]
+
+        if broadcast:
+            global_text_token = global_text_token.unsqueeze(0).expand(B_i, -1, -1) # (B_i, B_t, D)
+        else:
+            if B_i != B_t:
+                raise ValueError(f"If not broadcast, image and text tokens should be in the same number, got {B_i=} and {B_t=}.")
+            global_text_token = global_text_token.unsqueeze(1) # (B_i, 1, D)
+
+        return global_text_token
+    
+    def pool_by_local_text_tokens(
+            self,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
+            broadcast: bool = False
+    ) -> VLEPoolOutput:
+
+        if broadcast:
+            raise NotImplementedError("Broadcasting has not been implemented for this method.")
+        local_image_tokens = image_output.local_image_tokens # (B_i, n_i, D)
+        local_text_tokens = text_output.local_text_tokens # (B_t, n_t, D)
+
+        local_text_tokens = self._arrange_local_text_tokens_for_pooling(
+            local_text_tokens,
+            local_image_tokens,
+            broadcast=broadcast
+        ) # (B_i, n_t, D)
+
+        # perform the attention pooling: condition the 'local_text_tokens' (Q) on the 'local_image_tokens' (K and V)
+        # NOTE: the +1 is there for the added 'cls' token
+        pooled_image_token, attn_maps_flat = self.model.visual_proj(
+            local_text_tokens, # (B_i, n_t, D)
+            local_image_tokens, # (B_i, n_i, D)
+            local_image_tokens, # (B_i, n_i, D)
+            output_attn_weights=True,
+            average_attn_weights=False
+        )
+        pooled_image_token: torch.Tensor # (B_i, n_t, D)
+        attn_maps_flat: torch.Tensor # (B_i, H, n_t, n_i+1)
+
+        return VLEPoolOutput(pooled_image_token, attn_maps_flat)
+    
+    def _arrange_local_text_tokens_for_pooling(
+            self,
+            local_text_tokens: torch.Tensor,
+            local_image_tokens: torch.Tensor,
+            broadcast: bool = False
+    ) -> torch.Tensor:
+        # local_text_tokens is (B_t, n_t, D)
+        # local_image_tokens is (B_i, n_i, D)
+        if len(local_text_tokens.shape) != 3:
+            raise ValueError(f"'local_text_tokens' should be of (B_t, n_t, D), got {local_text_tokens.shape}.")
+        if len(local_image_tokens.shape) != 3:
+            raise ValueError(f"'local_image_tokens' should be of (B_i, n_i, D), got {local_image_tokens.shape}.")
+        
+        B_i = local_image_tokens.shape[0]
+        B_t = local_text_tokens.shape[0]
+
+        if broadcast:
+            raise NotImplementedError("Broadcasting has not been implemented for this method.")
+            # local_text_tokens = local_text_tokens.unsqueeze(0).expand(B_i, -1, -1, -1) # (B_i, B_t, n_t, D)
+        else:
+            if B_i != B_t:
+                raise ValueError(f"If not broadcast, image and text tokens should be in the same number, got {B_i=} and {B_t=}.")
+
+        return local_text_tokens
+    
+    @deprecated("Encode and project of images and texts and pooling is done separately by ad-hoc methods.")
     def encode_and_project(
             self,
             images: Optional[torch.Tensor],
@@ -624,14 +906,14 @@ class FLAIRAdapter(VLEncoder):
     @torch.inference_mode()
     def get_similarity(
             self,
-            images: torch.Tensor,
-            texts: torch.Tensor,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
             broadcast: bool = False
     ) -> torch.Tensor:
         """
         Compute similarity scores between images and texts using FLAIR.
         
-        Uses normalized local_image_features (after attention pooling) and global_text_token
+        Uses normalized pooled_image_token (after attention pooling) and global_text_token
         to compute cosine similarity.
         
         Args:
@@ -642,20 +924,135 @@ class FLAIRAdapter(VLEncoder):
         Returns:
             Similarity scores. Shape [B_i, B_t] if broadcast=True, else [B]
         """
+        pool_output = self.pool(image_output, text_output, broadcast)
+
+        # normalise the features
+        image_features = F.normalize(pool_output.pooled_image_token, dim=-1) # (B_i, D) or (B_i, B_t, D) if broadcast
+        text_features = F.normalize(text_output.global_text_token, dim=-1) # (B_t, D)
+        
         if broadcast:
-            flair_output = self.encode_and_project(images, texts, broadcast=True)
-            image_features, text_features = F.normalize(flair_output.local_image_features, dim=-1), F.normalize(flair_output.global_text_token, dim=-1)
-            # NOTE to me it seems that these squeezes should not be here
-            text_features = text_features.squeeze(1)
-            image_features = image_features.squeeze(1)
-            sim = torch.einsum('bf,bif->bi', image_features, text_features)
+            image_features: torch.Tensor # (B_i, B_t, D)
+            text_features: torch.Tensor # (B_t, D)
+            sim = torch.einsum('itd,td->it', image_features, text_features) # (B_i, B_t)
         else:
-            flair_output = self.encode_and_project(images, texts, broadcast=False)
-            image_features, text_features = F.normalize(flair_output.local_image_features, dim=-1), F.normalize(flair_output.global_text_token, dim=-1)
-            image_features = image_features.squeeze(1)
-            text_features = text_features.squeeze(1)
-            sim = torch.einsum('bf,bf->b', image_features, text_features)
+            image_features: torch.Tensor # (B_i, D)
+            text_features: torch.Tensor # (B_i, D)
+            sim = torch.einsum('id,id->i', image_features, text_features) # (B_i)
+
         return sim
+    
+    @torch.inference_mode()
+    def get_attn_maps(
+            self,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
+            upsample_size: Optional[int | tuple[int]] = None,
+            upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+            broadcast: bool = False,
+    ) -> tuple[torch.Tensor, None]:
+        """
+        Compute attention maps from the visual projection layer.
+        
+        Encodes images and texts, then extracts attention weights from the cross-attention
+        mechanism that conditions text queries on image patches.
+        
+        Args:
+            images: Preprocessed image tensor
+            texts: Preprocessed text tensor
+            upsample_size: Target size for upsampling attention maps
+            upsample_mode: Interpolation mode for upsampling
+            broadcast: If True, compute attention for all image-text pairs
+            attn_heads_idx: Indices of attention heads to average. If None, average all heads.
+            
+        Returns:
+            Tuple of (attention_maps, min_attn, max_attn) where:
+                - attention_maps: Tensor of shape [B_i, B_t, H, W] (or [B_i, B_t, sqrt(n_i), sqrt(n_i)] if not upsampled)
+                - min_attn: Minimum attention value across all maps
+                - max_attn: Maximum attention value across all maps
+        """
+        pool_output = self.pool(image_output, text_output, broadcast=broadcast) 
+        # remove the <cls> token
+        attn_maps_flat = pool_output.attn_maps_flat[..., :-1] # (B_i, H, n_i) or (B_i, H, B_t, n_i) if broadcast
+
+        n_i = attn_maps_flat.shape[-1]
+        l_i = int(math.sqrt(n_i)) # number of patches per axis
+
+        if self.viz_attn_heads_idx is None:
+            viz_attn_heads_idx = slice(None) # consider all attn heads
+        else:
+            viz_attn_heads_idx = self.viz_attn_heads_idx # consider specific attn heads
+        
+        # average the considered attn heads
+        attn_maps_flat = attn_maps_flat[:, viz_attn_heads_idx, ...].mean(dim=1) # (B_i, n_i) or (B_i, B_t, n_i) if broadcast
+
+        # arrange the flattened patches into a grid
+        attn_maps = attn_maps_flat.view(*attn_maps_flat.shape[:-1], l_i, l_i) # (B_i, l_i, l_i) or (B_i, B_t, l_i, l_i) if broadcast
+        
+        # upsampling
+        if upsample_size:
+            attn_maps = TF.resize(attn_maps, size=upsample_size, interpolation=upsample_mode) # (B_i, H, W) or (B_i, B_t, H, W) if broadcast
+
+        return attn_maps, None
+    
+    @torch.inference_mode()
+    def get_aggr_text_token_attn_maps(
+            self,
+            image_output: VLEImageOutput,
+            text_output: VLETextOutput,
+            aggr_fn: Callable[[torch.Tensor], tuple[torch.Tensor, Optional[torch.Tensor]]],
+            upsample_size: Optional[int | tuple[int]] = None,
+            upsample_mode: TF.InterpolationMode = TF.InterpolationMode.NEAREST,
+            broadcast: bool = False,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """
+        Compute attention maps from the visual projection layer.
+        
+        Encodes images and texts, then extracts attention weights from the cross-attention
+        mechanism that conditions text queries on image patches.
+        
+        Args:
+            images: Preprocessed image tensor
+            texts: Preprocessed text tensor
+            upsample_size: Target size for upsampling attention maps
+            upsample_mode: Interpolation mode for upsampling
+            broadcast: If True, compute attention for all image-text pairs
+            attn_heads_idx: Indices of attention heads to average. If None, average all heads.
+            
+        Returns:
+            Tuple of (attention_maps, min_attn, max_attn) where:
+                - attention_maps: Tensor of shape [B_i, B_t, H, W] (or [B_i, B_t, sqrt(n_i), sqrt(n_i)] if not upsampled)
+                - min_attn: Minimum attention value across all maps
+                - max_attn: Maximum attention value across all maps
+        """
+        if broadcast:
+            raise NotImplementedError("Broadcasting has not been implemented for this method.")
+
+        pool_output = self.pool_by_local_text_tokens(image_output, text_output, broadcast=broadcast) 
+        # remove the <cls> token
+        attn_maps_flat_per_txt_token = pool_output.attn_maps_flat[..., :-1] # (B_i, H, n_t, n_i)
+
+        n_i = attn_maps_flat_per_txt_token.shape[-1]
+        l_i = int(math.sqrt(n_i)) # number of patches per axis
+
+        if self.viz_attn_heads_idx is None:
+            viz_attn_heads_idx = slice(None) # consider all attn heads
+        else:
+            viz_attn_heads_idx = self.viz_attn_heads_idx # consider specific attn heads
+        
+        # average the considered attn heads
+        attn_maps_flat_per_txt_token = attn_maps_flat_per_txt_token[:, viz_attn_heads_idx, ...].mean(dim=1) # (B_i, n_t, n_i)
+
+        # aggregate the maximum along the text tokens
+        attn_maps_flat, indices = aggr_fn(attn_maps_flat_per_txt_token) # (B_i, n_i)
+
+        # arrange the flattened patches into a grid
+        attn_maps = attn_maps_flat.view(*attn_maps_flat.shape[:-1], l_i, l_i) # (B_i, l_i, l_i)
+        
+        # upsampling
+        if upsample_size:
+            attn_maps = TF.resize(attn_maps, size=upsample_size, interpolation=upsample_mode) # (B_i, H, W)
+
+        return attn_maps, indices
     
     def set_trainable_params(
             self,
@@ -717,26 +1114,20 @@ class FLAIRAdapter(VLEncoder):
         Returns:
             Number of tokens including SoT and EoT special tokens
         """
-        tokenizer = flair.get_tokenizer('ViT-B-16-FLAIR', context_length=1000) # If in need, increase it to working upper bound.
+        tokenizer = flair.get_tokenizer('ViT-B-16-FLAIR', context_length=1000) # NOTE If in need, increase it to working upper bound.
         return len(tokenizer.encode(text)) + 2 # 'SoT' and 'EoT' are added.
 
-    def add_new_layers(self) -> None:
-        """
-        Add new adapter layers to the FLAIR model.
-        
-        Creates linear adapter layers (without bias or activation) and registers them
-        as submodules of the model.
-        """
-        # NOTE the authors do not use a bias nor an activation function, I won't use them either.
-        if NewLayer.VISION_ADAPTER in self.new_layers:
-            vision_adapter = nn.Linear(512, 512, bias=False, device=self.device)
-            self.model.add_module('vision_adapter', vision_adapter)
-        if NewLayer.TEXT_ADAPTER in self.new_layers:
-            text_adapter = nn.Linear(512, 512, bias=False, device=self.device)
-            self.model.add_module('text_adapter', text_adapter)
-        if NewLayer.CONCAT_ADAPTER in self.new_layers:
-            concat_adapter = nn.Linear(1024, 512, bias=False, device=self.device)
-            self.model.add_module('concat_adapter', concat_adapter)
+    @torch.inference_mode()
+    def decode_tokens(
+            self,
+            token_ids: torch.Tensor
+    ) -> np.ndarray[str]:
+        if len(token_ids.shape) == 1:
+            return np.array([self.tokenizer.decode([int(id)]) for id in token_ids])
+        elif len(token_ids.shape) == 2:
+            return np.stack([np.array([self.tokenizer.decode([int(id)]) for id in row_ids]) for row_ids in token_ids])
+        else:
+            raise ValueError(f"'token_ids' should be of shape (B, L) or (L), got shape {token_ids.shape}")
 
 
 class SimSegAdapter(VLEncoder):
@@ -844,6 +1235,7 @@ class FG_CLIPAdapter(VLEncoder):
         texts_tensor = torch.tensor(self.tokenizer(texts, max_length=self.context_length, padding="max_length", truncation=True).input_ids, dtype=torch.long, device=self.device) # [B, context_length]
         return texts_tensor
 
+    @deprecated("Define separate methods for imgs and texts.")
     def encode_and_project(
             self,
             images: torch.Tensor,
@@ -895,7 +1287,7 @@ class FG_CLIPAdapter(VLEncoder):
         return vle_output
     
     @torch.inference_mode()
-    def get_similarity(
+    def get_similarity_(
             self,
             images: torch.Tensor,
             texts: torch.Tensor,
