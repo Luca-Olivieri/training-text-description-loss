@@ -3,7 +3,7 @@ from core.data import VOC2012SegDataset, crop_augment_preprocess_batch, apply_cl
 from models.seg import SegModelWrapper, SEGMODELS_REGISTRY
 from models.mllm import GenParams, OllamaMLLMAdapter
 from models.vle import VLE_REGISTRY, VLEncoder
-from train.loss import SigLipLossMultiText
+from train.seg.loss import SigLipLossMultiText
 from core.prompter import FastPromptBuilder
 from core.logger import LogManager
 from core.path import get_mask_prs_path
@@ -427,7 +427,7 @@ async def main() -> None:
     else:
         raise AttributeError(f"ERROR: VLE weights path '{vle_weights_path}' not found.")
     
-    vle.set_vision_trainable_params(None)
+    vle.set_trainable_params(None)
 
     # NOTE deleting vision layers only if encoding text only.
     del vle.model.visual, vle.model.visual_proj, vle.model.image_post
