@@ -1305,7 +1305,7 @@ def compute_cs_gt_pr_maps_with_captions(
     img_output = vle.encode_and_project_images(ovr_concat_masks) # (2P, D)
     txt_output = vle.encode_and_project_texts(flat_cs_texts_t) # # (P, D)
 
-    # TODO the following computation can be further sped up by splitting in the end, after the concat_adapter
+    # NOTE the following computation can be further sped up by splitting in the end, after the concat_adapter
 
     gt_global_image_token = img_output.global_image_token[:P] # (P, D)
     gt_local_image_tokens = img_output.local_image_tokens[:P] # (P, D)

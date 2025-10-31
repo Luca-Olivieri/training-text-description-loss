@@ -14,7 +14,6 @@ import math
 from PIL import Image
 from dataclasses import dataclass
 from huggingface_hub import hf_hub_download
-from functools import partial
 
 # FLAIR
 from vendors.flair.src import flair
@@ -106,6 +105,8 @@ class VLEncoder(ABC):
     def __init__(self) -> None:
         """Initialize the vision-language encoder."""
         self.viz_attn_heads_idx: Optional[list[int]] = None
+        self.logit_scale = nn.Parameter(torch.tensor(0.0)) # NOTE: must be .exp() before application
+        self.logit_bias = nn.Parameter(torch.tensor(0.0))
 
     def load_model_state_dict(
             self,
@@ -579,6 +580,8 @@ class FLAIRAdapter(VLEncoder, _SupportsPooling):
         self.context_length = self.tokenizer.context_length
 
         self.viz_attn_heads_idx = viz_attn_heads_idx
+        self.logit_scale = self.model.logit_scale
+        self.logit_bias = self.model.logit_bias
 
         self.patch_size = self.model.visual.patch_size
 
