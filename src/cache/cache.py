@@ -24,38 +24,49 @@ class Cache:
     It indexes items by a string ID: ID -> (image_tensor, text_string).
 
     Args:
-        storage_device (str): Where to primarily store the data.
-            - "cpu": Store all data in system RAM. Fastest for small datasets.
-            - "cuda": Store all tensors directly on the GPU. Requires GPU memory.
-            - "disk": Store all data as individual files on disk. Best for large
+        storage_device (str or torch.device): Where to primarily store the data.
+            - A torch.device object (e.g., torch.device('cpu'), torch.device('cuda:0')):
+              Stores all tensors in the specified device's memory.
+            - "disk": Stores all data as individual files on disk. Best for large
                       datasets that don't fit in RAM/VRAM.
-        memory_device (str): The device where tensors should be loaded upon retrieval.
-            - "cpu": Tensors are returned on the CPU.
-            - "cuda": Tensors are returned on the GPU.
+        memory_device (torch.device): The device where tensors should be loaded
+            upon retrieval (e.g., torch.device('cpu'), torch.device('cuda')).
         cache_dir (str, optional): The directory to use when storage_device is "disk".
             Required if storage_device is "disk".
     """
 
     def __init__(
             self,
-            storage_device: str = "cpu",
-            memory_device: str = "cpu",
-            cache_dir: Optional[str | Path ] = None
+            storage_device: Union[str, torch.device],
+            memory_device: Union[str, torch.device],
+            cache_dir: Optional[str | Path] = None
     ) -> None:
 
-        # Validate storage_device
-        self.storage_device = storage_device.lower()
-        if self.storage_device not in ["cpu", "cuda", "disk"]:
-            raise ValueError("storage_device must be one of 'cpu', 'cuda', or 'disk'.")
+        # --- Normalize and Validate Devices ---
 
-        # Validate memory_device
-        self.memory_device = memory_device.lower()
-        if self.memory_device not in ["cpu", "cuda"]:
-            raise ValueError("memory_device must be one of 'cpu' or 'cuda'.")
+        # Storage device can be 'disk' (str) or a torch.device
+        if isinstance(storage_device, str):
+            if storage_device.lower() == 'disk':
+                self.storage_device = 'disk'
+            else:
+                self.storage_device = torch.device(storage_device.lower())
+        elif isinstance(storage_device, torch.device):
+            self.storage_device = storage_device
+        else:
+            raise TypeError("storage_device must be 'disk' or a torch.device object.")
+
+        # Memory device must be a torch.device
+        if isinstance(memory_device, str):
+            self.memory_device = torch.device(memory_device.lower())
+        elif isinstance(memory_device, torch.device):
+            self.memory_device = memory_device
+        else:
+            raise TypeError("memory_device must be a torch.device object or a string like 'cpu'/'cuda'.")
 
         # Handle CUDA availability checks
-        if (self.storage_device == "cuda" or self.memory_device == "cuda") and not torch.cuda.is_available():
-            raise RuntimeError("CUDA is not available, but 'cuda' was specified as a device.")
+        is_storage_cuda = getattr(self.storage_device, 'type', None) == 'cuda'
+        if (is_storage_cuda or self.memory_device.type == 'cuda') and not torch.cuda.is_available():
+            raise RuntimeError("CUDA is not available, but a CUDA device was specified.")
 
         # Handle disk storage setup
         self.cache_dir = None
@@ -84,18 +95,15 @@ class Cache:
 
         image, text = value
 
-        if self.storage_device == "cpu":
-            # Store on CPU in RAM, will be moved to memory_device on retrieval
-            self._data[key] = (image.cpu(), text)
-        elif self.storage_device == "cuda":
-            # Move tensor to GPU for storage
-            self._data[key] = (image.to("cuda"), text)
-        elif self.storage_device == "disk":
+        if self.storage_device == "disk":
             # Save the item to a file on disk
             filepath = self.cache_dir / f"{key}.pt"
             # Always save tensors from CPU to avoid GPU-specific metadata issues
             torch.save({'image': image.cpu(), 'text': text}, filepath)
             self._index.add(key)
+        else:
+            # Store on the specified torch.device (e.g., 'cpu' or 'cuda:0')
+            self._data[key] = (image.to(self.storage_device), text)
 
     def update(
             self,
@@ -108,19 +116,15 @@ class Cache:
             items (Dict[str, Tuple[torch.Tensor, str]]): A dictionary of
                 {id: (image_tensor, text)} to add to the cache.
         """
-        if self.storage_device == "cpu":
-            processed_items = {k: (v[0].cpu(), v[1]) for k, v in items.items()}
-            self._data.update(processed_items)
-        elif self.storage_device == "cuda":
-            processed_items = {k: (v[0].to("cuda"), v[1]) for k, v in items.items()}
-            self._data.update(processed_items)
-        elif self.storage_device == "disk":
+        if self.storage_device == "disk":
             for key, (image, text) in items.items():
                 filepath = self.cache_dir / f"{key}.pt"
-                # Saving in a loop is necessary for file-based storage,
-                # but we can update the index in one go.
+                # Saving in a loop is necessary for file-based storage
                 torch.save({'image': image.cpu(), 'text': text}, filepath)
             self._index.update(items.keys())
+        else:
+            processed_items = {k: (v[0].to(self.storage_device), v[1]) for k, v in items.items()}
+            self._data.update(processed_items)
 
     def __getitem__(
             self,
@@ -130,15 +134,12 @@ class Cache:
         if key not in self:
             raise KeyError(f"Key '{key}' not found in the cache.")
 
-        if self.storage_device in ["cpu", "cuda"]:
+        if self.storage_device != "disk":
             image, text = self._data[key]
-        elif self.storage_device == "disk":
+        else: # self.storage_device == "disk"
             filepath = self.cache_dir / f"{key}.pt"
             data = torch.load(filepath, map_location='cpu') # Load to CPU first
             image, text = data['image'], data['text']
-        else:
-            # This should be unreachable due to __init__ checks
-            raise RuntimeError("Invalid storage device.")
 
         # Move tensor to the requested memory device before returning
         return image.to(self.memory_device), text
@@ -163,23 +164,22 @@ class Cache:
         Raises:
             KeyError: If any of the requested keys are not found in the cache.
         """
-        # First, check for missing keys to ensure atomic failure
-        # missing_keys = set(keys) - self.keys()
-        # if missing_keys:
-        #    raise KeyError(f"Keys not found in cache: {', '.join(missing_keys)}")
+        missing_keys = set(keys) - self.keys()
+        if missing_keys:
+           raise KeyError(f"Keys not found in cache: {', '.join(missing_keys)}")
 
         results = {}
-        if self.storage_device in ["cpu", "cuda"]:
+        if self.storage_device != "disk":
             # Retrieve all data first
-            raw_items = {key: self._data.get(key, (torch.tensor(torch.nan), None)) for key in keys}
-        elif self.storage_device == "disk":
+            raw_items = {key: self._data[key] for key in keys}
+        else: # self.storage_device == "disk"
             raw_items = {}
             for key in keys:
                 filepath = self.cache_dir / f"{key}.pt"
                 data = torch.load(filepath, map_location='cpu')
                 raw_items[key] = (data['image'], data['text'])
 
-        # Now, batch the device transfer
+        # Batch the device transfer if possible (though loop is often fine)
         for key, (image, text) in raw_items.items():
             results[key] = (image.to(self.memory_device), text)
         
@@ -193,13 +193,13 @@ class Cache:
         if key not in self:
             raise KeyError(f"Key '{key}' not found in the cache.")
 
-        if self.storage_device in ["cpu", "cuda"]:
-            del self._data[key]
-        elif self.storage_device == "disk":
+        if self.storage_device == "disk":
             filepath = self.cache_dir / f"{key}.pt"
             if filepath.exists():
                 os.remove(filepath)
             self._index.remove(key)
+        else:
+            del self._data[key]
 
     def delete_many(
             self,
@@ -214,23 +214,19 @@ class Cache:
         Raises:
             KeyError: If any of the keys to be deleted do not exist.
         """
-        # Check for missing keys first for atomic failure
         missing_keys = set(keys) - self.keys()
         if missing_keys:
             raise KeyError(f"Cannot delete. Keys not found: {', '.join(missing_keys)}")
 
-        if self.storage_device in ["cpu", "cuda"]:
-            for key in keys:
-                del self._data[key]
-        elif self.storage_device == "disk":
+        if self.storage_device == "disk":
             for key in keys:
                 filepath = self.cache_dir / f"{key}.pt"
-                # os.remove can fail, but we've already checked existence.
-                # A try/except could make this more robust to race conditions.
                 if filepath.exists():
                     os.remove(filepath)
-            # Efficiently remove multiple items from the set index
             self._index.difference_update(set(keys))
+        else:
+            for key in keys:
+                del self._data[key]
 
     def __contains__(
             self,
@@ -260,8 +256,6 @@ class Cache:
             existing_keys = self._index
         else:
             existing_keys = self._data.keys()
-
-        # This is more efficient than a Python loop for large lists of keys
         return {key: key in existing_keys for key in keys}
 
     def __len__(self) -> int:
@@ -297,12 +291,13 @@ class Cache:
 
     def clear(self) -> None:
         """Removes all items from the cache."""
-        if self.storage_device in ["cpu", "cuda"]:
-            self._data.clear()
-        elif self.storage_device == "disk":
-            for key in list(self._index):
-                self.__delitem__(key)
+        if self.storage_device == "disk":
+            # Re-implement to avoid repeated __delitem__ calls
+            for filepath in self.cache_dir.glob("*.pt"):
+                os.remove(filepath)
             self._index.clear()
+        else:
+            self._data.clear()
 
 
     def save(
@@ -316,67 +311,63 @@ class Cache:
         it can be loaded into any cache configuration.
 
         Args:
-            directory_path (str or Path): The directory where the cache will be saved. It will be created if it doesn't exist.
+            directory_path (str or Path): The directory where the cache will be saved.
+                                          It will be created if it doesn't exist.
         """
         save_path = Path(directory_path)
         data_dir = save_path / "data"
 
-        # Clean up old save if it exists
         if save_path.exists():
             shutil.rmtree(save_path)
-
         data_dir.mkdir(parents=True)
 
-        # Save metadata
         metadata = {
-            "original_storage_device": self.storage_device,
-            "original_memory_device": self.memory_device,
+            "original_storage_device": str(self.storage_device),
+            "original_memory_device": str(self.memory_device),
             "item_count": len(self)
         }
         with open(save_path / "metadata.json", "w") as f:
             json.dump(metadata, f, indent=4)
 
-        # Save each item to a file, ensuring consistency
         for key, (image, text) in self.items():
-            # Note: self.items() already handles retrieving from any storage backend
             filepath = data_dir / f"{key}.pt"
             torch.save({'image': image.cpu(), 'text': text}, filepath)
-
+        
         print(f"Cache saved successfully to {save_path}")
 
     @classmethod
     def load(
             cls,
             directory_path: Union[str, Path],
-            storage_device: str = "cpu",
-            memory_device: str = "cpu",
-            cache_dir: Union[str, Path, None] = None
+            storage_device: Union[str, torch.device] = "cpu",
+            memory_device: Union[str, torch.device] = "cpu",
+            cache_dir: Optional[str | Path] = None
     ) -> "Cache":
         """
-        Loads a cache from a directory into a new ImageTextCache instance.
+        Loads a cache from a directory into a new Cache instance.
 
         Args:
             directory_path (str or Path): The directory from which to load the cache.
-            storage_device (str): The storage device for the *new* cache instance.
-            memory_device (str): The memory device for the *new* cache instance.
+            storage_device (str or torch.device): The storage device for the *new* cache.
+            memory_device (torch.device): The memory device for the *new* cache.
             cache_dir (str, Path, optional): Directory for the new cache if its
                                              storage_device is 'disk'.
 
         Returns:
-            ImageTextCache: A new, populated instance of the ImageTextCache.
+            Cache: A new, populated instance of the Cache class.
         """
         load_path = Path(directory_path)
         if not load_path.exists() or not (load_path / "metadata.json").exists():
             raise FileNotFoundError(f"Cache directory not found or is invalid: {load_path}")
 
         data_dir = load_path / "data"
-
-        # Create the new cache instance with the desired configuration
         new_cache = cls(storage_device, memory_device, cache_dir)
 
-        # Load all items from the saved files into the new cache
         pt_files = list(data_dir.glob("*.pt"))
         print(f"Loading {len(pt_files)} items into a new cache with storage='{storage_device}'...")
+        
+        # This can be slow for disk-to-disk. A batched update would be better.
+        # For simplicity, we load one by one.
         for filepath in pt_files:
             key = filepath.stem
             data = torch.load(filepath, map_location='cpu')
@@ -392,45 +383,39 @@ class Cache:
         """
         Calculates the approximate resource usage of the cache.
 
-        This method provides an estimate of the space consumed by the cache's
-        data on its primary storage device.
-
         Note: RAM/VRAM calculations are for the stored data and do not include
         all Python object overhead, which can be significant.
 
         Args:
             unit (str): The unit for the returned usage ('B', 'KB', 'MB', 'GB').
-                        Defaults to 'MB'.
 
         Returns:
             dict[str, float]: A dictionary containing the usage for 'cpu', 'vram',
                               and 'disk' in the specified unit.
         """
         divisors = {"B": 1, "KB": 1024, "MB": 1024**2, "GB": 1024**3}
-        if unit.upper() not in divisors:
+        unit_upper = unit.upper()
+        if unit_upper not in divisors:
             raise ValueError(f"Invalid unit '{unit}'. Choose from 'B', 'KB', 'MB', 'GB'.")
-        divisor = divisors[unit.upper()]
+        divisor = divisors[unit_upper]
 
         ram_bytes, vram_bytes, disk_bytes = 0, 0, 0
 
-        if self.storage_device == "cpu":
-            for image, text in self._data.values():
-                # Tensors are stored on CPU in 'cpu' mode
-                ram_bytes += image.numel() * image.element_size()
-                ram_bytes += sys.getsizeof(text)
-
-        elif self.storage_device == "cuda":
-            for image, text in self._data.values():
-                # Tensors are on GPU, text and other objects are in RAM
-                vram_bytes += image.numel() * image.element_size()
-                ram_bytes += sys.getsizeof(text)
-
-        elif self.storage_device == "disk":
-            if self._index: # Avoid unnecessary iteration if empty
+        if self.storage_device == "disk":
+            if self._index:
                 for key in self._index:
                     filepath = self.cache_dir / f"{key}.pt"
                     if filepath.exists():
                         disk_bytes += filepath.stat().st_size
+        else: # In-memory storage (CPU or CUDA)
+            for image, text in self._data.values():
+                tensor_bytes = image.numel() * image.element_size()
+                if self.storage_device.type == 'cuda':
+                    vram_bytes += tensor_bytes
+                else: # 'cpu' or other non-cuda devices
+                    ram_bytes += tensor_bytes
+                # Text and object overhead are always in RAM
+                ram_bytes += sys.getsizeof(text)
 
         return {
             "cpu": ram_bytes / divisor,
@@ -439,7 +424,13 @@ class Cache:
         }
 
     def __repr__(self) -> str:
-        return f"ImageTextCache(storage='{self.storage_device}', memory='{self.memory_device}', "f"size={len(self)}), usage={self.get_usage()}"
+        usage = self.get_usage()
+        # Filter out zero values for a cleaner repr
+        usage_str = ", ".join(f"{k}={v:.2f}MB" for k, v in usage.items() if v > 0)
+        return (
+            f"Cache(storage='{self.storage_device}', memory='{self.memory_device}', "
+            f"size={len(self)}, usage=({usage_str or 'empty'}))"
+        )
     
 class MaskTextCache:
     def __init__(
