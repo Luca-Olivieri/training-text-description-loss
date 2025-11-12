@@ -57,6 +57,7 @@ import torchmetrics as tm
 from typing import Literal, Optional
 from torch.utils.data import Dataset, DataLoader
 import torch
+import re
 
 from core._types import Any
 
@@ -314,3 +315,97 @@ class LogManager():
 
         # close TensorBoard loggers
         self.tb_logger.close() if self.tb_logger else None
+
+def parse_train_logs_metric(
+        filepath: Path,
+        metric_name: str
+) -> dict:
+    """
+    Parses a log file to extract batch metrics for each epoch and step.
+
+    Args:
+        filepath: The path to the .log file.
+
+    Returns:
+        A nested dictionary where the outer keys are epoch numbers and the
+        inner keys are step numbers, with train metric as the value.
+        Example: {1: {5: 0.9739, 10: 0.9783}, 2: {...}}
+    """
+    # Regex to capture epoch, step, and metric
+    log_pattern = re.compile(fr"\[epoch: (\d+)/\d+, step: (\d+)/\d+ .*?{metric_name}: ([\d.]+)")
+
+    metrics = {}
+
+    try:
+        with open(filepath, 'r') as f:
+            for line in f:
+                match = log_pattern.search(line)
+                if match:
+                    # Extract captured groups
+                    epoch = int(match.group(1))
+                    step = int(match.group(2))
+                    batch_acc = float(match.group(3))
+
+                    # Populate the nested dictionary
+                    if epoch not in metrics:
+                        metrics[epoch] = {}
+                    
+                    metrics[epoch][step] = batch_acc
+    except FileNotFoundError:
+        print(f"Error: The file '{filepath}' was not found.")
+        return {}
+        
+    return metrics
+
+def parse_val_logs_metric(
+        filepath: Path,
+        metric_name: str
+) -> dict:
+    """
+    Parses a log file to extract validation accuracies for each epoch.
+
+    It handles two cases:
+    1. The initial validation before training starts, assigned to epoch 0.
+    2. End-of-epoch validations, assigned to their corresponding epoch number.
+
+    Args:
+        filepath: The path to the .log file.
+
+    Returns:
+        A dictionary mapping epoch number to validation accuracy.
+        Example: {0: 0.8989, 1: 0.9150, 2: 0.9230}
+    """
+    # Pattern for the initial validation line (before epoch 1)
+    initial_val_pattern = re.compile(
+        fr"\[Before any weight update, VALIDATION\].*?{metric_name}: ([\d.]+)"
+    )
+    
+    # Pattern for end-of-epoch validation lines (assumes a similar format)
+    epoch_val_pattern = re.compile(
+        fr"\[epoch: (\d+)/\d+.*?VALIDATION\].*?{metric_name}: ([\d.]+)"
+    )
+
+    val_accuracies = {}
+
+    try:
+        with open(filepath, 'r') as f:
+            for line in f:
+                # First, check for the initial validation line
+                initial_match = initial_val_pattern.search(line)
+                if initial_match:
+                    val_acc = float(initial_match.group(1))
+                    val_accuracies[0] = val_acc
+                    continue # Move to the next line
+
+                # If not initial, check for a standard end-of-epoch validation line
+                epoch_match = epoch_val_pattern.search(line)
+                if epoch_match:
+                    epoch = int(epoch_match.group(1))
+                    val_acc = float(epoch_match.group(2))
+                    val_accuracies[epoch] = val_acc
+
+    except FileNotFoundError:
+        print(f"Error: The file '{filepath}' was not found.")
+        return {}
+        
+    return val_accuracies
