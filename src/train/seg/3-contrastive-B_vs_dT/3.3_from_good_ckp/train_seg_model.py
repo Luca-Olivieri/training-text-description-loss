@@ -34,8 +34,6 @@ import asyncio
 
 from core._types import Optional, Callable
 
-# TODO track ratio between XEn and Contr. loss
-
 config = setup_config(
     BASE_CONFIG,
     Path('/home/olivieri/exp/src/train/seg/3-contrastive-B_vs_dT/3.3_from_good_ckp/config.yml')

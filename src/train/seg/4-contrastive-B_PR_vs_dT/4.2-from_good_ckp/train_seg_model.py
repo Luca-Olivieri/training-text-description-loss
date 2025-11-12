@@ -281,11 +281,15 @@ async def train_loop(
                 
                 cs_mult = filtered_cs_counter/(train_dl.batch_size)
                 filtered_perc = filtered_cs_counter/cs_counter
+                aux_xen_ratio = aux_batch_loss/seg_batch_loss
+                aux_xen_ratio_after_lambda = aux_batch_loss*seg_train_with_text_config['loss_lambda']/seg_batch_loss*(1. - seg_train_with_text_config['loss_lambda'])
             else:
                 aux_batch_loss = torch.tensor(-1.0, device=config['device'])
                 batch_loss = seg_batch_loss
                 cs_mult = -1.0
                 filtered_perc = -1.0
+                aux_xen_ratio = -1.0
+                aux_xen_ratio_after_lambda = -1.0
 
             backward(batch_loss, scaler)
 
@@ -327,6 +331,8 @@ async def train_loop(
                 train_metrics_score['filtered_perc'] = torch.tensor(filtered_perc)
                 train_metrics_score['lr'] = torch.tensor(optimizer.param_groups[0]['lr'])
                 train_metrics_score['grad_norm'] = grad_norm
+                train_metrics_score['aux_xen_ratio'] = aux_xen_ratio
+                train_metrics_score['aux_xen_ratio_after_lambda'] = aux_xen_ratio_after_lambda
                 # train_metrics_score |= {"quantile": torch.tensor(mask_text_cache.update_policy.trend.get_current_value())}
                 step_in_epoch = (step) + 1
                 log_manager.log_scores(

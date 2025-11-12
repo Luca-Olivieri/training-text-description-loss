@@ -16,8 +16,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 from torch.amp import GradScaler # for AMP
-
-from typing import Literal
+from core._types import Literal, Optional
 
 class SigLipLossMultiText(nn.Module):
     """
@@ -111,10 +110,6 @@ class SigLipLossMultiText(nn.Module):
             return {"contrastive_loss": loss}
         return loss
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Literal, Optional, List
 
 class VariableTextSigLipLoss(nn.Module):
     """
