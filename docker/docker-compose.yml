@@ -77,6 +77,7 @@ services:
   ollama:
     image: ollama/ollama:${OLLAMA_TAG}
     container_name: ${OLLAMA_CONTAINER_NAME}
+    user: ${HOST_UID}:${HOST_GID}
     deploy:
       resources:
         reservations:
@@ -90,7 +91,8 @@ services:
     volumes:
       - type: bind
         source: ${OLLAMA_MODELS_PATH}
-        target: /root/.ollama
+        # target: /root/.ollama
+        target: /.ollama
     environment:
       - HOST_UID=${HOST_UID}
       - HOST_GID=${HOST_GID}
