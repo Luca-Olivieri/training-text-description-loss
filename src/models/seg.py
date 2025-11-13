@@ -17,11 +17,21 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchmetrics.metric import Metric
 from torchvision.models import segmentation as segmodels
-from collections import OrderedDict
-from abc import ABC
-
-from typing import Optional
+from torchvision.transforms._presets import SemanticSegmentation
 from torch.utils.hooks import RemovableHandle
+
+from collections import OrderedDict
+from enum import Enum
+from functools import partial
+
+from abc import ABC, abstractmethod
+from typing import Optional
+
+class SegSaliencyMapMode(Enum):
+    """
+    Enumeration for different segmentation saliency map modes.
+    """
+    SEG_GRAD_CAM = 'seg_grad_cam'
 
 class SegModelWrapper(ABC):
     """Abstract base class for segmentation model wrappers.
@@ -37,6 +47,14 @@ class SegModelWrapper(ABC):
         Raises:
             NotImplementedError: This is an abstract base class and must be subclassed.
         """
+        raise NotImplementedError
+    
+    @abstractmethod
+    def preprocess_images(
+            self,
+            images: torch.Tensor,
+            **kwargs
+    ) -> torch.Tensor:
         raise NotImplementedError
     
     def evaluate(
@@ -160,8 +178,16 @@ class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
         model.eval()
         self.model = model
 
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
+
         self.handles: list[RemovableHandle] = list()
         self.activations: dict[str, torch.Tensor] = dict()
+    
+    def preprocess_images(
+            self,
+            images: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.preprocess_fn(images)
     
     def adapt(
             self,
@@ -328,6 +354,50 @@ class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
         metrics_score = metrics.compute()
         
         return loss, metrics_score
+    
+    def compute_seg_grad_cam_map(
+            self,
+            feature_volume: torch.Tensor, # (B, C_f, H_f, W_f)
+            logits: torch.Tensor, # (B, C, H, W)
+            target_classes: list # (B)
+    ) -> torch.Tensor:
+        # bottleneck_out: torch.Tensor = activations['bottleneck'] # (B, 960, 33, 33)
+        # bottleneck_out.shape
+
+        # self.remove_handles()
+
+        B = len(feature_volume)
+
+        if any([B != len(t) for t in [feature_volume, logits, target_classes]]):
+            raise ValueError(f"'feature_volume', 'logits' and 'target_classes' should have the same length. Got {len(feature_volume)=}, {len(logits)=} and {len(target_classes)=} instead.")
+        
+        target_scores = logits[torch.arange(B), target_classes, :, :] # (B, H, W)
+        target_scores = target_scores.sum(dim=(1, 2)) # (B), summing the logits across the spatial dimensions to obtain a scalar
+
+        grads = torch.autograd.grad(
+            target_scores, # (B)
+            feature_volume, # (B, ...)
+            grad_outputs=torch.ones_like(target_scores) # handles the batch-size through the separation of the computational graph
+        )[0]
+        
+        # Step 1: GAP of gradients to get weights (alpha)
+        # Shape: 'grads' is (B, C_f, H_f, W_f) -> 'weights' is (B, C_f)
+        weights = grads.mean(dim=(2, 3))  # average over spatial dimensions
+
+        # Step 2: Weighted combination of feature maps
+        # Shape: 'bottleneck_out' is (B, C_f, H_f, W_f), 'weights' is (B, C_f)
+        cam = torch.einsum('bchw,bc->bhw', feature_volume, weights) # batched dot product between feature maps and weights
+
+        # Step 3: Apply ReLU (only keep positive influences)
+        cam = torch.relu(cam)
+
+        return cam
+
+    def add_handle(
+            self,
+            handle: RemovableHandle
+    ) -> None:
+        self.handles.append(handle)
     
     def remove_handles(
             self,

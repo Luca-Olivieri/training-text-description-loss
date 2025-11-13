@@ -1,0 +1,8 @@
+seg:
+  # pretrained_weights_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/base/good_ckp_b8-251010_0642/weights/lraspp_mobilenet_v3_large-base-good_ckp_b8-251010_0642.pth'
+  pretrained_weights_path: '/home/olivieri/exp/data/private/torch_weights/seg/lraspp_mobilenet_v3_large/no_text/lraspp_mobilenet_v3_large-full-pt.pth'
+  checkpoint_path: null
+  image_size: 520
+  adaptation: null
+  batch_size: 5
+viz_image_size: 520

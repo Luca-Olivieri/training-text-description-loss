@@ -29,22 +29,25 @@ from IPython.display import Markdown, display
 
 import PIL
 from PIL import Image
-import torch
 import seaborn as sns
 import xarray as xr
 import pandas as pd
 from glob import glob
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+from matplotlib.figure import Figure
 import base64
 from tqdm import tqdm
-import torchmetrics as tm
+
+import torch
 from torch import nn
+import torchmetrics as tm
 from torch.utils.data import DataLoader
 from torchvision.transforms.v2.functional import to_pil_image
 import torchvision.transforms.v2.functional as TF
-from functools import partial
+import torch.nn.functional as F
 
-from core._types import Iterable, Literal, Optional, Callable
+from core._types import Iterable, Literal, Optional
 
 def print_file_content(
         filename: str
@@ -1451,3 +1454,69 @@ def draw_text_in_patches_center(
             )
 
     return image
+
+def viz_seg_saliency_maps(
+        sc_imgs: torch.Tensor, # (B, 3, H, W)
+        maps: torch.Tensor, # (B, H, W)
+        flat_target_classes: list[int],
+        flat_target_class_names: list[str],
+        gt_masks: torch.Tensor,
+        pr_masks: torch.Tensor,
+        normalise: bool = True,
+        alpha: int = 0.5,
+        viz_img_size: Optional[int | tuple[int, int]] = None
+) -> Figure:
+    if normalise:
+        maps = normalize_sim_maps(maps)
+
+    maps = F.interpolate(
+            maps.unsqueeze(1), # (B, 1, H, W)
+            size=sc_imgs.shape[-2:],
+            mode='bilinear',
+    ).squeeze(1) # (B, H_viz, W_viz)
+    # scs_imgs = F.interpolate(scs_imgs, size=maps.shape[-2:], mode='bilinear') # (B, 3, H_viz, W_viz)
+    
+    # format gt and pr images with the selected classes
+    gt_imgs = (gt_masks == torch.tensor(flat_target_classes, device=gt_masks.device).view(-1, 1, 1)).unsqueeze(1).expand(-1, 3, -1, -1)*1.0
+    pr_imgs = (pr_masks == torch.tensor(flat_target_classes, device=pr_masks.device).view(-1, 1, 1)).unsqueeze(1).expand(-1, 3, -1, -1)*1.0
+
+    # Create figure with subplots
+    fig, axes = plt.subplots(len(sc_imgs), 4, figsize=(20, 5*len(sc_imgs)))
+    
+    # Select the first image in the batch
+    for i in range(len(sc_imgs)):
+        ax = axes[i]
+
+        sc_img = sc_imgs[i].permute(1, 2, 0).cpu().numpy()  # [H_viz, W_viz, C]
+        gt_img = gt_imgs[i].permute(1, 2, 0).cpu().numpy()  # [H_viz, W_viz, C]
+        pr_img = pr_imgs[i].permute(1, 2, 0).cpu().numpy()  # [H_viz, W_viz, C]
+        cam_heatmap = maps[i].detach().cpu().numpy()  # [H_viz, W_viz]
+
+        # 1. SC
+        ax_ = ax[0]
+        ax_.imshow(sc_img)
+        ax_.set_title(f'SC (index {i})')
+        ax_.axis('off')
+
+        # convert heatmap to RGB using jet colormap
+        heatmap_colored = cm.jet(cam_heatmap)[:, :, :3] # remove alpha channel
+        
+        # 2. MAP
+        ax_ = ax[1]
+        ax_.imshow(heatmap_colored)
+        ax_.set_title(f'MAP (class {flat_target_classes[i]} - {flat_target_class_names[i]})')
+        ax_.axis('off')
+
+        # 3. GT + MAP
+        ax_ = ax[2]
+        ax_.imshow(gt_img)
+        ax_.set_title('GT')
+        ax_.axis('off')
+
+        # 4. PR + MAP
+        ax_ = ax[3]
+        ax_.imshow(pr_img)
+        ax_.set_title('PR')
+        ax_.axis('off')
+
+    return fig
