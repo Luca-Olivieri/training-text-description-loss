@@ -27,9 +27,8 @@ import numpy as np
 import xarray as xr
 import pandas as pd
 import json
-import math
 
-from core._types import Callable, Any, deprecated
+from core._types import Callable, Any, deprecated, Optional
 
 @deprecated("Should be split into two methods, one flattening and one writing.")
 def flatten_cs_jsonl(
@@ -505,6 +504,13 @@ class NegativeTextGenerator:
         ... }
         >>> gen = NegativeTextGenerator(word_pools=pools)
         >>> negatives = gen.generate("The red big ball", num_negatives=2)
+        >>> # You can also override the 'classes' pool for a single run
+        >>> voc_classes = ["aeroplane", "bicycle", "bird", "boat", "bottle"]
+        >>> negatives_custom_cls = gen.generate(
+        ...     "A picture of a BIRD",
+        ...     num_negatives=2,
+        ...     classes=voc_classes
+        ... )
     """
     def __init__(
             self,
@@ -678,7 +684,8 @@ class NegativeTextGenerator:
         self,
         positive_text: str,
         num_negatives: int = 1,
-        change_probability: float = 0.5
+        change_probability: float = 0.5,
+        classes: Optional[list[str]] = None
     ) -> list[str]:
         """
         Generates a batch of unique negative texts from a single positive text.
@@ -700,14 +707,43 @@ class NegativeTextGenerator:
             change_probability (float, optional): The probability (0.0-1.0) of changing
                 each additional substitutable word beyond the first forced change.
                 Defaults to 0.5.
+            classes (list[str] | None, optional): A list of class names to temporarily
+                override the 'classes' word pool for this generation run. If None,
+                the default 'classes' pool from initialization is used. Defaults to None.
 
         Returns:
             list[str]: A list of negative text examples of length `num_negatives`.
         """
+        # Start with the instance's default map. It will be replaced if `classes` are overridden.
+        current_word_to_pool_map = self.word_to_pool_map
+
+        if classes is not None:
+            # Create a temporary copy of the map to modify for this run only.
+            temp_map = {k: v.copy() for k, v in self.word_to_pool_map.items()}
+            
+            # Remove any existing words belonging to the 'classes' pool.
+            keys_to_remove = [
+                word for word, data in temp_map.items()
+                if data.get('pool_name') == 'classes'
+            ]
+            for key in keys_to_remove:
+                del temp_map[key]
+
+            # Build and add the new 'classes' pool from the provided list.
+            if len(classes) >= 2:
+                for i, word in enumerate(classes):
+                    siblings = classes[:i] + classes[i+1:]
+                    temp_map[word.lower()] = {
+                        'pool_name': 'classes',
+                        'siblings': siblings
+                    }
+            
+            current_word_to_pool_map = temp_map
+
         original_tokens = self._tokenize(positive_text)
         candidate_indices = [
             i for i, token in enumerate(original_tokens)
-            if token.lower() in self.word_to_pool_map
+            if token.lower() in current_word_to_pool_map
         ]
         
         generated_negatives = set()
@@ -719,15 +755,20 @@ class NegativeTextGenerator:
             while len(generated_negatives) < num_negatives and attempts < max_attempts:
                 tokens_to_modify = list(original_tokens)
                 indices_to_consider = list(candidate_indices)
+                
+                # This check is crucial in case the override removed all candidate words.
+                if not indices_to_consider:
+                    break
+
                 forced_choice_idx = random.choice(indices_to_consider)
                 word_to_replace = tokens_to_modify[forced_choice_idx].lower()
-                siblings = self.word_to_pool_map[word_to_replace]['siblings']
+                siblings = current_word_to_pool_map[word_to_replace]['siblings']
                 tokens_to_modify[forced_choice_idx] = random.choice(siblings)
                 indices_to_consider.remove(forced_choice_idx)
                 for idx in indices_to_consider:
                     if random.random() < change_probability:
                         word_to_replace = tokens_to_modify[idx].lower()
-                        siblings = self.word_to_pool_map[word_to_replace]['siblings']
+                        siblings = current_word_to_pool_map[word_to_replace]['siblings']
                         tokens_to_modify[idx] = random.choice(siblings)
                 reconstructed_text = self._reconstruct_text(tokens_to_modify)
                 if reconstructed_text != positive_text:
@@ -835,7 +876,7 @@ def try_NegativeTextGenerator() -> None:
 
     answer = "The ground truth PERSON region is almost entirely missed by the prediction. The prediction fails to identify any of the regions which are classified as PERSON in the ground truth mask. The prediction is mainly black, indicating the model is classifying all regions as unlabelled classes."
     print(f"ANSWER: {repr(answer)}")
-    neg_answer = neg_generator.generate(answer, num_negatives=32)
+    neg_answer = neg_generator.generate(answer, num_negatives=32, classes=["UNLABELLED", "BACKGROUND", "PERSON", "AAA", "BBB", "CCC", "DDD"])
     print("\nNEGATIVES:")
     for neg in neg_answer:
         print(f"  - {repr(neg)}")
