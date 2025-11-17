@@ -203,6 +203,8 @@ Image.Image.__repr__ = lambda obj: f"<PIL.Image.Image image mode={obj.mode} size
 
 # PyTorch
 
+torch.hub.set_dir('/home/olivieri/exp/data/private/torch_weights')
+
 torch.backends.cudnn.benchmark = True # if True, can speeds up computation at the cost of reproducibility.
 
 def main() -> None:
