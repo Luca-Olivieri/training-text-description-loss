@@ -1480,6 +1480,14 @@ def viz_seg_saliency_maps(
     gt_imgs = (gt_masks == torch.tensor(flat_target_classes, device=gt_masks.device).view(-1, 1, 1)).unsqueeze(1).expand(-1, 3, -1, -1)*1.0
     pr_imgs = (pr_masks == torch.tensor(flat_target_classes, device=pr_masks.device).view(-1, 1, 1)).unsqueeze(1).expand(-1, 3, -1, -1)*1.0
 
+    gt = gt_masks == torch.tensor(flat_target_classes, device=gt_masks.device).view(-1, 1, 1)
+    pr = pr_masks == torch.tensor(flat_target_classes, device=gt_masks.device).view(-1, 1, 1)
+
+    intersection = (gt & pr).sum(dim=(1,2)).float()
+    union = (gt | pr).sum(dim=(1,2)).float()
+
+    m_ious = intersection / union.clamp(min=1e-6) # (B)
+
     # Create figure with subplots
     fig, axes = plt.subplots(len(sc_imgs), 4, figsize=(20, 5*len(sc_imgs)))
     
@@ -1516,7 +1524,7 @@ def viz_seg_saliency_maps(
         # 4. PR + MAP
         ax_ = ax[3]
         ax_.imshow(pr_img)
-        ax_.set_title('PR')
+        ax_.set_title(f'PR - mIoU={m_ious[i]:0.3}')
         ax_.axis('off')
 
     return fig
