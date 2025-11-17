@@ -1,7 +1,7 @@
 seg:
   model_name: 'lraspp_mobilenet_v3_large'
   pretrained_weights_path: '/home/olivieri/exp/data/private/torch_weights/seg/lraspp_mobilenet_v3_large/no_text/lraspp_mobilenet_v3_large-enc-pt.pth'
-  checkpoint_path: '/home/olivieri/exp/data/private/exps/seg/4-contrastive-B_PR_vs_dT/4.2-from_good_ckp/lambda0.2-251110_1615/weights/lraspp_mobilenet_v3_large-4.2-from_good_ckp-lambda0.2-251110_1615.pth'
+  checkpoint_path: '/home/olivieri/exp/data/private/exps/seg/4-contrastive-B_PR_vs_dT/4.2-from_good_ckp/lambda0.1-251028_1724/weights/lraspp_mobilenet_v3_large-4.2-from_good_ckp-lambda0.1-251028_1724.pth'
   image_size: 520
   adaptation: 'contrastive_diff'
   batch_size: 5
