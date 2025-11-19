@@ -244,7 +244,7 @@ async def train_loop(
                     
                     pr_global_image_token = flat_cs_vle_img_output.global_image_token # (P, D)
                     
-                    bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, 32, 32, 960)
+                    bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, 960, 33, 33)
                     bottleneck_out: torch.Tensor = segmodel.adapt_tensor(bottleneck_out) # (B, 960)
                     b_global_image_token: torch.Tensor = segmodel.model.bottleneck_adapter.mlp(bottleneck_out) # (B, D)
 

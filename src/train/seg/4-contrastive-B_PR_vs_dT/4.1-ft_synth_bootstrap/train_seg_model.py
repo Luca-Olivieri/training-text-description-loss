@@ -264,7 +264,7 @@ async def train_loop(
 
                     # TODO is it better if we use the pooled_image_token?
                     
-                    bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, 32, 32, 960)
+                    bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, 960, 33, 33)
                     bottleneck_out: torch.Tensor = segmodel.adapt_tensor(bottleneck_out) # (B, 960)
                     b_global_image_token: torch.Tensor = segmodel.model.bottleneck_adapter.mlp(bottleneck_out) # (B, D)
 
