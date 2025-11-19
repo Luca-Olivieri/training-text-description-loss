@@ -101,11 +101,6 @@ async def train_loop(
     # The number of optimizer steps per epoch
     num_steps_per_epoch = math.ceil(num_batches_per_epoch)
 
-    if seg_train_with_text_config['num_synth_negs']:
-        num_synth_negs = seg_train_with_text_config['num_synth_negs']
-    else:
-        num_synth_negs = None # will be set to P-1 for each batch
-
     # --- 2. Optimizer Setup ---
     lr=seg_train_config['lr_schedule']['base_lr']
     optimizer = torch.optim.AdamW(segmodel.model.parameters(), lr=lr, weight_decay=math.pow(10, -0.5))
@@ -247,10 +242,15 @@ async def train_loop(
                     # P is the total (unrolled) number of positive pairs (P) involved in the contrastive loss.
                     # M is the number of negative texts for image.
 
+                    if seg_train_with_text_config['num_synth_negs']:
+                        num_synth_negs = seg_train_with_text_config['num_synth_negs']
+                    else:
+                        num_synth_negs = int(0.4/seg_train_with_text_config['cache_update_policy_percentile'])*P - 1 # will be set to P-1 for each batch
+
                     cs_texts = [list(cs_a.values()) for cs_a in cs_answer_dict_to_update.values()]
                     cs_neg_texts = [[neg_text_gen.generate(
                             pos_txt,
-                            P-1,
+                            num_synth_negs,
                             seg_train_with_text_config['change_prob'],
                             classes=neg_cls_names
                         ) for pos_txt, neg_cls_names in zip(cs_txt, cs_neg_cls_names)] for cs_txt, cs_neg_cls_names in zip(cs_texts, cs_neg_class_names)]
