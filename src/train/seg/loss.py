@@ -485,19 +485,23 @@ class GroupedSigLipLoss(VariableTextSigLipLoss):
     def __init__(
         self,
         negative_loss_agg: str = 'sum',
-        ignore_no_positive_samples: bool = True
-    ):
+        ignore_no_positive_samples: bool = True,
+        neg_loss_multiplier: Optional[float] = None,
+    ) -> None:
         """
         Args:
             negative_loss_agg (str): Aggregation method for negative losses. Defaults to 'sum'
                                      which is standard for SigLIP.
             ignore_no_positive_samples (bool): If True, the loss contribution from images
                                                that have no associated positive text is set to 0.
+            neg_loss_multiplier (Optional[float]): A coefficient for the negative loss contribution.
+                                                   If None, it has no effect (equivalent to 1.0).
         """
         super().__init__(
             negative_loss_agg=negative_loss_agg,
             ignore_no_positive_samples=ignore_no_positive_samples
         )
+        self.neg_loss_multiplier = neg_loss_multiplier
 
     def forward(
         self,
@@ -573,6 +577,10 @@ class GroupedSigLipLoss(VariableTextSigLipLoss):
             # for all entries where the label is 0.
             neg_loss_matrix = per_entry_loss * (1 - labels)
             neg_loss_per_image = neg_loss_matrix.sum(dim=1)
+
+            # Apply the negative loss multiplier if specified
+            if self.neg_loss_multiplier is not None:
+                neg_loss_per_image = neg_loss_per_image * self.neg_loss_multiplier
 
         # --- Step 3: Map all images to a group ---
         # This logic is identical to GroupedPairedNegativeSigLipLoss
