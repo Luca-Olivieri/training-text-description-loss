@@ -1,10 +1,11 @@
-root_exp_path: '/home/olivieri/exp/data/private/exps/seg'
+root_exp_path: '/home/olivieri/exp/data/private/exps/seg/deeplabv3_resnet18'
 exp_name: '0-baseline'
-var_name: 'b8_for_50_epochs'
+var_name: 'b8_for_50_epochs_lr1e-4'
 exp_desc: "" # Optional
 
 seg:
-  pretrained_weights_path: '/home/olivieri/exp/data/private/torch_weights/seg/lraspp_mobilenet_v3_large/no_text/lraspp_mobilenet_v3_large-enc-pt.pth'
+  model_name: 'deeplabv3_resnet18'
+  pretrained_weights_path: '/home/olivieri/exp/data/private/torch_weights/seg/deeplabv3_resnet18/deeplabv3_resnet18-enc-pt.pth'
   checkpoint_path: null
   image_size: 520
   adaptation: null

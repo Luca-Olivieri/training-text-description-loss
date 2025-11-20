@@ -214,7 +214,7 @@ async def train_loop(
                     new_checkpoint_dict['scaler_state_dict'] = scaler.state_dict()
 
                 save_weights_root_path.mkdir(parents=False, exist_ok=True)
-                ckp_filename = f'lraspp_mobilenet_v3_large-{config["exp_name"]}-{config["var_name"]}.pth'
+                ckp_filename = f'{seg_config["model_name"]}-{config["exp_name"]}-{config["var_name"]}.pth'
                 full_ckp_path = save_weights_root_path / ckp_filename
                 torch.save(new_checkpoint_dict, full_ckp_path)
                 log_manager.log_line(f"New best model saved to {full_ckp_path} with validation mIoU: {best_val_mIoU:.4f}")
@@ -247,7 +247,7 @@ async def main() -> None:
 
     # Segmentation Model
     segmodel = SEGMODELS_REGISTRY.get(
-        'lraspp_mobilenet_v3_large',
+        name=seg_config['model_name'],
         pretrained_weights_path=seg_config['pretrained_weights_path'],
         device=config['device'],
         adaptation=seg_config['adaptation']
@@ -258,7 +258,7 @@ async def main() -> None:
         model_state_dict = state_dict.get('model_state_dict', state_dict)
         segmodel.model.load_state_dict(model_state_dict)
 
-    segmodel.set_trainable_params(train_decoder_only=False)
+    segmodel.set_trainable_params(train_decoder_only=seg_train_config['train_decoder_only'])
 
     checkpoint_dict = None
     if seg_train_config['resume_path']:
