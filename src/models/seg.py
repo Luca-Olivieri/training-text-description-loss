@@ -20,9 +20,9 @@ from torchmetrics.metric import Metric
 from torchvision.models import segmentation as segmodels
 from torchvision.transforms._presets import SemanticSegmentation
 from torch.utils.hooks import RemovableHandle
+import segmentation_models_pytorch as smp
 
 from collections import OrderedDict
-from enum import Enum
 from functools import partial
 
 from abc import ABC, abstractmethod
@@ -52,253 +52,6 @@ class SegModelWrapper(ABC):
             **kwargs
     ) -> torch.Tensor:
         raise NotImplementedError
-    
-    def evaluate(
-            self,
-            **kwargs
-    ) -> ...:
-        """Evaluate the model on a dataset.
-        
-        Args:
-            **kwargs: Implementation-specific evaluation parameters.
-            
-        Returns:
-            Evaluation results (implementation-specific).
-            
-        Raises:
-            NotImplementedError: Must be implemented by subclasses.
-        """
-        raise NotImplementedError
-    
-    def adapt(
-            self,
-            **kwargs
-    ) -> ...:
-        """Add adaptation layers to the model for specific learning objectives.
-        
-        Args:
-            **kwargs: Implementation-specific adaptation parameters.
-            
-        Raises:
-            NotImplementedError: Must be implemented by subclasses.
-        """
-        raise NotImplementedError
-    
-    def adapt_tensor(
-            self,
-            **kwargs
-    ) -> ...:
-        """Apply adaptation transformations to a tensor.
-        
-        Args:
-            **kwargs: Implementation-specific tensor transformation parameters.
-            
-        Returns:
-            Adapted tensor (implementation-specific).
-            
-        Raises:
-            NotImplementedError: Must be implemented by subclasses.
-        """
-        raise NotImplementedError
-    
-    def set_trainable_params(
-            self,
-            **kwargs
-    ) -> ...:
-        """Configure which model parameters should be trainable.
-        
-        Args:
-            **kwargs: Implementation-specific parameter configuration options.
-            
-        Raises:
-            NotImplementedError: Must be implemented by subclasses.
-        """
-        raise NotImplementedError
-    
-    def remove_handles(
-            self,
-            **kwargs
-    ) -> ...:
-        """Remove all registered forward hooks from the model.
-        
-        Args:
-            **kwargs: Implementation-specific handle removal parameters.
-            
-        Raises:
-            NotImplementedError: Must be implemented by subclasses.
-        """
-        raise NotImplementedError
-
-SEGMODELS_REGISTRY = Registry[SegModelWrapper]()
-
-@SEGMODELS_REGISTRY.register("lraspp_mobilenet_v3_large")
-class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
-    """Wrapper for LRASPP MobileNetV3-Large segmentation model with adaptation support.
-    
-    This wrapper provides a unified interface for the LRASPP MobileNetV3-Large model
-    with optional adaptation layers for contrastive learning. It supports loading
-    pretrained weights, managing forward hooks, and configuring trainable parameters.
-    
-    Attributes:
-        device: The torch device to run the model on.
-        adaptation: Type of adaptation to apply ('contrastive_global', 'contrastive_diff', 
-                   'contrastive_local', or None).
-        model: The wrapped LRASPP MobileNetV3-Large segmentation model.
-        handles: List of registered forward hook handles for cleanup.
-        activations: Dictionary storing intermediate activations captured by forward hooks.
-    """
-    
-    def __init__(
-            self,
-            pretrained_weights_path: Path,
-            device: torch.device,
-            adaptation: Optional[str] = None
-    ) -> None:
-        """Initialize the LRASPP MobileNetV3-Large wrapper.
-        
-        Args:
-            pretrained_weights_path: Path to the pretrained model weights file.
-            device: The torch device to load the model on.
-            adaptation: Type of adaptation layer to add. Options are:
-                       - 'contrastive_global': Global average pooling + MLP (512->960, text-side) 
-                       - 'contrastive_diff': Global average pooling + MLP (960->512, bottleneck-side)
-                       - 'contrastive_local': Local contrastive adaptation (not implemented)
-                       - None: No adaptation layer
-        """
-        self.device = device
-        self.adaptation = adaptation
-        model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(self.device)
-        state_dict: OrderedDict = torch.load(pretrained_weights_path)
-        model_state_dict = state_dict.get('model_state_dict', state_dict)
-        model.load_state_dict(model_state_dict)
-        model.eval()
-        self.model = model
-
-        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
-
-        self.handles: list[RemovableHandle] = list()
-        self.activations: dict[str, torch.Tensor] = dict()
-    
-    def preprocess_images(
-            self,
-            images: torch.Tensor,
-    ) -> torch.Tensor:
-        return self.preprocess_fn(images)
-    
-    def adapt(
-            self,
-    ) -> None:
-        """Add adaptation layers to the model based on the specified adaptation type.
-        
-        This method dynamically adds adaptation modules to the model and registers
-        forward hooks to capture intermediate activations from the backbone.
-        
-        Supported adaptations:
-        - 'contrastive_global': Adds a global average pooling layer and an MLP (512->960)
-          to transform text features for contrastive learning.
-        - 'contrastive_diff': Adds a global average pooling layer and an MLP (960->512)
-          to reduce dimensionality of backbone features.
-        - 'contrastive_local': Placeholder for local contrastive adaptation (not implemented).
-        
-        The adaptation layers are initialized with Xavier uniform initialization for weights
-        and zeros for biases (if present). Forward hooks are registered on the backbone's
-        layer 16 to capture bottleneck activations [B, 960, 32, 32].
-        """
-        match self.adaptation:
-            case 'contrastive_global':
-                self.model.add_module('bottleneck_adapter', nn.ModuleDict()) # Module containing all the adaptations
-                # GAP layer
-                bottleneck_gap = nn.AdaptiveAvgPool2d(output_size=(1, 1))
-                self.model.bottleneck_adapter.add_module('gap', bottleneck_gap)
-                # Dense layer
-                bottleneck_mlp = nn.Linear(512, 960, bias=False, device=self.device)
-                self.model.bottleneck_adapter.add_module('mlp', bottleneck_mlp)
-                # Use Xavier Uniform initialisation for the weight matrix
-                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
-                if self.model.bottleneck_adapter.mlp.bias is not None:
-                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
-                
-                # register the forward hook to store the bottleneck output.
-                target_layer: nn.Module = self.model.backbone['16'] # [960, 32, 32] bottleneck output
-                handle = target_layer.register_forward_hook(get_activation('bottleneck', self.activations))
-                self.handles.append(handle)
-
-            case 'contrastive_diff':
-                self.model.add_module('bottleneck_adapter', nn.ModuleDict()) # Module containing all the adaptations
-                # GAP layer
-                bottleneck_gap = nn.AdaptiveAvgPool2d(output_size=(1, 1))
-                self.model.bottleneck_adapter.add_module('gap', bottleneck_gap)
-                # Dense layer
-                bottleneck_mlp = nn.Linear(960, 512, bias=False, device=self.device)
-                self.model.bottleneck_adapter.add_module('mlp', bottleneck_mlp)
-                # Use Xavier Uniform initialisation for the weight matrix
-                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
-                if self.model.bottleneck_adapter.mlp.bias is not None:
-                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
-                
-                # NOTE should I clone the fw hook output?
-                # register the forward hook to store the bottleneck output.
-                target_layer: nn.Module = self.model.backbone['16'] # [960, 32, 32] bottleneck output
-                handle = target_layer.register_forward_hook(get_activation('bottleneck', self.activations))
-                self.handles.append(handle)
-            
-            case 'contrastive_local':
-                ...
-
-    def adapt_tensor(
-            self,
-            input: torch.Tensor
-    ) -> torch.Tensor:
-        """Apply adaptation transformation to an input tensor.
-        
-        This method processes the input tensor through the adaptation layers
-        (global average pooling) based on the adaptation type specified during
-        initialization. The MLP transformation is commented out in the current
-        implementation.
-        
-        Args:
-            input: Input tensor from the backbone, typically of shape [B, C, H, W].
-                  For 'contrastive_global': expects [B, 960, H, W]
-                  For 'contrastive_diff': expects [B, 960, H, W]
-        
-        Returns:
-            Adapted tensor after global average pooling and squeezing.
-            For 'contrastive_global' and 'contrastive_diff': returns [B, C] where C
-            is the number of channels in the input.
-        """
-        match self.adaptation:
-            case 'contrastive_global':
-                x = self.model.bottleneck_adapter.gap(input).squeeze()
-                # x = self.model.bottleneck_adapter.mlp(x)
-                return x
-            case 'contrastive_diff':
-                x = self.model.bottleneck_adapter.gap(input).squeeze()
-                # x = self.model.bottleneck_adapter.mlp(x)
-                return x
-    
-    def set_trainable_params(
-            self,
-            train_decoder_only: bool
-    ) -> None:
-        """Configure which parameters of the model should be trainable.
-        
-        This method controls gradient computation for different parts of the model:
-        the backbone (encoder), the classifier (decoder), and the bottleneck adapter
-        (if present).
-        
-        Args:
-            train_decoder_only: If True, freezes the backbone and only trains the classifier
-                              and adapter. If False, trains both backbone and classifier
-                              (and adapter if present).
-        """
-        if train_decoder_only:
-            self.model.backbone.requires_grad_(False)
-        else:
-            self.model.backbone.requires_grad_(True)
-        self.model.classifier.requires_grad_(True)
-        
-        if hasattr(self.model, 'bottleneck_adapter'):
-            self.model.bottleneck_adapter.requires_grad_(True)
     
     def evaluate(
             self,
@@ -351,7 +104,51 @@ class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
         
         return loss, metrics_score
     
-
+    def adapt(
+            self,
+            **kwargs
+    ) -> ...:
+        """Add adaptation layers to the model for specific learning objectives.
+        
+        Args:
+            **kwargs: Implementation-specific adaptation parameters.
+            
+        Raises:
+            NotImplementedError: Must be implemented by subclasses.
+        """
+        raise NotImplementedError
+    
+    def adapt_tensor(
+            self,
+            **kwargs
+    ) -> ...:
+        """Apply adaptation transformations to a tensor.
+        
+        Args:
+            **kwargs: Implementation-specific tensor transformation parameters.
+            
+        Returns:
+            Adapted tensor (implementation-specific).
+            
+        Raises:
+            NotImplementedError: Must be implemented by subclasses.
+        """
+        raise NotImplementedError
+    
+    def set_trainable_params(
+            self,
+            **kwargs
+    ) -> ...:
+        """Configure which model parameters should be trainable.
+        
+        Args:
+            **kwargs: Implementation-specific parameter configuration options.
+            
+        Raises:
+            NotImplementedError: Must be implemented by subclasses.
+        """
+        raise NotImplementedError
+    
     def add_handle(
             self,
             handle: RemovableHandle
@@ -368,6 +165,383 @@ class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
         to prevent memory leaks and unnecessary computation.
         """
         [h.remove() for h in self.handles]
+
+SEGMODELS_REGISTRY = Registry[SegModelWrapper]()
+
+@SEGMODELS_REGISTRY.register("lraspp_mobilenet_v3_large")
+class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
+    """Wrapper for LRASPP MobileNetV3-Large segmentation model with adaptation support.
+    
+    This wrapper provides a unified interface for the LRASPP MobileNetV3-Large model
+    with optional adaptation layers for contrastive learning. It supports loading
+    pretrained weights, managing forward hooks, and configuring trainable parameters.
+    
+    Attributes:
+        device: The torch device to run the model on.
+        adaptation: Type of adaptation to apply ('contrastive_global', 'contrastive_diff', 
+                   'contrastive_local', or None).
+        model: The wrapped LRASPP MobileNetV3-Large segmentation model.
+        handles: List of registered forward hook handles for cleanup.
+        activations: Dictionary storing intermediate activations captured by forward hooks.
+    """
+    
+    def __init__(
+            self,
+            pretrained_weights_path: Path,
+            device: torch.device,
+            adaptation: Optional[str] = None
+    ) -> None:
+        """Initialize the LRASPP MobileNetV3-Large wrapper.
+        
+        Args:
+            pretrained_weights_path: Path to the pretrained model weights file.
+            device: The torch device to load the model on.
+            adaptation: Type of adaptation layer to add. Options are:
+                       - 'contrastive_global': Global average pooling + MLP (512->960, text-side) 
+                       - 'contrastive_diff': Global average pooling + MLP (960->512, bottleneck-side)
+                       - 'contrastive_local': Local contrastive adaptation (not implemented)
+                       - None: No adaptation layer
+        """
+        self.device = device
+        self.adaptation = adaptation
+        model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(self.device)
+        state_dict: OrderedDict = torch.load(pretrained_weights_path, map_location='cpu')
+        model_state_dict = state_dict.get('model_state_dict', state_dict)
+        model.load_state_dict(model_state_dict)
+        model.eval()
+        self.model = model
+
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
+
+        self.handles: list[RemovableHandle] = list()
+        self.activations: dict[str, torch.Tensor] = dict()
+    
+    def preprocess_images(
+            self,
+            images: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.preprocess_fn(images)
+    
+    def adapt(
+            self,
+    ) -> None:
+        """Add adaptation layers to the model based on the specified adaptation type.
+        
+        This method dynamically adds adaptation modules to the model and registers
+        forward hooks to capture intermediate activations from the backbone.
+        
+        Supported adaptations:
+        - 'contrastive_global': Adds a global average pooling layer and an MLP (512->960)
+          to transform text features for contrastive learning.
+        - 'contrastive_diff': Adds a global average pooling layer and an MLP (960->512)
+          to reduce dimensionality of backbone features.
+        - 'contrastive_local': Placeholder for local contrastive adaptation (not implemented).
+        
+        The adaptation layers are initialized with Xavier uniform initialization for weights
+        and zeros for biases (if present). Forward hooks are registered on the backbone's
+        layer 16 to capture bottleneck activations (B, 960, 33, 33).
+        """
+        match self.adaptation:
+            case 'contrastive_global':
+                self.model.add_module('bottleneck_adapter', nn.ModuleDict()) # Module containing all the adaptations
+                # GAP layer
+                bottleneck_gap = nn.AdaptiveAvgPool2d(output_size=(1, 1))
+                self.model.bottleneck_adapter.add_module('gap', bottleneck_gap)
+                # Dense layer
+                bottleneck_mlp = nn.Linear(512, 960, bias=False, device=self.device)
+                self.model.bottleneck_adapter.add_module('mlp', bottleneck_mlp)
+                # Use Xavier Uniform initialisation for the weight matrix
+                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
+                if self.model.bottleneck_adapter.mlp.bias is not None:
+                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
+                
+                # register the forward hook to store the bottleneck output.
+                target_layer: nn.Module = self.model.backbone['16'] # (960, 33, 33) bottleneck output
+                handle = target_layer.register_forward_hook(get_activation('bottleneck', self.activations))
+                self.handles.append(handle)
+
+            case 'contrastive_diff':
+                self.model.add_module('bottleneck_adapter', nn.ModuleDict()) # Module containing all the adaptations
+                # GAP layer
+                bottleneck_gap = nn.AdaptiveAvgPool2d(output_size=(1, 1))
+                self.model.bottleneck_adapter.add_module('gap', bottleneck_gap)
+                # Dense layer
+                bottleneck_mlp = nn.Linear(960, 512, bias=False, device=self.device)
+                self.model.bottleneck_adapter.add_module('mlp', bottleneck_mlp)
+                # Use Xavier Uniform initialisation for the weight matrix
+                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
+                if self.model.bottleneck_adapter.mlp.bias is not None:
+                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
+                
+                # NOTE should I clone the fw hook output?
+                # register the forward hook to store the bottleneck output.
+                target_layer: nn.Module = self.model.backbone['16'] # [960, 33, 33] bottleneck output
+                handle = target_layer.register_forward_hook(get_activation('bottleneck', self.activations))
+                self.handles.append(handle)
+            
+            case 'contrastive_global_bside_1':
+                self.model.bottleneck_adapter = nn.ModuleDict()
+                self.model.bottleneck_adapter.gap = nn.AdaptiveAvgPool2d(output_size=(1, 1)) # GAP layer
+                self.model.bottleneck_adapter.mlp = nn.Linear(960, 512, bias=False, device=self.device) # linear layer
+                
+                # Use Xavier Uniform initialisation for the weight matrix
+                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
+                if self.model.bottleneck_adapter.mlp.bias is not None:
+                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
+                
+                # NOTE should I clone the fw hook output?
+                # register the forward hook to store the bottleneck output.
+                target_layer: nn.Module = self.model.backbone['16'] # (960, 33, 33) bottleneck output
+                handle = target_layer.register_forward_hook(get_activation('bottleneck', self.activations))
+                self.handles.append(handle)
+            
+            case 'contrastive_local':
+                ...
+
+    def adapt_tensor(
+            self,
+            input: torch.Tensor
+    ) -> torch.Tensor:
+        """Apply adaptation transformation to an input tensor.
+        
+        This method processes the input tensor through the adaptation layers
+        (global average pooling) based on the adaptation type specified during
+        initialization. The MLP transformation is commented out in the current
+        implementation.
+        
+        Args:
+            input: Input tensor from the backbone, typically of shape [B, C, H, W].
+                  For 'contrastive_global': expects [B, 960, H, W]
+                  For 'contrastive_diff': expects [B, 960, H, W]
+        
+        Returns:
+            Adapted tensor after global average pooling and squeezing.
+            For 'contrastive_global' and 'contrastive_diff': returns [B, C] where C
+            is the number of channels in the input.
+        """
+        match self.adaptation:
+            case 'contrastive_global':
+                x = self.model.bottleneck_adapter.gap(input).squeeze()
+                # x = self.model.bottleneck_adapter.mlp(x)
+                return x
+            case 'contrastive_diff':
+                x = self.model.bottleneck_adapter.gap(input).squeeze()
+                # x = self.model.bottleneck_adapter.mlp(x)
+                return x
+            case 'contrastive_global_bside_1':
+                x: torch.Tensor = self.model.bottleneck_adapter.gap(input).squeeze()
+                x: torch.Tensor = self.model.bottleneck_adapter.mlp(x)
+                return x
+    
+    def set_trainable_params(
+            self,
+            train_decoder_only: bool
+    ) -> None:
+        """Configure which parameters of the model should be trainable.
+        
+        This method controls gradient computation for different parts of the model:
+        the backbone (encoder), the classifier (decoder), and the bottleneck adapter
+        (if present).
+        
+        Args:
+            train_decoder_only: If True, freezes the backbone and only trains the classifier
+                              and adapter. If False, trains both backbone and classifier
+                              (and adapter if present).
+        """
+        if train_decoder_only:
+            self.model.backbone.requires_grad_(False)
+        else:
+            self.model.backbone.requires_grad_(True)
+        self.model.classifier.requires_grad_(True)
+        
+        if hasattr(self.model, 'bottleneck_adapter'):
+            self.model.bottleneck_adapter.requires_grad_(True)
+
+
+@SEGMODELS_REGISTRY.register("deeplabv3_mobilenet_v3_large")
+class DeepLabV3_MobileNet_V3_LargeWrapper(SegModelWrapper):
+    """
+    TODO
+    """
+    
+    def __init__(
+            self,
+            pretrained_weights_path: Path,
+            device: torch.device,
+            adaptation: Optional[str] = None
+    ) -> None:
+        self.device = device
+        self.adaptation = adaptation
+        model = segmodels.deeplabv3_mobilenet_v3_large(weights=None, weights_backbone=None, aux_loss=True).to(self.device)
+        state_dict: OrderedDict = torch.load(pretrained_weights_path, map_location='cpu')
+        model_state_dict = state_dict.get('model_state_dict', state_dict)
+        model.load_state_dict(model_state_dict)
+        model.eval()
+        self.model = model
+
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
+
+        self.handles: list[RemovableHandle] = list()
+        self.activations: dict[str, torch.Tensor] = dict()
+    
+    def preprocess_images(
+            self,
+            images: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.preprocess_fn(images)
+
+    def set_trainable_params(
+            self,
+            train_decoder_only: bool
+    ) -> None:
+        """Configure which parameters of the model should be trainable.
+        
+        This method controls gradient computation for different parts of the model:
+        the backbone (encoder), the classifier (decoder), and the bottleneck adapter
+        (if present).
+        
+        Args:
+            train_decoder_only: If True, freezes the backbone and only trains the classifier
+                              and adapter. If False, trains both backbone and classifier
+                              (and adapter if present).
+        """
+        if train_decoder_only:
+            self.model.backbone.requires_grad_(False)
+        else:
+            self.model.backbone.requires_grad_(True)
+        self.model.classifier.requires_grad_(True)
+        self.model.aux_classifier.requires_grad_(False)
+        
+        if hasattr(self.model, 'bottleneck_adapter'):
+            self.model.bottleneck_adapter.requires_grad_(True)
+
+
+@SEGMODELS_REGISTRY.register("deeplabv3_resnet18")
+class DeepLabV3_ResNet18Wrapper(SegModelWrapper):
+    """
+    TODO
+    """
+
+    def __init__(
+            self,
+            pretrained_weights_path: Path,
+            device: torch.device,
+            adaptation: Optional[str] = None
+    ) -> None:
+        self.device = device
+        self.adaptation = adaptation
+        model = smp.DeepLabV3(
+            encoder_name="resnet18", # the paper uses ResNet-101 as the backbone network.
+            encoder_weights=None, # the encoder is pre-trained on ImageNet (encoder_weights='imagenet'), but by default we leave it uninit.
+            encoder_output_stride=8, # the paper advocates for an output stride of 8 for denser feature maps and better performance.
+            decoder_channels=256, # the ASPP module uses 256 filters for its convolutions.
+            decoder_atrous_rates=(12, 24, 36), # for an output stride of 8, the atrous rates are doubled to (12, 24, 36).
+            classes=21, # VOC2012 classes
+            # The upsampling factor should match the output stride. Setting it to None allows the
+            # model to infer this automatically, which is consistent with the paper's method of
+            # upsampling the final logits by a factor of 8.
+            upsampling=None
+        ).to(self.device)
+        state_dict: OrderedDict = torch.load(pretrained_weights_path, map_location='cpu')
+        model_state_dict = state_dict.get('model_state_dict', state_dict)
+        model.load_state_dict(model_state_dict)
+        model.eval()
+        self.model = model
+
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
+
+        self.handles: list[RemovableHandle] = list()
+        self.activations: dict[str, torch.Tensor] = dict()
+
+    def preprocess_images(
+            self,
+            images: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.preprocess_fn(images)
+    
+    def set_trainable_params(
+            self,
+            train_decoder_only: bool
+    ) -> None:
+        """Configure which parameters of the model should be trainable.
+        
+        This method controls gradient computation for different parts of the model:
+        the backbone (encoder), the classifier (decoder), and the bottleneck adapter
+        (if present).
+        
+        Args:
+            train_decoder_only: If True, freezes the backbone and only trains the classifier
+                              and adapter. If False, trains both backbone and classifier
+                              (and adapter if present).
+        """
+        if train_decoder_only:
+            self.model.encoder.requires_grad_(False)
+        else:
+            self.model.encoder.requires_grad_(True)
+        self.model.decoder.requires_grad_(True)
+        self.model.segmentation_head.requires_grad_(True)
+        
+        if hasattr(self.model, 'bottleneck_adapter'):
+            self.model.bottleneck_adapter.requires_grad_(True)
+
+
+@SEGMODELS_REGISTRY.register("deeplabv3_resnet50")
+class DeepLabV3_ResNet50Wrapper(SegModelWrapper):
+    """
+    TODO
+    """
+
+    def __init__(
+            self,
+            pretrained_weights_path: Path,
+            device: torch.device,
+            adaptation: Optional[str] = None
+    ) -> None:
+        self.device = device
+        self.adaptation = adaptation
+        model = segmodels.deeplabv3_resnet50(weights=None, weights_backbone=None, aux_loss=True).to(self.device)
+        state_dict: OrderedDict = torch.load(pretrained_weights_path, map_location='cpu')
+        model_state_dict = state_dict.get('model_state_dict', state_dict)
+        model.load_state_dict(model_state_dict)
+        model.eval()
+        self.model = model
+
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
+
+        self.handles: list[RemovableHandle] = list()
+        self.activations: dict[str, torch.Tensor] = dict()
+
+    def preprocess_images(
+            self,
+            images: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.preprocess_fn(images)
+    
+    def set_trainable_params(
+            self,
+            train_decoder_only: bool
+    ) -> None:
+        """Configure which parameters of the model should be trainable.
+        
+        This method controls gradient computation for different parts of the model:
+        the backbone (encoder), the classifier (decoder), and the bottleneck adapter
+        (if present).
+        
+        Args:
+            train_decoder_only: If True, freezes the backbone and only trains the classifier
+                              and adapter. If False, trains both backbone and classifier
+                              (and adapter if present).
+        """
+        if train_decoder_only:
+            self.model.backbone.requires_grad_(False)
+        else:
+            self.model.backbone.requires_grad_(True)
+        self.model.classifier.requires_grad_(True)
+        self.model.aux_classifier.requires_grad_(False)
+        
+        if hasattr(self.model, 'bottleneck_adapter'):
+            self.model.bottleneck_adapter.requires_grad_(True)
+
 
 # used only to validate the correctness of the TorchMetrics metrics
 def my_accuracy(
