@@ -65,7 +65,6 @@ def setup_config(
     config |= {'ollama_container_name': os.getenv("OLLAMA_CONTAINER_NAME")} # 'ollama_container_name' is passed to the Docker environment
     config |= {'ollama_http_endpoint': f'http://{config["ollama_container_name"]}:11434'}
     # HuggingFace
-    os.environ["HF_HOME"] = config['HF_home']
     # Timestamp to univocally define config
     config['timestamp'] = f'{datetime.now().strftime("%y%m%d_%H%M")}' # add datetime to exp name
     config = convert_paths_in_dict(config)
@@ -161,6 +160,15 @@ load_dotenv(str(base_path / 'config' / '.env'), override=True)
 
 BASE_CONFIG |= {'_google_AI_key': os.getenv("GOOGLE_AI_KEY")}
 
+# HuggingFace
+
+os.environ["HF_HOME"] = BASE_CONFIG['HF_home']
+
+# PyTorch
+
+torch.hub.set_dir('/home/olivieri/exp/data/private/torch_weights')
+torch.backends.cudnn.benchmark = True # if True, can speeds up computation at the cost of reproducibility.
+
 # Reproducibility #
 
 random.seed(BASE_CONFIG['seed'])
@@ -200,12 +208,6 @@ def get_torch_gen() -> torch.Generator:
 
 # NOTE this are applied everywhere in the code.
 Image.Image.__repr__ = lambda obj: f"<PIL.Image.Image image mode={obj.mode} size={obj.size}>"
-
-# PyTorch
-
-torch.hub.set_dir('/home/olivieri/exp/data/private/torch_weights')
-
-torch.backends.cudnn.benchmark = True # if True, can speeds up computation at the cost of reproducibility.
 
 def main() -> None:
     # print(setup_config(BASE_CONFIG, Path('/home/olivieri/exp/config/exp_config.yml')))
