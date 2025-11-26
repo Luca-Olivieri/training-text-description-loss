@@ -1,13 +1,14 @@
 root_exp_path: '/home/olivieri/exp/data/private/exps/seg/3-contrastive-B_vs_dT'
 exp_name: '3.5_from_good_ckp'
-var_name: 'lambda0.1_adapt1'
+var_name: 'lambda0.1_GAP_linear2_BN'
 exp_desc: "no further customization" # Optional
 
 seg:
+  model_name: 'lraspp_mobilenet_v3_large'
   pretrained_weights_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/base/good_ckp_b8-251010_0642/weights/lraspp_mobilenet_v3_large-base-good_ckp_b8-251010_0642.pth'
   checkpoint_path: null
   image_size: 520
-  adaptation: 'contrastive_global_bside_1'
+  adaptation: 'GAP_linear2_BN'
   train:
     train_decoder_only: False
     batch_size: 32
@@ -40,6 +41,7 @@ vle:
   new_layers: ['text_adapter']
 
 vlm:
+  model_name: 'gemma3:12b-it-qat'
   image_size: 224
   alpha: 0.6
   sup_set_img_idxs: [16]
