@@ -10,6 +10,7 @@ from __future__ import annotations
 from core.config import *
 from core.registry import Registry
 from core.torch_utils import get_activation
+from models.modules import BOTTLENECK_ADAPTERS_REGISTRY
 
 import torch
 import torchmetrics as tm
@@ -25,8 +26,8 @@ import segmentation_models_pytorch as smp
 from collections import OrderedDict
 from functools import partial
 
+from core._types import Optional, deprecated
 from abc import ABC, abstractmethod
-from typing import Optional
 
 
 class SegModelWrapper(ABC):
@@ -39,11 +40,10 @@ class SegModelWrapper(ABC):
 
     def __init__(self) -> None:
         """Initialize the segmentation model wrapper.
-        
-        Raises:
-            NotImplementedError: This is an abstract base class and must be subclassed.
         """
-        raise NotImplementedError
+        self.bottleneck_dims = None
+        self.bottleneck_module = None
+        self.adapter_out_dims = 512 # FLAIR embedding size
     
     @abstractmethod
     def preprocess_images(
@@ -106,34 +106,109 @@ class SegModelWrapper(ABC):
     
     def adapt(
             self,
-            **kwargs
-    ) -> ...:
-        """Add adaptation layers to the model for specific learning objectives.
+    ) -> None:
+        """Add adaptation layers to the model based on the specified adaptation type.
         
-        Args:
-            **kwargs: Implementation-specific adaptation parameters.
-            
-        Raises:
-            NotImplementedError: Must be implemented by subclasses.
+        This method dynamically adds adaptation modules to the model and registers
+        forward hooks to capture intermediate activations from the backbone.
+        
+        Supported adaptations:
+        - 'contrastive_global': Adds a global average pooling layer and an MLP (512->D_bn)
+          to transform text features for contrastive learning.
+        - 'contrastive_diff': Adds a global average pooling layer and an MLP (D_bn->512)
+          to reduce dimensionality of backbone features.
+        - 'contrastive_local': Placeholder for local contrastive adaptation (not implemented).
+        
+        The adaptation layers are initialized with Xavier uniform initialization for weights
+        and zeros for biases (if present). Forward hooks are registered on the backbone's
+        layer 16 to capture bottleneck activations (B, D_bn, 33, 33).
         """
-        raise NotImplementedError
+        # register the forward hook to store the bottleneck output.
+        target_layer = self.bottleneck_module # (960, 33, 33) bottleneck output
+        handle = target_layer.register_forward_hook(get_activation('bottleneck', self.activations))
+        self.handles.append(handle)
+
+        match self.adaptation:
+            case 'contrastive_global':
+                self.model.add_module('bottleneck_adapter', nn.ModuleDict()) # Module containing all the adaptations
+                # GAP layer
+                bottleneck_gap = nn.AdaptiveAvgPool2d(output_size=(1, 1))
+                self.model.bottleneck_adapter.add_module('gap', bottleneck_gap)
+                # Dense layer
+                bottleneck_mlp = nn.Linear(512, self.bottleneck_dims, bias=False, device=self.device)
+                self.model.bottleneck_adapter.add_module('mlp', bottleneck_mlp)
+                # Use Xavier Uniform initialisation for the weight matrix
+                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
+                if self.model.bottleneck_adapter.mlp.bias is not None:
+                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
+
+            case 'contrastive_diff':
+                self.model.add_module('bottleneck_adapter', nn.ModuleDict()) # Module containing all the adaptations
+                # GAP layer
+                bottleneck_gap = nn.AdaptiveAvgPool2d(output_size=(1, 1))
+                self.model.bottleneck_adapter.add_module('gap', bottleneck_gap)
+                # Dense layer
+                bottleneck_mlp = nn.Linear(self.bottleneck_dims, 512, bias=False, device=self.device)
+                self.model.bottleneck_adapter.add_module('mlp', bottleneck_mlp)
+                # Use Xavier Uniform initialisation for the weight matrix
+                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
+                if self.model.bottleneck_adapter.mlp.bias is not None:
+                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
+            
+            case 'contrastive_global_bside_1':
+                self.model.bottleneck_adapter = nn.ModuleDict()
+                self.model.bottleneck_adapter.gap = nn.AdaptiveAvgPool2d(output_size=(1, 1)) # GAP layer
+                self.model.bottleneck_adapter.mlp = nn.Linear(self.bottleneck_dims, 512, bias=False, device=self.device) # linear layer
+                
+                # Use Xavier Uniform initialisation for the weight matrix
+                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
+                if self.model.bottleneck_adapter.mlp.bias is not None:
+                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
+                        
+            case _:
+                bottleneck_adapter = BOTTLENECK_ADAPTERS_REGISTRY.get(
+                    self.adaptation,
+                    in_features=self.bottleneck_dims,
+                    out_features=self.adapter_out_dims,
+                    device=self.device
+                )
+                self.model.bottleneck_adapter = bottleneck_adapter
     
     def adapt_tensor(
             self,
-            **kwargs
-    ) -> ...:
-        """Apply adaptation transformations to a tensor.
+            input: torch.Tensor
+    ) -> torch.Tensor:
+        """Apply adaptation transformation to an input tensor.
+        
+        This method processes the input tensor through the adaptation layers
+        (global average pooling) based on the adaptation type specified during
+        initialization. The MLP transformation is commented out in the current
+        implementation.
         
         Args:
-            **kwargs: Implementation-specific tensor transformation parameters.
-            
+            input: Input tensor from the backbone, typically of shape [B, C, H, W].
+                  For 'contrastive_global': expects [B, 960, H, W]
+                  For 'contrastive_diff': expects [B, 960, H, W]
+        
         Returns:
-            Adapted tensor (implementation-specific).
-            
-        Raises:
-            NotImplementedError: Must be implemented by subclasses.
+            Adapted tensor after global average pooling and squeezing.
+            For 'contrastive_global' and 'contrastive_diff': returns [B, C] where C
+            is the number of channels in the input.
         """
-        raise NotImplementedError
+        match self.adaptation:
+            case 'contrastive_global':
+                x = self.model.bottleneck_adapter.gap(input).squeeze()
+                # x = self.model.bottleneck_adapter.mlp(x)
+            case 'contrastive_diff':
+                x = self.model.bottleneck_adapter.gap(input).squeeze()
+                # x = self.model.bottleneck_adapter.mlp(x)
+            case 'contrastive_global_bside_1':
+                x: torch.Tensor = self.model.bottleneck_adapter.gap(input).squeeze()
+                x: torch.Tensor = self.model.bottleneck_adapter.mlp(x)
+            case _:
+                x: torch.Tensor = self.model.bottleneck_adapter(input)
+    
+        return x
     
     def set_trainable_params(
             self,
@@ -202,6 +277,8 @@ class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
                        - 'contrastive_local': Local contrastive adaptation (not implemented)
                        - None: No adaptation layer
         """
+        super().__init__()
+
         self.device = device
         self.adaptation = adaptation
         model = segmodels.lraspp_mobilenet_v3_large(weights=None, weights_backbone=None).to(self.device)
@@ -215,124 +292,16 @@ class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
 
         self.handles: list[RemovableHandle] = list()
         self.activations: dict[str, torch.Tensor] = dict()
+
+        self.bottleneck_dims = 960
+        self.bottleneck_module: nn.Module = self.model.backbone['16'] # (960, 33, 33) bottleneck output
     
     def preprocess_images(
             self,
             images: torch.Tensor,
     ) -> torch.Tensor:
         return self.preprocess_fn(images)
-    
-    def adapt(
-            self,
-    ) -> None:
-        """Add adaptation layers to the model based on the specified adaptation type.
-        
-        This method dynamically adds adaptation modules to the model and registers
-        forward hooks to capture intermediate activations from the backbone.
-        
-        Supported adaptations:
-        - 'contrastive_global': Adds a global average pooling layer and an MLP (512->960)
-          to transform text features for contrastive learning.
-        - 'contrastive_diff': Adds a global average pooling layer and an MLP (960->512)
-          to reduce dimensionality of backbone features.
-        - 'contrastive_local': Placeholder for local contrastive adaptation (not implemented).
-        
-        The adaptation layers are initialized with Xavier uniform initialization for weights
-        and zeros for biases (if present). Forward hooks are registered on the backbone's
-        layer 16 to capture bottleneck activations (B, 960, 33, 33).
-        """
-        match self.adaptation:
-            case 'contrastive_global':
-                self.model.add_module('bottleneck_adapter', nn.ModuleDict()) # Module containing all the adaptations
-                # GAP layer
-                bottleneck_gap = nn.AdaptiveAvgPool2d(output_size=(1, 1))
-                self.model.bottleneck_adapter.add_module('gap', bottleneck_gap)
-                # Dense layer
-                bottleneck_mlp = nn.Linear(512, 960, bias=False, device=self.device)
-                self.model.bottleneck_adapter.add_module('mlp', bottleneck_mlp)
-                # Use Xavier Uniform initialisation for the weight matrix
-                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
-                if self.model.bottleneck_adapter.mlp.bias is not None:
-                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
-                
-                # register the forward hook to store the bottleneck output.
-                target_layer: nn.Module = self.model.backbone['16'] # (960, 33, 33) bottleneck output
-                handle = target_layer.register_forward_hook(get_activation('bottleneck', self.activations))
-                self.handles.append(handle)
 
-            case 'contrastive_diff':
-                self.model.add_module('bottleneck_adapter', nn.ModuleDict()) # Module containing all the adaptations
-                # GAP layer
-                bottleneck_gap = nn.AdaptiveAvgPool2d(output_size=(1, 1))
-                self.model.bottleneck_adapter.add_module('gap', bottleneck_gap)
-                # Dense layer
-                bottleneck_mlp = nn.Linear(960, 512, bias=False, device=self.device)
-                self.model.bottleneck_adapter.add_module('mlp', bottleneck_mlp)
-                # Use Xavier Uniform initialisation for the weight matrix
-                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
-                if self.model.bottleneck_adapter.mlp.bias is not None:
-                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
-                
-                # NOTE should I clone the fw hook output?
-                # register the forward hook to store the bottleneck output.
-                target_layer: nn.Module = self.model.backbone['16'] # [960, 33, 33] bottleneck output
-                handle = target_layer.register_forward_hook(get_activation('bottleneck', self.activations))
-                self.handles.append(handle)
-            
-            case 'contrastive_global_bside_1':
-                self.model.bottleneck_adapter = nn.ModuleDict()
-                self.model.bottleneck_adapter.gap = nn.AdaptiveAvgPool2d(output_size=(1, 1)) # GAP layer
-                self.model.bottleneck_adapter.mlp = nn.Linear(960, 512, bias=False, device=self.device) # linear layer
-                
-                # Use Xavier Uniform initialisation for the weight matrix
-                nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
-                if self.model.bottleneck_adapter.mlp.bias is not None:
-                    nn.init.zeros_(self.model.bottleneck_adapter.mlp.bias)
-                
-                # NOTE should I clone the fw hook output?
-                # register the forward hook to store the bottleneck output.
-                target_layer: nn.Module = self.model.backbone['16'] # (960, 33, 33) bottleneck output
-                handle = target_layer.register_forward_hook(get_activation('bottleneck', self.activations))
-                self.handles.append(handle)
-            
-            case 'contrastive_local':
-                ...
-
-    def adapt_tensor(
-            self,
-            input: torch.Tensor
-    ) -> torch.Tensor:
-        """Apply adaptation transformation to an input tensor.
-        
-        This method processes the input tensor through the adaptation layers
-        (global average pooling) based on the adaptation type specified during
-        initialization. The MLP transformation is commented out in the current
-        implementation.
-        
-        Args:
-            input: Input tensor from the backbone, typically of shape [B, C, H, W].
-                  For 'contrastive_global': expects [B, 960, H, W]
-                  For 'contrastive_diff': expects [B, 960, H, W]
-        
-        Returns:
-            Adapted tensor after global average pooling and squeezing.
-            For 'contrastive_global' and 'contrastive_diff': returns [B, C] where C
-            is the number of channels in the input.
-        """
-        match self.adaptation:
-            case 'contrastive_global':
-                x = self.model.bottleneck_adapter.gap(input).squeeze()
-                # x = self.model.bottleneck_adapter.mlp(x)
-                return x
-            case 'contrastive_diff':
-                x = self.model.bottleneck_adapter.gap(input).squeeze()
-                # x = self.model.bottleneck_adapter.mlp(x)
-                return x
-            case 'contrastive_global_bside_1':
-                x: torch.Tensor = self.model.bottleneck_adapter.gap(input).squeeze()
-                x: torch.Tensor = self.model.bottleneck_adapter.mlp(x)
-                return x
-    
     def set_trainable_params(
             self,
             train_decoder_only: bool
@@ -410,7 +379,7 @@ class DeepLabV3_MobileNet_V3_LargeWrapper(SegModelWrapper):
         else:
             self.model.backbone.requires_grad_(True)
         self.model.classifier.requires_grad_(True)
-        self.model.aux_classifier.requires_grad_(False)
+        self.model.aux_classifier.requires_grad_(False) # TODO perhaps this is better to be deleted (to free up space)
         
         if hasattr(self.model, 'bottleneck_adapter'):
             self.model.bottleneck_adapter.requires_grad_(True)
@@ -537,7 +506,7 @@ class DeepLabV3_ResNet50Wrapper(SegModelWrapper):
         else:
             self.model.backbone.requires_grad_(True)
         self.model.classifier.requires_grad_(True)
-        self.model.aux_classifier.requires_grad_(False)
+        self.model.aux_classifier.requires_grad_(False) # TODO perhaps this is better to be deleted (to free up space)
         
         if hasattr(self.model, 'bottleneck_adapter'):
             self.model.bottleneck_adapter.requires_grad_(True)
