@@ -242,10 +242,17 @@ async def train_loop(
                     cs_global_text_token = flat_cs_vle_txt_output.global_text_token # (P, D)
                     
                     bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, 960, 33, 33)
-                    bottleneck_out: torch.Tensor = segmodel.adapt_tensor(bottleneck_out) # (B, D)
-                    b_global_image_token_dict: dict[str, torch.Tensor] = dict(zip(uids, bottleneck_out, strict=True))
 
-                    b_global_image_token = torch.cat([b_global_image_token_dict[uid].unsqueeze(0).expand(len(pos_classes), -1) for uid, pos_classes in cs_dict_to_update.items()]) # (P, D)
+                    if not segmodel.model.bottleneck_adapter.needs_query:
+                        bottleneck_out: torch.Tensor = segmodel.adapt_tensor(bottleneck_out) # (B, D)
+                        b_global_image_token_dict: dict[str, torch.Tensor] = dict(zip(uids, bottleneck_out, strict=True))
+
+                        b_global_image_token = torch.cat([b_global_image_token_dict[uid].unsqueeze(0).expand(len(pos_classes), -1) for uid, pos_classes in cs_dict_to_update.items()]) # (P, D)
+                    else:
+                        b_global_image_token_dict: dict[str, torch.Tensor] = dict(zip(uids, bottleneck_out, strict=True))
+
+                        b_global_image_token = torch.cat([b_global_image_token_dict[uid].unsqueeze(0).expand(len(pos_classes), -1, -1, -1) for uid, pos_classes in cs_dict_to_update.items()]) # (P, D_bn, H, W)
+                        b_global_image_token: torch.Tensor = segmodel.model.bottleneck_adapter(b_global_image_token, cs_global_text_token) # (P, D)
 
                     lhs: torch.Tensor = b_global_image_token # (P, D)
                     rhs = cs_global_text_token # (P, D)
