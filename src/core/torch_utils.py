@@ -404,6 +404,48 @@ def unprefix_state_dict(
     unprefixed_state_dict = {key.replace(prefix, ''): value for key, value in prefixed_state_dict.items()}
     return unprefixed_state_dict
 
+def group_by_tensor(
+        keys: torch.Tensor,
+        values: torch.Tensor
+) -> dict[int, list[int]]:
+    """
+    Groups elements of the 'values' tensor based on the corresponding elements 
+    in the 'keys' tensor.
+    
+    Args:
+        keys: Tensor containing the grouping keys.
+        values: Tensor containing the values to be grouped.
+        
+    Returns:
+        A dictionary where keys come from 'keys' and values are lists of 
+        corresponding elements from 'values'.
+    """
+    # 1. Flatten inputs to ensure we are working with 1D arrays
+    flat_keys = keys.flatten()
+    flat_values = values.flatten()
+
+    if flat_keys.numel() != flat_values.numel():
+        raise ValueError(f"Tensors must have the same number of elements. "
+                         f"Got keys={flat_keys.numel()}, values={flat_values.numel()}")
+
+    # 2. Sort keys to ensure identical keys are contiguous
+    # We use argsort to apply the exact same permutation to the values
+    sort_indices = torch.argsort(flat_keys)
+    sorted_keys = flat_keys[sort_indices]
+    sorted_values = flat_values[sort_indices]
+
+    # 3. Find unique keys and the count of each key (requires sorted input)
+    unique_keys, counts = torch.unique_consecutive(sorted_keys, return_counts=True)
+
+    # 4. Split the sorted values based on the counts of the keys
+    # We convert counts to a list because torch.split expects a list of section sizes
+    grouped_values = torch.split(sorted_values, counts.tolist())
+
+    # 5. Construct the final dictionary
+    # .item() converts 0-d tensor key to int
+    # .tolist() converts the value tensor chunk to a list of ints
+    return {k.item(): v.tolist() for k, v in zip(unique_keys, grouped_values)}
+
 def main() -> None:
     """
     Main function for testing and demonstrating module functionality.
@@ -425,6 +467,17 @@ def main() -> None:
         new_l = unflatten_tensor_list(flat_l, struct)
         print(new_l)
         print(all([(new_t == t).all() for new_t, t in zip(new_l, l)]))
+
+    def try_group_by_tensor() -> None:
+        A = torch.tensor([1, 2, 1, 3, 2, 1])
+        B = torch.tensor([10, 20, 30, 40, 50, 60])
+
+        result = group_by_tensor(A, B)
+        
+        print(result)
+        # Output: {1: [10, 30, 60], 2: [20, 50], 3: [40]}
+
+    try_group_by_tensor()
 
 if __name__ == '__main__':
     main()
