@@ -129,6 +129,9 @@ class SegModelWrapper(ABC):
         self.handles.append(handle)
 
         match self.adaptation:
+            case None:
+                pass
+
             case 'contrastive_global':
                 self.model.add_module('bottleneck_adapter', nn.ModuleDict()) # Module containing all the adaptations
                 # GAP layer
@@ -176,37 +179,37 @@ class SegModelWrapper(ABC):
     
     def adapt_tensor(
             self,
-            input: torch.Tensor
+            inputs: torch.Tensor
     ) -> torch.Tensor:
-        """Apply adaptation transformation to an input tensor.
+        """Apply adaptation transformation to an inputs tensor.
         
-        This method processes the input tensor through the adaptation layers
+        This method processes the inputs tensor through the adaptation layers
         (global average pooling) based on the adaptation type specified during
         initialization. The MLP transformation is commented out in the current
         implementation.
         
         Args:
-            input: Input tensor from the backbone, typically of shape [B, C, H, W].
+            inputs: Input tensor from the backbone, typically of shape [B, C, H, W].
                   For 'contrastive_global': expects [B, 960, H, W]
                   For 'contrastive_diff': expects [B, 960, H, W]
         
         Returns:
             Adapted tensor after global average pooling and squeezing.
             For 'contrastive_global' and 'contrastive_diff': returns [B, C] where C
-            is the number of channels in the input.
+            is the number of channels in the inputs.
         """
         match self.adaptation:
             case 'contrastive_global':
-                x = self.model.bottleneck_adapter.gap(input).squeeze()
+                x = self.model.bottleneck_adapter.gap(inputs).squeeze()
                 # x = self.model.bottleneck_adapter.mlp(x)
             case 'contrastive_diff':
-                x = self.model.bottleneck_adapter.gap(input).squeeze()
+                x = self.model.bottleneck_adapter.gap(inputs).squeeze()
                 # x = self.model.bottleneck_adapter.mlp(x)
             case 'contrastive_global_bside_1':
-                x: torch.Tensor = self.model.bottleneck_adapter.gap(input).squeeze()
+                x: torch.Tensor = self.model.bottleneck_adapter.gap(inputs).squeeze()
                 x: torch.Tensor = self.model.bottleneck_adapter.mlp(x)
             case _:
-                x: torch.Tensor = self.model.bottleneck_adapter(input)
+                x: torch.Tensor = self.model.bottleneck_adapter(inputs)
     
         return x
     
