@@ -28,6 +28,7 @@ import torchmetrics as tm
 from open_clip_train.scheduler import cosine_lr, const_lr, const_lr_cooldown
 from vendors.flair.src.flair.train import backward
 from torch.nn.modules.loss import _Loss
+import torch.nn.functional as F
 import math
 
 import asyncio
@@ -255,8 +256,13 @@ async def train_loop(
                         b_global_image_token: torch.Tensor = segmodel.model.bottleneck_adapter(b_global_image_token, cs_global_text_token) # (P, D)
 
                     lhs: torch.Tensor = b_global_image_token # (P, D)
-                    rhs = cs_global_text_token # (P, D)
+                    rhs: torch.Tensor = cs_global_text_token # (P, D)
 
+                    # TODO: this should be refactored in a registry
+                    if seg_train_with_text_config['normalise'] == 'l2':
+                        lhs = F.normalize(lhs, p=2, dim=1)
+                        rhs = F.normalize(rhs, p=2, dim=1)
+                    
                     image_indices_for_pos_texts = torch.tensor(list(range(len(lhs))), device=rhs.device) # (P,)
 
                     group_indices_for_pos_pairs = [[i]*len(pos_classes) for i, pos_classes in enumerate(cs_dict_to_update.values())]

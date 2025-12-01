@@ -1,6 +1,6 @@
 root_exp_path: '/home/olivieri/exp/data/private/exps/seg/3-contrastive-B_vs_dT'
 exp_name: '3.5_from_good_ckp'
-var_name: 'lambda0.1_conv_attn_pool_by_text'
+var_name: 'lambda0.1_conv_attn_pool_by_text_normL2'
 exp_desc: "no further customization" # Optional
 
 seg:
@@ -33,6 +33,7 @@ seg:
       loss_lambda: 0.1
       sign_classes_filter_k: 0
       cache_update_policy_percentile: 0.4
+      normalise: 'l2'
 
 vle:
   pretrained_weights_root_path: '/home/olivieri/exp/data/private/torch_weights/vle/flair'
