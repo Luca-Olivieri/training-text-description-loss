@@ -1,0 +1,60 @@
+root_exp_path: '/home/olivieri/exp/data/private/exps/seg/4-contrastive-B_PR_vs_dT'
+exp_name: '4.2-from_good_ckp'
+var_name: 'add_lambda0.1_conv_attn_pool_by_text'
+exp_desc: "no further customization" # Optional
+
+seg:
+  model_name: 'lraspp_mobilenet_v3_large'
+  pretrained_weights_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/base/good_ckp_b8-251010_0642/weights/lraspp_mobilenet_v3_large-base-good_ckp_b8-251010_0642.pth'
+  checkpoint_path: null
+  image_size: 520
+  adaptation: 'conv_attn_pool_by_text'
+  train:
+    train_decoder_only: False
+    batch_size: 32
+    num_epochs: 25
+    precision: 'amp_bfloat16' # optional, should be ['amp' -> torch.float16, 'amp_bfloat16' -> torch.bfloat16]
+    regularizers: ['dropout']
+    lr_schedule:
+      policy: 'cosine'
+      base_lr: 1.0e-4
+      warmup_length: 200 # 0 for no warmup
+      epochs_cooldown: null
+      lr_cooldown_power: null
+      lr_cooldown_end: null
+    grad_clip_norm: 10.0 # optional
+    resume_path: null
+    log_only_to_stdout: False
+    log_every: 5
+    with_text:
+      with_text: True
+      with_cache: True # is set to False if 'with_text' == False
+      cache_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/cache/cache_k=0'
+      loss_convex_comb: False
+      loss_lambda: 0.1
+      sign_classes_filter_k: 0
+      num_synth_negs: null # if null, this is set to P-1 (each batch has its own P)
+      change_prob: 0.5
+      cache_update_policy_percentile: 0.4
+      normalise: null
+      detach_bottleneck: False
+
+vle:
+  pretrained_weights_root_path: '/home/olivieri/exp/data/private/torch_weights/vle/flair'
+  checkpoint_path: '/home/olivieri/exp/data/private/exps/vle/2-GT_PR_vs_dT/b128-251021_0740/weights/flair-cc3m-recap.pt-2-GT_PR_vs_dT-b128-251021_0740.pth'
+  image_size: 224
+  new_layers: ['concat_adapter']
+
+vlm:
+  model_name: 'gemma3:12b-it-qat'
+  image_size: 224
+  alpha: 0.6
+  sup_set_img_idxs: [16]
+  MLLMGenParams:
+    temperature: 0.1
+  batch_size: 1 # Optional, set to 1 if None
+
+mask_prs_path: '/home/olivieri/exp/data/private/prompts_data/by_model/LRASPP_MobileNet_V3/_mask_prs_'
+by_model: 'LRASPP_MobileNet_V3'
+sup_set_gt_path: '/home/olivieri/exp/data/private/prompts_data/by_model/LRASPP_MobileNet_V3/class-splitted/sup_set_answer_gts.jsonl'
+prompts_path: '/home/olivieri/exp/data/private/prompts_data/prompts'
