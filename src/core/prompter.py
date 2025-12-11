@@ -22,7 +22,7 @@ import torchvision.transforms.functional as TF
 from collections import OrderedDict
 import re
 
-from core._types import Self, Any, Optional, Callable, Prompt
+from core._types import Self, Any, Optional, Callable, Prompt, RGB_tuple
 
 def _concat_images_fn(
         images: list[Image.Image],
@@ -614,13 +614,26 @@ class Patches_ColorMapModule(ColorMapModule):
     Returns color mapping as text with inline color patch representations,
     useful for rich text environments that support color formatting.
     """
+    def __init__(
+            self,
+            variation: str,
+            classes: list[str],
+            color_map_dict: dict[int, RGB_tuple],
+            patch_size: tuple[int, int] = (32, 32),
+    ) -> None:
+        # TODO this init() metho should be replicated and adapter for other ColorMapModules.
+        super().__init__(variation)
+        self.classes = classes
+        self.color_map_dict = color_map_dict
+        self.patch_size = patch_size
+
     def __call__(self) -> tuple[str, str]:
         """Generate color map prompt with colored patches.
 
         Returns:
             Tuple of (prompt text, color patches representation string).
         """
-        return super().__call__(get_color_map_as("patches"))
+        return super().__call__(get_color_map_as("patches", classes=self.classes, color_map_dict=self.color_map_dict, patch_size=self.patch_size))
     
 class ClassSplitted_ColorMapModule(ColorMapModule):
     """Color map module for class-splitted scenarios where only one class is evaluated at a time.
