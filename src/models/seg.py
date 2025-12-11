@@ -140,6 +140,7 @@ class SegModelWrapper(ABC):
                 # Dense layer
                 bottleneck_mlp = nn.Linear(512, self.bottleneck_dims, bias=False, device=self.device)
                 self.model.bottleneck_adapter.add_module('mlp', bottleneck_mlp)
+                self.model.bottleneck_adapter.needs_query = False
                 # Use Xavier Uniform initialisation for the weight matrix
                 nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
                 if self.model.bottleneck_adapter.mlp.bias is not None:
@@ -153,6 +154,7 @@ class SegModelWrapper(ABC):
                 # Dense layer
                 bottleneck_mlp = nn.Linear(self.bottleneck_dims, 512, bias=False, device=self.device)
                 self.model.bottleneck_adapter.add_module('mlp', bottleneck_mlp)
+                self.model.bottleneck_adapter.needs_query = False
                 # Use Xavier Uniform initialisation for the weight matrix
                 nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
                 if self.model.bottleneck_adapter.mlp.bias is not None:
@@ -162,6 +164,7 @@ class SegModelWrapper(ABC):
                 self.model.bottleneck_adapter = nn.ModuleDict()
                 self.model.bottleneck_adapter.gap = nn.AdaptiveAvgPool2d(output_size=(1, 1)) # GAP layer
                 self.model.bottleneck_adapter.mlp = nn.Linear(self.bottleneck_dims, 512, bias=False, device=self.device) # linear layer
+                self.model.bottleneck_adapter.needs_query = False
                 
                 # Use Xavier Uniform initialisation for the weight matrix
                 nn.init.xavier_uniform_(self.model.bottleneck_adapter.mlp.weight)
@@ -420,6 +423,7 @@ class DeepLabV3_ResNet18Wrapper(SegModelWrapper):
         model.eval()
         self.model = model
 
+        # NOTE theoretically, 'resize_size' should be 224, but it gives lower performances
         self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
 
         self.handles: list[RemovableHandle] = list()
@@ -510,6 +514,75 @@ class DeepLabV3_ResNet50Wrapper(SegModelWrapper):
             self.model.backbone.requires_grad_(True)
         self.model.classifier.requires_grad_(True)
         self.model.aux_classifier.requires_grad_(False) # TODO perhaps this is better to be deleted (to free up space)
+        
+        if hasattr(self.model, 'bottleneck_adapter'):
+            self.model.bottleneck_adapter.requires_grad_(True)
+
+
+@SEGMODELS_REGISTRY.register("segformer_mit_b0")
+class SegFormer_mit_b0(SegModelWrapper):
+    """
+    TODO
+    """
+
+    def __init__(
+            self,
+            pretrained_weights_path: Path,
+            device: torch.device,
+            adaptation: Optional[str] = None
+    ) -> None:
+        self.device = device
+        self.adaptation = adaptation
+        model = smp.Segformer(
+            **{ # NOTE as in the official HF page https://huggingface.co/smp-hub/segformer-b0-512x512-ade-160k (except for classes)
+                "encoder_name": "mit_b0",
+                "encoder_depth": 5,
+                "encoder_weights": None,
+                "decoder_segmentation_channels": 256,
+                "in_channels": 3,
+                "classes": 21,
+                "activation": None,
+                "aux_params": None,
+            },
+        ).to(self.device)
+        state_dict: OrderedDict = torch.load(pretrained_weights_path, map_location='cpu')
+        model_state_dict = state_dict.get('model_state_dict', state_dict)
+        model.load_state_dict(model_state_dict)
+        model.eval()
+        self.model = model
+
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=512)()
+
+        self.handles: list[RemovableHandle] = list()
+        self.activations: dict[str, torch.Tensor] = dict()
+
+    def preprocess_images(
+            self,
+            images: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.preprocess_fn(images)
+    
+    def set_trainable_params(
+            self,
+            train_decoder_only: bool
+    ) -> None:
+        """Configure which parameters of the model should be trainable.
+        
+        This method controls gradient computation for different parts of the model:
+        the backbone (encoder), the classifier (decoder), and the bottleneck adapter
+        (if present).
+        
+        Args:
+            train_decoder_only: If True, freezes the backbone and only trains the classifier
+                              and adapter. If False, trains both backbone and classifier
+                              (and adapter if present).
+        """
+        if train_decoder_only:
+            self.model.encoder.requires_grad_(False)
+        else:
+            self.model.encoder.requires_grad_(True)
+        self.model.decoder.requires_grad_(True)
+        self.model.segmentation_head.requires_grad_(True)
         
         if hasattr(self.model, 'bottleneck_adapter'):
             self.model.bottleneck_adapter.requires_grad_(True)
