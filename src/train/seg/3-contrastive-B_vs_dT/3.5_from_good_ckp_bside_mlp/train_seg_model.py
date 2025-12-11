@@ -242,7 +242,10 @@ async def train_loop(
                     
                     cs_global_text_token = flat_cs_vle_txt_output.global_text_token # (P, D)
                     
-                    bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, 960, 33, 33)
+                    bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, D_bn, 33, 33)
+
+                    if seg_train_with_text_config['detach_bottleneck']:
+                        bottleneck_out = bottleneck_out.detach().requires_grad_(True)
 
                     if not segmodel.model.bottleneck_adapter.needs_query:
                         bottleneck_out: torch.Tensor = segmodel.adapt_tensor(bottleneck_out) # (B, D)
@@ -279,12 +282,18 @@ async def train_loop(
                         output_dict=False,
                     )
 
-                    batch_loss: torch.Tensor = seg_batch_loss*(1. - seg_train_with_text_config['loss_lambda']) + aux_batch_loss*seg_train_with_text_config['loss_lambda'] # lambda coefficient
+                    if seg_train_with_text_config['loss_convex_comb']:
+                        batch_loss: torch.Tensor = seg_batch_loss*(1. - seg_train_with_text_config['loss_lambda']) + aux_batch_loss*seg_train_with_text_config['loss_lambda'] # lambda coefficient
+                    else:
+                        batch_loss: torch.Tensor = seg_batch_loss + aux_batch_loss*seg_train_with_text_config['loss_lambda'] # lambda coefficient
                 
                 cs_mult = filtered_cs_counter/(train_dl.batch_size)
                 filtered_perc = filtered_cs_counter/cs_counter
                 aux_xen_ratio = aux_batch_loss/seg_batch_loss
-                aux_xen_ratio_after_lambda = aux_batch_loss*seg_train_with_text_config['loss_lambda']/seg_batch_loss*(1. - seg_train_with_text_config['loss_lambda'])
+                if seg_train_with_text_config['loss_convex_comb']:
+                    aux_xen_ratio_after_lambda = aux_batch_loss*seg_train_with_text_config['loss_lambda']/seg_batch_loss*(1. - seg_train_with_text_config['loss_lambda'])
+                else:
+                    aux_xen_ratio_after_lambda = aux_batch_loss*seg_train_with_text_config['loss_lambda']/seg_batch_loss
             else:
                 aux_batch_loss = torch.tensor(-1.0, device=config['device'])
                 batch_loss = seg_batch_loss

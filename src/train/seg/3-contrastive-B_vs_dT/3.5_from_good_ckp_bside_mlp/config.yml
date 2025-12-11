@@ -1,6 +1,6 @@
 root_exp_path: '/home/olivieri/exp/data/private/exps/seg/3-contrastive-B_vs_dT'
 exp_name: '3.5_from_good_ckp'
-var_name: 'lambda0.1_conv_attn_pool_by_text_normL2'
+var_name: 'add_lambda0.5_conv_attn_pool_by_text'
 exp_desc: "no further customization" # Optional
 
 seg:
@@ -30,10 +30,12 @@ seg:
       with_text: True
       with_cache: True # is set to False if 'with_text' == False
       cache_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/cache/cache_k=0'
-      loss_lambda: 0.1
+      loss_convex_comb: False
+      loss_lambda: 0.5
       sign_classes_filter_k: 0
       cache_update_policy_percentile: 0.4
-      normalise: 'l2'
+      normalise: null
+      detach_bottleneck: False
 
 vle:
   pretrained_weights_root_path: '/home/olivieri/exp/data/private/torch_weights/vle/flair'
