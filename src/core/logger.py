@@ -58,6 +58,7 @@ from typing import Literal, Optional
 from torch.utils.data import Dataset, DataLoader
 import torch
 import re
+import ast
 
 from core._types import Any
 
@@ -409,3 +410,101 @@ def parse_val_logs_metric(
         return {}
         
     return val_accuracies
+
+def parse_loss_lambda(
+        filepath: Path,
+) -> float:
+    """
+    Parses the loss_lambda value from a configuration log file.
+
+    This function reads the content of the given file and uses a regular
+    expression to find the value associated with the 'loss_lambda' key
+    within the logged configuration dictionary.
+
+    Args:
+        filepath: The path to the log file.
+
+    Returns:
+        The parsed loss_lambda value as a float.
+
+    Raises:
+        FileNotFoundError: If the specified file does not exist.
+        ValueError: If the 'loss_lambda' key is not found in the file.
+    """
+    # This pattern looks for the literal string "'loss_lambda':",
+    # followed by optional whitespace (\s*), and then captures a group
+    # of digits that may contain a decimal point (\d+\.?\d*).
+    # This correctly handles both integer and floating-point numbers.
+    pattern = re.compile(r"'loss_lambda':\s*(\d+\.?\d*)")
+
+    # Read the entire content of the file.
+    # The read_text() method will raise FileNotFoundError if the path is invalid.
+    content = filepath.read_text()
+
+    # Search for the first occurrence of the pattern in the file content.
+    match = pattern.search(content)
+
+    if match:
+        # The desired value is in the first capturing group (group 1).
+        value_str = match.group(1)
+        return float(value_str)
+    else:
+        # If no match is found, raise an error to indicate the problem.
+        raise ValueError(f"'loss_lambda' not found in {filepath}")
+
+def parse_config(
+        filepath: Path,
+) -> dict:
+    """
+    Parses the entire configuration dictionary from a log file.
+
+    This function locates the log line containing the configuration,
+    extracts the dictionary string, and sanitizes it by converting
+    non-standard literals (like PosixPath and device objects) into
+    strings. It then safely parses this sanitized string into a
+    Python dictionary, preserving its nested structure.
+
+    Args:
+        filepath: The path to the log file.
+
+    Returns:
+        The parsed configuration as a dictionary.
+
+    Raises:
+        FileNotFoundError: If the specified file does not exist.
+        ValueError: If the configuration dictionary cannot be found or
+                    parsed from the file.
+    """
+    # Read the entire content of the file.
+    content = filepath.read_text()
+
+    # 1. Isolate the dictionary string from the log file.
+    # This pattern finds a line starting with the log prefix "[...]"
+    # and captures the dictionary that follows it.
+    config_line_pattern = re.compile(r"^\[.+?\]\s*(\{.*\})$", re.MULTILINE)
+    match = config_line_pattern.search(content)
+
+    if not match:
+        raise ValueError(f"Could not find a configuration dictionary in {filepath}")
+
+    dict_str = match.group(1)
+
+    # 2. Sanitize the string to make it parseable by ast.literal_eval.
+    #
+    # Replace PosixPath('/path/to/file') with just the string '/path/to/file'.
+    # The (.*?) captures the content inside the parentheses.
+    sanitized_str = re.sub(r"PosixPath\((.*?)\)", r"\1", dict_str)
+    #
+    # Replace device(type='cuda') with a string literal "device(type='cuda')".
+    # The lambda function takes the match object `m` and wraps the full match
+    # (m.group(0)) in double quotes, turning it into a valid string.
+    sanitized_str = re.sub(r"device\(.*?\)", lambda m: f'"{m.group(0)}"', sanitized_str)
+
+    # 3. Use ast.literal_eval for safe parsing.
+    # This is much safer than `eval()` as it only allows literals.
+    try:
+        config_dict = ast.literal_eval(sanitized_str)
+        return config_dict
+    except (ValueError, SyntaxError) as e:
+        # This error can occur if there's another non-literal we didn't account for.
+        raise ValueError(f"Failed to parse the config dictionary after sanitization: {e}") from e
