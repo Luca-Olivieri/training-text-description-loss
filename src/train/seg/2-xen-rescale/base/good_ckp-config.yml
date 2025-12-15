@@ -1,10 +1,11 @@
-root_exp_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale'
+root_exp_path: '/home/olivieri/exp/data/private/exps/seg/deeplabv3_resnet18/2-xen-rescale'
 exp_name: 'base'
 var_name: 'good_ckp_b8'
 exp_desc: "" # Optional
 
 seg:
-  pretrained_weights_path: '/home/olivieri/exp/data/private/torch_weights/seg/lraspp_mobilenet_v3_large/no_text/lraspp_mobilenet_v3_large-enc-pt.pth'
+  model_name: 'deeplabv3_resnet18'
+  pretrained_weights_path: '/home/olivieri/exp/data/private/torch_weights/seg/deeplabv3_resnet18/deeplabv3_resnet18-enc-pt.pth'
   checkpoint_path: null
   image_size: 520
   adaptation: null
@@ -16,7 +17,7 @@ seg:
     regularizers: ['dropout']
     lr_schedule:
       policy: 'cosine'
-      base_lr: 1.0e-4
+      base_lr: 3.1622776602e-5
       warmup_length: 200 # 0 for no warmup
       epochs_cooldown: null
       lr_cooldown_power: null
@@ -40,6 +41,7 @@ vle:
   new_layers: []
 
 vlm:
+  model_name: 'gemma3:12b-it-qat'
   image_size: 224
   alpha: 0.6
   sup_set_img_idxs: [16]
