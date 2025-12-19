@@ -300,7 +300,7 @@ class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
         self.activations: dict[str, torch.Tensor] = dict()
 
         self.bottleneck_dims = 960
-        self.bottleneck_module: nn.Module = self.model.backbone['16'] # (960, 33, 33) bottleneck output
+        self.bottleneck_module: nn.Module = self.model.backbone['16'] # (B, 960, 33, 33) bottleneck output
     
     def preprocess_images(
             self,
@@ -345,6 +345,8 @@ class DeepLabV3_MobileNet_V3_LargeWrapper(SegModelWrapper):
             device: torch.device,
             adaptation: Optional[str] = None
     ) -> None:
+        super().__init__()
+
         self.device = device
         self.adaptation = adaptation
         model = segmodels.deeplabv3_mobilenet_v3_large(weights=None, weights_backbone=None, aux_loss=True).to(self.device)
@@ -403,6 +405,8 @@ class DeepLabV3_ResNet18Wrapper(SegModelWrapper):
             device: torch.device,
             adaptation: Optional[str] = None
     ) -> None:
+        super().__init__()
+
         self.device = device
         self.adaptation = adaptation
         model = smp.DeepLabV3(
@@ -428,6 +432,83 @@ class DeepLabV3_ResNet18Wrapper(SegModelWrapper):
 
         self.handles: list[RemovableHandle] = list()
         self.activations: dict[str, torch.Tensor] = dict()
+
+        self.bottleneck_dims = 512
+        self.bottleneck_module: nn.Module = self.model.encoder.layer4 # (B, 512, 65, 65) bottleneck output
+
+    def preprocess_images(
+            self,
+            images: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.preprocess_fn(images)
+    
+    def set_trainable_params(
+            self,
+            train_decoder_only: bool
+    ) -> None:
+        """Configure which parameters of the model should be trainable.
+        
+        This method controls gradient computation for different parts of the model:
+        the backbone (encoder), the classifier (decoder), and the bottleneck adapter
+        (if present).
+        
+        Args:
+            train_decoder_only: If True, freezes the backbone and only trains the classifier
+                              and adapter. If False, trains both backbone and classifier
+                              (and adapter if present).
+        """
+        if train_decoder_only:
+            self.model.encoder.requires_grad_(False)
+        else:
+            self.model.encoder.requires_grad_(True)
+        self.model.decoder.requires_grad_(True)
+        self.model.segmentation_head.requires_grad_(True)
+        
+        if hasattr(self.model, 'bottleneck_adapter'):
+            self.model.bottleneck_adapter.requires_grad_(True)
+
+
+@SEGMODELS_REGISTRY.register("deeplabv3_resnet34")
+class DeepLabV3_ResNet34Wrapper(SegModelWrapper):
+    """
+    TODO
+    """
+
+    def __init__(
+            self,
+            pretrained_weights_path: Path,
+            device: torch.device,
+            adaptation: Optional[str] = None
+    ) -> None:
+        super().__init__()
+
+        self.device = device
+        self.adaptation = adaptation
+        model = smp.DeepLabV3(
+            encoder_name="resnet34", # the paper uses ResNet-101 as the backbone network.
+            encoder_weights=None, # the encoder is pre-trained on ImageNet (encoder_weights='imagenet'), but by default we leave it uninit.
+            encoder_output_stride=8, # the paper advocates for an output stride of 8 for denser feature maps and better performance.
+            decoder_channels=256, # the ASPP module uses 256 filters for its convolutions.
+            decoder_atrous_rates=(12, 24, 36), # for an output stride of 8, the atrous rates are doubled to (12, 24, 36).
+            classes=21, # VOC2012 classes
+            # The upsampling factor should match the output stride. Setting it to None allows the
+            # model to infer this automatically, which is consistent with the paper's method of
+            # upsampling the final logits by a factor of 8.
+            upsampling=None
+        ).to(self.device)
+        state_dict: OrderedDict = torch.load(pretrained_weights_path, map_location='cpu')
+        model_state_dict = state_dict.get('model_state_dict', state_dict)
+        model.load_state_dict(model_state_dict)
+        model.eval()
+        self.model = model
+
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
+
+        self.handles: list[RemovableHandle] = list()
+        self.activations: dict[str, torch.Tensor] = dict()
+
+        self.bottleneck_dims = 512
+        self.bottleneck_module: nn.Module = self.model.encoder.layer4 # (B, 512, 65, 65) bottleneck output
 
     def preprocess_images(
             self,
@@ -473,6 +554,8 @@ class DeepLabV3_ResNet50Wrapper(SegModelWrapper):
             device: torch.device,
             adaptation: Optional[str] = None
     ) -> None:
+        super().__init__()
+
         self.device = device
         self.adaptation = adaptation
         model = segmodels.deeplabv3_resnet50(weights=None, weights_backbone=None, aux_loss=True).to(self.device)
@@ -531,6 +614,8 @@ class SegFormer_mit_b0(SegModelWrapper):
             device: torch.device,
             adaptation: Optional[str] = None
     ) -> None:
+        super().__init__()
+
         self.device = device
         self.adaptation = adaptation
         model = smp.Segformer(
