@@ -28,6 +28,7 @@ import torchmetrics as tm
 from open_clip_train.scheduler import cosine_lr, const_lr, const_lr_cooldown
 from vendors.flair.src.flair.train import backward
 from torch.nn.modules.loss import _Loss
+import torch.nn.functional as F
 import math
 
 import asyncio
@@ -243,7 +244,6 @@ async def train_loop(
                     flat_cs_ovr_masks_pr = vle.preprocess_images(flat_cs_ovr_masks_pr/255.)
 
                     with torch.no_grad():
-                        # flat_cs_vle_output = vle.encode_and_project(images=flat_cs_ovr_masks_pr, texts=flat_cs_concat_texts, broadcast=False, pool=False)
                         flat_cs_vle_img_output = vle.encode_and_project_images(flat_cs_ovr_masks_pr)
                         flat_cs_vle_txt_output = vle.encode_and_project_texts(flat_cs_texts)
 
@@ -251,15 +251,29 @@ async def train_loop(
                     
                     pr_global_image_token = flat_cs_vle_img_output.global_image_token # (P, D)
                     
-                    bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, 960, 33, 33)
-                    bottleneck_out: torch.Tensor = segmodel.adapt_tensor(bottleneck_out) # (B, 960)
-                    b_global_image_token: torch.Tensor = segmodel.model.bottleneck_adapter.mlp(bottleneck_out) # (B, D)
-                    b_global_image_token_dict: dict[str, torch.Tensor] = dict(zip(uids, b_global_image_token, strict=True))
+                    bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, D_bn, 33, 33)
 
-                    b_global_image_token = torch.cat([b_global_image_token_dict[uid].unsqueeze(0).expand(len(pos_classes), -1) for uid, pos_classes in cs_dict_to_update.items()]) # (P, D)
+                    if seg_train_with_text_config['detach_bottleneck']:
+                        bottleneck_out = bottleneck_out.detach().requires_grad_(True)
+
+                    if not segmodel.model.bottleneck_adapter.needs_query:
+                        bottleneck_out: torch.Tensor = segmodel.adapt_tensor(bottleneck_out) # (B, D)
+                        b_global_image_token_dict: dict[str, torch.Tensor] = dict(zip(uids, bottleneck_out, strict=True))
+
+                        b_global_image_token = torch.cat([b_global_image_token_dict[uid].unsqueeze(0).expand(len(pos_classes), -1) for uid, pos_classes in cs_dict_to_update.items()]) # (P, D)
+                    else:
+                        b_global_image_token_dict: dict[str, torch.Tensor] = dict(zip(uids, bottleneck_out, strict=True))
+
+                        b_global_image_token = torch.cat([b_global_image_token_dict[uid].unsqueeze(0).expand(len(pos_classes), -1, -1, -1) for uid, pos_classes in cs_dict_to_update.items()]) # (P, D_bn, H, W)
+                        b_global_image_token: torch.Tensor = segmodel.model.bottleneck_adapter(b_global_image_token, cs_global_text_token) # (P, D)
 
                     lhs: torch.Tensor = vle.model.concat_adapter(torch.cat([b_global_image_token, pr_global_image_token], dim=-1)) # (P, D)
                     rhs = cs_global_text_token # (P, D)
+
+                    # TODO: this should be refactored in a registry
+                    if seg_train_with_text_config['normalise'] == 'l2':
+                        lhs = F.normalize(lhs, p=2, dim=1)
+                        rhs = F.normalize(rhs, p=2, dim=1)
 
                     image_indices_for_pos_texts = torch.tensor(list(range(len(lhs))), device=rhs.device) # (P,)
 
@@ -377,7 +391,7 @@ async def train_loop(
                     new_checkpoint_dict['scaler_state_dict'] = scaler.state_dict()
 
                 save_weights_root_path.mkdir(parents=False, exist_ok=True)
-                ckp_filename = f'lraspp_mobilenet_v3_large-{config["exp_name"]}-{config["var_name"]}.pth'
+                ckp_filename = f'{seg_config["model_name"]}-{config["exp_name"]}-{config["var_name"]}.pth'
                 full_ckp_path = save_weights_root_path / ckp_filename
                 torch.save(new_checkpoint_dict, full_ckp_path)
                 log_manager.log_line(f"New best model saved to {full_ckp_path} with validation mIoU: {best_val_mIoU:.4f}")
@@ -410,7 +424,7 @@ async def main() -> None:
 
     # Segmentation Model
     segmodel = SEGMODELS_REGISTRY.get(
-        'lraspp_mobilenet_v3_large',
+        seg_config["model_name"],
         pretrained_weights_path=seg_config['pretrained_weights_path'],
         device=config['device'],
         adaptation=seg_config['adaptation']
@@ -453,8 +467,7 @@ async def main() -> None:
             raise AttributeError(f"ERROR: Resume path '{seg_weights_path}' not found. ")
 
     # Vision-Language Model
-    model_name = 'gemma3:12b-it-qat'
-    vlm = MLLM_REGISTRY.get(model_name, http_endpoint=config['ollama_http_endpoint'])
+    vlm = MLLM_REGISTRY.get(vlm_config['model_name'], http_endpoint=config['ollama_http_endpoint'])
 
     gen_params = MLLMGenParams(seed=config['seed'], **vlm_config['MLLMGenParams'])
 
