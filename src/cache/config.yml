@@ -1,5 +1,5 @@
-checkpoint_config: '/home/olivieri/exp/src/train/seg/3-contrastive-B_vs_dT/3.1-ft_synth_bootstrap/config.yml'
+checkpoint_config: '/home/olivieri/exp/src/train/seg/3-contrastive-B_vs_dT/3.5_from_good_ckp_bside_mlp/config.yml'
 cache_name: 'cache'
-target_path: '/home/olivieri/exp/data/private/exps/seg/3-contrastive-B_vs_dT/3.1-ft_synth_bootstrap'
+target_path: '/home/olivieri/exp/data/private/exps/seg/deeplabv3_resnet18/2-xen-rescale'
 
 sign_classes_filter_k: 0 # Optional

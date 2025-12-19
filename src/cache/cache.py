@@ -164,14 +164,14 @@ class Cache:
         Raises:
             KeyError: If any of the requested keys are not found in the cache.
         """
-        missing_keys = set(keys) - self.keys()
-        if missing_keys:
-           raise KeyError(f"Keys not found in cache: {', '.join(missing_keys)}")
+        # missing_keys = set(keys) - self.keys()
+        # if missing_keys:
+        #    raise KeyError(f"Keys not found in cache: {', '.join(missing_keys)}")
 
         results = {}
         if self.storage_device != "disk":
             # Retrieve all data first
-            raw_items = {key: self._data[key] for key in keys}
+            raw_items = {key: self._data.get(key, (torch.tensor(torch.nan), None)) for key in keys}
         else: # self.storage_device == "disk"
             raw_items = {}
             for key in keys:

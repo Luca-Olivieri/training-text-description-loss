@@ -237,7 +237,7 @@ async def main() -> None:
 
     # Segmentation Model
     segmodel = SEGMODELS_REGISTRY.get(
-        'lraspp_mobilenet_v3_large',
+        name=ckp_seg_config['model_name'],
         pretrained_weights_path=ckp_seg_config['pretrained_weights_path'],
         device=ckp_config['device'],
         adaptation=ckp_seg_config['adaptation']
