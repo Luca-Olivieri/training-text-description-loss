@@ -4,6 +4,7 @@ var_name: 'alpha10_b8'
 exp_desc: "" # Optional
 
 seg:
+  model_name: 'lraspp_mobilenet_v3_large'
   pretrained_weights_path: '/home/olivieri/exp/data/private/exps/seg/2-xen-rescale/base/good_ckp_b8-251010_0642/weights/lraspp_mobilenet_v3_large-base-good_ckp_b8-251010_0642.pth'
   checkpoint_path: null
   image_size: 520
@@ -35,11 +36,12 @@ seg:
 
 vle:
   pretrained_weights_root_path: '/home/olivieri/exp/data/private/torch_weights/vle/flair'
-  checkpoint_path: '/home/olivieri/exp/data/private/exps/vle/1-dM_vs_dT/250902_2047/weights/flair-flair-cc3m-recap.pt-text_proj_L_b256_250902_2047.pth'
+  checkpoint_path: '/home/olivieri/exp/data/private/exps/vle/1-dM_vs_dT/adapter_L_b256_250904_0732/weights/flair-flair-cc3m-recap.pt-l-adapter_L_b256_250904_0732.pth'
   image_size: 224
-  new_layers: []
+  new_layers: ['text_adapter']
 
 vlm:
+  model_name: 'gemma3:12b-it-qat'
   image_size: 224
   alpha: 0.6
   sup_set_img_idxs: [16]

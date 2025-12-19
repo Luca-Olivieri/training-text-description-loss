@@ -220,6 +220,8 @@ async def train_loop(
 
                     batch_maps = []
 
+                    # TODO vectorised this whole computation
+
                     # aggregate the class-splitted global text tokens
                     for i, (uid, sc, gt, pr) in enumerate(zip(uids, scs_down, gts_down, prs_down)):
 
@@ -376,7 +378,7 @@ async def train_loop(
                     new_checkpoint_dict['scaler_state_dict'] = scaler.state_dict()
 
                 save_weights_root_path.mkdir(parents=False, exist_ok=True)
-                ckp_filename = f'lraspp_mobilenet_v3_large-{config["exp_name"]}-{config["var_name"]}.pth'
+                ckp_filename = f'{seg_config["model_name"]}-{config["exp_name"]}-{config["var_name"]}.pth'
                 full_ckp_path = save_weights_root_path / ckp_filename
                 torch.save(new_checkpoint_dict, full_ckp_path)
                 log_manager.log_line(f"New best model saved to {full_ckp_path} with validation mIoU: {best_val_mIoU:.4f}")
@@ -409,7 +411,7 @@ async def main() -> None:
 
     # Segmentation Model
     segmodel = SEGMODELS_REGISTRY.get(
-        'lraspp_mobilenet_v3_large',
+        seg_config["model_name"],
         pretrained_weights_path=seg_config['pretrained_weights_path'],
         device=config['device'],
         adaptation=seg_config['adaptation']
@@ -452,8 +454,7 @@ async def main() -> None:
             raise AttributeError(f"ERROR: Resume path '{seg_weights_path}' not found. ")
 
     # Vision-Language Model
-    model_name = 'gemma3:12b-it-qat'
-    vlm = MLLM_REGISTRY.get(model_name, http_endpoint=config['ollama_http_endpoint'])
+    vlm = MLLM_REGISTRY.get(vlm_config['model_name'], http_endpoint=config['ollama_http_endpoint'])
 
     gen_params = MLLMGenParams(seed=config['seed'], **vlm_config['MLLMGenParams'])
 
