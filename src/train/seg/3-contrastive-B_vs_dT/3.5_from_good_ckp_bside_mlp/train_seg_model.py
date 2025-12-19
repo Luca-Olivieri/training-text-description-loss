@@ -242,7 +242,7 @@ async def train_loop(
                     
                     cs_global_text_token = flat_cs_vle_txt_output.global_text_token # (P, D)
                     
-                    bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, D_bn, 33, 33)
+                    bottleneck_out: torch.Tensor = segmodel.activations['bottleneck'] # (B, D_bn, H_bn, W_bn)
 
                     if seg_train_with_text_config['detach_bottleneck']:
                         bottleneck_out = bottleneck_out.detach().requires_grad_(True)
@@ -299,8 +299,8 @@ async def train_loop(
                 batch_loss = seg_batch_loss
                 cs_mult = -1.0
                 filtered_perc = -1.0
-                aux_xen_ratio = -1.0
-                aux_xen_ratio_after_lambda = -1.0
+                aux_xen_ratio = torch.tensor(-1.0)
+                aux_xen_ratio_after_lambda = torch.tensor(-1.0)
 
             backward(batch_loss, scaler)
 
