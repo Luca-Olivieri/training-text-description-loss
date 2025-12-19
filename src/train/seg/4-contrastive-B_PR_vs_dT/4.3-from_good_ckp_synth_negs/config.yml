@@ -1,5 +1,5 @@
 root_exp_path: '/home/olivieri/exp/data/private/exps/seg/4-contrastive-B_PR_vs_dT'
-exp_name: '4.2-from_good_ckp'
+exp_name: '4.3-from_good_ckp_synth_negs'
 var_name: 'add_lambda0.1_conv_attn_pool_by_text'
 exp_desc: "no further customization" # Optional
 

@@ -4,12 +4,12 @@ from core.data import crop_augment_preprocess_batch
 from models.seg import SegModelWrapper, SEGMODELS_REGISTRY
 from models.mllm import MLLMGenParams, OllamaMLLMAdapter, MLLM_REGISTRY
 from models.vle import VLE_REGISTRY, VLEncoder, NewLayer
-from train.seg.loss import GroupedSigLipLoss
+from train.seg.loss import GroupedPairedNegativeSigLipLoss
 from core.prompter import FastPromptBuilder
 from core.logger import LogManager
 from core.viz import get_layer_numel_str, create_cs_ovr_masks
 from core.torch_utils import compile_torch_model, nanstd, map_tensors, clear_memory, unprefix_state_dict, flatten_tensor_list
-from core.utils import subsample_sign_classes
+from core.utils import subsample_sign_classes, NegativeTextGenerator, diff_text_word_pools
 from cache.cache import Cache, PercentilePolicy, MaskTextCache, Identity
 from core.data_utils import flatten_cs_dicts, unflatten_cs_dicts, flatten_list_of_lists
 from core.pipeline import extract_content_from_mllm_responses
@@ -37,7 +37,7 @@ from core._types import Optional, Callable
 
 config = setup_config(
     BASE_CONFIG,
-    Path('/home/olivieri/exp/src/train/seg/4-contrastive-B_PR_vs_dT/4.2-from_good_ckp/config.yml')
+    Path('/home/olivieri/exp/src/train/seg/4-contrastive-B_PR_vs_dT/4.3-from_good_ckp_synth_negs/config.yml')
 )
 
 seg_config = config['seg']
@@ -82,7 +82,8 @@ async def train_loop(
         seg_preprocess_fn: nn.Module,
         gen_params: MLLMGenParams,
         criterion: _Loss,
-        aux_criterion: GroupedSigLipLoss,
+        aux_criterion: GroupedPairedNegativeSigLipLoss,
+        neg_text_gen: Optional[NegativeTextGenerator],
         metrics_dict: dict[str, tm.Metric],
         mask_text_cache: Optional[MaskTextCache],
         checkpoint_dict: Optional[dict] = None,
@@ -228,14 +229,38 @@ async def train_loop(
                     uids_to_update = list(cs_dict_to_update.keys())
                     sign_classes_to_update = list(cs_dict_to_update.values())
 
+                    # to include PR classes into the negatives
+                    all_classes_cs_prompts = fast_prompt_builder.build_cs_inference_prompts(map_tensors(gts_down, fast_prompt_builder.class_map), map_tensors(prs_down, fast_prompt_builder.class_map), scs_down, sign_classes_filter=None)
+                    all_classes_cs_dict: dict[str, list[int]] = {uid: list(cs_p.keys()) for uid, cs_p in zip(uids, all_classes_cs_prompts)}
+
+                    neg_sign_classes = [[all_classes_cs_dict[uid] for pos_c in sign_classes] for uid, sign_classes in cs_dict_to_update.items()]
+                    ds_class_names = train_dl.dataset.get_classes()
+                    cs_neg_class_names = [[[ds_class_names[neg_c] for neg_c in neg_classes] for neg_classes in cs_classes] for cs_classes in neg_sign_classes]
+
+                    P = sum([1 for pos_classes in sign_classes_to_update for pos_c in pos_classes])
+
                     # B is the batch size
                     # P is the total (unrolled) number of positive pairs (P) involved in the contrastive loss.
+                    # M is the number of negative texts for image.
+
+                    if seg_train_with_text_config['num_synth_negs']:
+                        num_synth_negs = seg_train_with_text_config['num_synth_negs']
+                    else:
+                        num_synth_negs = int(0.4/seg_train_with_text_config['cache_update_policy_percentile'])*P - 1 # will be set to P-1 for each batch
 
                     cs_texts = [list(cs_a.values()) for cs_a in cs_answer_dict_to_update.values()]
+                    cs_neg_texts = [[neg_text_gen.generate(
+                            pos_txt,
+                            num_synth_negs,
+                            seg_train_with_text_config['change_prob'],
+                            classes=neg_cls_names
+                        ) for pos_txt, neg_cls_names in zip(cs_txt, cs_neg_cls_names)] for cs_txt, cs_neg_cls_names in zip(cs_texts, cs_neg_class_names)]
                     cs_texts = [vle.preprocess_texts(cs_txt) for cs_txt in cs_texts] # list of class-splitted tensors (., n_t)
+                    cs_neg_texts = torch.concat([torch.stack([vle.preprocess_texts(neg_txts) for neg_txts in cs_neg_text], dim=0) for cs_neg_text in cs_neg_texts], dim=0) # (P, M, D_t)
                     
                     flat_cs_texts, cs_text_struct_info = flatten_tensor_list(cs_texts) # (P, n_t)
-                    P = len(flat_cs_texts)
+                    flat_cs_neg_texts = cs_neg_texts.view(-1, cs_neg_texts.shape[-1]) # (P*M, tokens)
+                    flat_cs_concat_texts = torch.cat([flat_cs_texts, flat_cs_neg_texts], dim=0) # (P + P*M, tokens)
 
                     filtered_scs_down = torch.stack([sc for sc, uid in zip(scs_down, cs_dict.keys()) if uid in uids_to_update])
                     filtered_prs_down = torch.stack([pr for pr, uid in zip(prs_down, cs_dict.keys()) if uid in uids_to_update])
@@ -245,9 +270,12 @@ async def train_loop(
 
                     with torch.no_grad():
                         flat_cs_vle_img_output = vle.encode_and_project_images(flat_cs_ovr_masks_pr)
-                        flat_cs_vle_txt_output = vle.encode_and_project_texts(flat_cs_texts)
+                        flat_cs_vle_txt_output = vle.encode_and_project_texts(flat_cs_concat_texts)
 
-                    cs_global_text_token = flat_cs_vle_txt_output.global_text_token # (P, D)
+                    cs_global_text_token = flat_cs_vle_txt_output.global_text_token # (P + P*M, D)
+                    pos_cs_global_text_token = cs_global_text_token[:P] # (P, D)
+                    neg_cs_global_text_token = cs_global_text_token[P:] # (P*M, D)
+                    neg_cs_global_text_token = neg_cs_global_text_token.view(cs_neg_texts.shape[0], cs_neg_texts.shape[1], neg_cs_global_text_token.shape[-1]) # (P, M, D)
                     
                     pr_global_image_token = flat_cs_vle_img_output.global_image_token # (P, D)
                     
@@ -265,10 +293,10 @@ async def train_loop(
                         b_global_image_token_dict: dict[str, torch.Tensor] = dict(zip(uids, bottleneck_out, strict=True))
 
                         b_global_image_token = torch.cat([b_global_image_token_dict[uid].unsqueeze(0).expand(len(pos_classes), -1, -1, -1) for uid, pos_classes in cs_dict_to_update.items()]) # (P, D_bn, H, W)
-                        b_global_image_token: torch.Tensor = segmodel.model.bottleneck_adapter(b_global_image_token, cs_global_text_token) # (P, D)
+                        b_global_image_token: torch.Tensor = segmodel.model.bottleneck_adapter(b_global_image_token, pos_cs_global_text_token) # (P, D)
 
                     lhs: torch.Tensor = vle.model.concat_adapter(torch.cat([b_global_image_token, pr_global_image_token], dim=-1)) # (P, D)
-                    rhs = cs_global_text_token # (P, D)
+                    rhs = pos_cs_global_text_token # (P, D)
 
                     # TODO: this should be refactored in a registry
                     if seg_train_with_text_config['normalise'] == 'l2':
@@ -286,6 +314,7 @@ async def train_loop(
                         positive_text_features=rhs,
                         image_indices_for_pos_texts=image_indices_for_pos_texts,
                         group_indices_for_pos_pairs=group_indices_for_pos_pairs,
+                        negative_text_features=neg_cs_global_text_token,
                         logit_scale=vle.logit_scale.exp(),
                         logit_bias=vle.logit_bias,
                         output_dict=False,
@@ -577,7 +606,7 @@ async def main() -> None:
     )
 
     criterion = nn.CrossEntropyLoss(ignore_index=21)
-    aux_criterion = GroupedSigLipLoss(negative_loss_agg='sum', ignore_no_positive_samples=True)
+    aux_criterion = GroupedPairedNegativeSigLipLoss(negative_loss_agg='sum', ignore_no_positive_samples=True)
 
     if seg_train_with_text_config['with_text']:
         if seg_train_with_text_config['sign_classes_filter_k'] is not None:
@@ -587,8 +616,10 @@ async def main() -> None:
             ) # only take K PR classes
         else:
             sign_classes_filter = None # take PR all classes
+        neg_text_gen = NegativeTextGenerator(diff_text_word_pools)
     else:
         sign_classes_filter = None
+        neg_text_gen = None
 
     train_dl = DataLoader(
         train_ds,
@@ -639,6 +670,7 @@ async def main() -> None:
             gen_params,
             criterion,
             aux_criterion,
+            neg_text_gen,
             metrics_dict,
             mask_text_cache,
             checkpoint_dict,
