@@ -75,7 +75,6 @@ async def train_loop(
         train_dl: DataLoader,
         val_dl: DataLoader,
         fast_prompt_builder: FastPromptBuilder,
-        seg_preprocess_fn: nn.Module,
         gen_params: MLLMGenParams,
         criterion: _Loss,
         aux_criterion: VariableTextSigLipLoss,
@@ -158,7 +157,7 @@ async def train_loop(
 
             # --- Seg --- #
 
-            scs: torch.Tensor = seg_preprocess_fn(scs_img)
+            scs: torch.Tensor = segmodel.preprocess_images(scs_img)
 
             scs: torch.Tensor = scs.to(config['device'])
             gts: torch.Tensor = gts.to(config['device']) # shape [B, H, W]
@@ -356,27 +355,6 @@ async def train_loop(
 async def main() -> None:
     img_idxs = None
 
-    train_ds = VOC2012SegDataset(
-        root_path=config['datasets']['VOC2012_root_path'],
-        split='train',
-        device=config['device'],
-        resize_size=seg_config['image_size'],
-        center_crop=False,
-        with_unlabelled=True,
-        output_uids=True,
-        img_idxs=img_idxs
-    )
-    
-    val_ds = VOC2012SegDataset(
-        root_path=config['datasets']['VOC2012_root_path'],
-        split='val',
-        device=config['device'],
-        resize_size=seg_config['image_size'],
-        center_crop=False,
-        with_unlabelled=True,
-        img_idxs=img_idxs
-    )
-
     # Segmentation Model
     segmodel = SEGMODELS_REGISTRY.get(
         name=seg_config['model_name'],
@@ -421,6 +399,27 @@ async def main() -> None:
         else:
             raise AttributeError(f"ERROR: Resume path '{seg_weights_path}' not found. ")
 
+    train_ds = VOC2012SegDataset(
+        root_path=config['datasets']['VOC2012_root_path'],
+        split='train',
+        device=config['device'],
+        resize_size=segmodel.image_size,
+        center_crop=False,
+        with_unlabelled=True,
+        output_uids=True,
+        img_idxs=img_idxs
+    )
+    
+    val_ds = VOC2012SegDataset(
+        root_path=config['datasets']['VOC2012_root_path'],
+        split='val',
+        device=config['device'],
+        resize_size=segmodel.image_size,
+        center_crop=False,
+        with_unlabelled=True,
+        img_idxs=img_idxs
+    )
+
     # Vision-Language Model
     vlm = MLLM_REGISTRY.get(vlm_config['model_name'], http_endpoint=config['ollama_http_endpoint'])
 
@@ -442,7 +441,7 @@ async def main() -> None:
         root_path=config['datasets']['VOC2012_root_path'],
         split='train',
         device=config['device'],
-        resize_size=seg_config['image_size'],
+        resize_size=segmodel.image_size,
         center_crop=True,
         with_unlabelled=False,
     )
@@ -451,7 +450,7 @@ async def main() -> None:
         root_path=config['datasets']['VOC2012_root_path'],
         split='prompts_split',
         device=config['device'],
-        resize_size=seg_config['image_size'],
+        resize_size=segmodel.image_size,
         center_crop=True,
         with_unlabelled=False,
         mask_prs_path=config['mask_prs_path']
@@ -502,13 +501,11 @@ async def main() -> None:
     clear_memory()
     vle.model = compile_torch_model(vle.model)
 
-    seg_preprocess_fn = partial(SemanticSegmentation, resize_size=seg_config['image_size'])() # same as original one, but with custom resizing
-
     # training cropping functions
     if 'random_crop' in seg_train_config['regularizers']:
-        crop_fn = T.RandomCrop(seg_config['image_size'])
+        crop_fn = T.RandomCrop(segmodel.image_size)
     else:
-        crop_fn = T.CenterCrop(seg_config['image_size'])
+        crop_fn = T.CenterCrop(segmodel.image_size)
 
     # augmentations
     augment_fn = T.Compose([
@@ -526,9 +523,9 @@ async def main() -> None:
 
     val_collate_fn = partial(
         crop_augment_preprocess_batch,
-        crop_fn=T.CenterCrop(seg_config['image_size']),
+        crop_fn=T.CenterCrop(segmodel.image_size),
         augment_fn=None,
-        preprocess_fn=seg_preprocess_fn
+        preprocess_fn=segmodel.preprocess_images
     )
 
     criterion = nn.CrossEntropyLoss(ignore_index=21)
@@ -590,7 +587,6 @@ async def main() -> None:
             train_dl,
             val_dl,
             fast_prompt_builder,
-            seg_preprocess_fn,
             gen_params,
             criterion,
             aux_criterion,

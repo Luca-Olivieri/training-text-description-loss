@@ -54,7 +54,6 @@ async def train_loop(
         segmodel: SegModelWrapper,
         train_dl: DataLoader,
         val_dl: DataLoader,
-        seg_preprocess_fn: nn.Module,
         criterion: _Loss,
         metrics_dict: dict[str, tm.Metric],
         checkpoint_dict: Optional[dict] = None,
@@ -124,7 +123,7 @@ async def train_loop(
 
             # --- Seg --- #
 
-            scs: torch.Tensor = seg_preprocess_fn(scs_img)
+            scs: torch.Tensor = segmodel.preprocess_images(scs_img)
 
             scs: torch.Tensor = scs.to(config['device'])
             gts: torch.Tensor = gts.to(config['device']) # shape [B, H, W]
@@ -224,27 +223,6 @@ async def train_loop(
 async def main() -> None:
     img_idxs = None
 
-    train_ds = VOC2012SegDataset(
-        root_path=config['datasets']['VOC2012_root_path'],
-        split='train',
-        device=config['device'],
-        resize_size=seg_config['image_size'],
-        center_crop=False,
-        with_unlabelled=True,
-        output_uids=True,
-        img_idxs=img_idxs
-    )
-    
-    val_ds = VOC2012SegDataset(
-        root_path=config['datasets']['VOC2012_root_path'],
-        split='val',
-        device=config['device'],
-        resize_size=seg_config['image_size'],
-        center_crop=False,
-        with_unlabelled=True,
-        img_idxs=img_idxs
-    )
-
     # Segmentation Model
     segmodel = SEGMODELS_REGISTRY.get(
         name=seg_config['model_name'],
@@ -269,13 +247,32 @@ async def main() -> None:
         else:
             raise AttributeError(f"ERROR: Resume path '{seg_weights_path}' not found. ")
 
-    seg_preprocess_fn = partial(SemanticSegmentation, resize_size=seg_config['image_size'])() # same as original one, but with custom resizing
+    train_ds = VOC2012SegDataset(
+        root_path=config['datasets']['VOC2012_root_path'],
+        split='train',
+        device=config['device'],
+        resize_size=segmodel.image_size,
+        center_crop=False,
+        with_unlabelled=True,
+        output_uids=True,
+        img_idxs=img_idxs
+    )
+    
+    val_ds = VOC2012SegDataset(
+        root_path=config['datasets']['VOC2012_root_path'],
+        split='val',
+        device=config['device'],
+        resize_size=segmodel.image_size,
+        center_crop=False,
+        with_unlabelled=True,
+        img_idxs=img_idxs
+    )
 
     # training cropping functions
     if 'random_crop' in seg_train_config['regularizers']:
-        crop_fn = T.RandomCrop(seg_config['image_size'])
+        crop_fn = T.RandomCrop(segmodel.image_size)
     else:
-        crop_fn = T.CenterCrop(seg_config['image_size'])
+        crop_fn = T.CenterCrop(segmodel.image_size)
 
     # augmentations
     augment_fn = T.Compose([
@@ -293,9 +290,9 @@ async def main() -> None:
 
     val_collate_fn = partial(
         crop_augment_preprocess_batch,
-        crop_fn=T.CenterCrop(seg_config['image_size']),
+        crop_fn=T.CenterCrop(segmodel.image_size),
         augment_fn=None,
-        preprocess_fn=seg_preprocess_fn
+        preprocess_fn=segmodel.preprocess_images
     )
 
     criterion = nn.CrossEntropyLoss(ignore_index=21)
@@ -337,7 +334,6 @@ async def main() -> None:
             segmodel,
             train_dl,
             val_dl,
-            seg_preprocess_fn,
             criterion,
             metrics_dict,
             checkpoint_dict,
