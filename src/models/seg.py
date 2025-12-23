@@ -41,6 +41,7 @@ class SegModelWrapper(ABC):
     def __init__(self) -> None:
         """Initialize the segmentation model wrapper.
         """
+        self.image_size: int | tuple[int, int ] = None
         self.bottleneck_dims = None
         self.bottleneck_module = None
         self.adapter_out_dims = 512 # FLAIR embedding size
@@ -294,7 +295,8 @@ class LRASPP_MobileNetV3_LargeWrapper(SegModelWrapper):
         model.eval()
         self.model = model
 
-        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
+        self.image_size = 520
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=self.image_size)()
 
         self.handles: list[RemovableHandle] = list()
         self.activations: dict[str, torch.Tensor] = dict()
@@ -356,7 +358,8 @@ class DeepLabV3_MobileNet_V3_LargeWrapper(SegModelWrapper):
         model.eval()
         self.model = model
 
-        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
+        self.image_size = 520
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=self.image_size)()
 
         self.handles: list[RemovableHandle] = list()
         self.activations: dict[str, torch.Tensor] = dict()
@@ -427,8 +430,8 @@ class DeepLabV3_ResNet18Wrapper(SegModelWrapper):
         model.eval()
         self.model = model
 
-        # NOTE theoretically, 'resize_size' should be 224, but it gives lower performances
-        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
+        self.image_size = 520
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=self.image_size)()
 
         self.handles: list[RemovableHandle] = list()
         self.activations: dict[str, torch.Tensor] = dict()
@@ -502,7 +505,8 @@ class DeepLabV3_ResNet34Wrapper(SegModelWrapper):
         model.eval()
         self.model = model
 
-        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
+        self.image_size = 520
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=self.image_size)()
 
         self.handles: list[RemovableHandle] = list()
         self.activations: dict[str, torch.Tensor] = dict()
@@ -565,7 +569,8 @@ class DeepLabV3_ResNet50Wrapper(SegModelWrapper):
         model.eval()
         self.model = model
 
-        self.preprocess_fn = partial(SemanticSegmentation, resize_size=520)()
+        self.image_size = 520
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=self.image_size)()
 
         self.handles: list[RemovableHandle] = list()
         self.activations: dict[str, torch.Tensor] = dict()
@@ -597,6 +602,144 @@ class DeepLabV3_ResNet50Wrapper(SegModelWrapper):
             self.model.backbone.requires_grad_(True)
         self.model.classifier.requires_grad_(True)
         self.model.aux_classifier.requires_grad_(False) # TODO perhaps this is better to be deleted (to free up space)
+        
+        if hasattr(self.model, 'bottleneck_adapter'):
+            self.model.bottleneck_adapter.requires_grad_(True)
+
+
+@SEGMODELS_REGISTRY.register("fpn_resnet18")
+class FPN_ResNet18Wrapper(SegModelWrapper):
+    """
+    TODO
+    """
+
+    def __init__(
+            self,
+            pretrained_weights_path: Path,
+            device: torch.device,
+            adaptation: Optional[str] = None
+    ) -> None:
+        super().__init__()
+
+        self.device = device
+        self.adaptation = adaptation
+        model = smp.FPN(
+            encoder_name="resnet18", # the paper uses ResNet-101 as the backbone network.
+            encoder_weights='imagenet', # the encoder is pre-trained on ImageNet.
+            classes=21, # VOC2012 classes
+        ).to(self.device)
+        
+        state_dict: OrderedDict = torch.load(pretrained_weights_path, map_location='cpu')
+        model_state_dict = state_dict.get('model_state_dict', state_dict)
+        model.load_state_dict(model_state_dict)
+        model.eval()
+        self.model = model
+        
+        self.image_size = 512
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=self.image_size)()
+
+        self.handles: list[RemovableHandle] = list()
+        self.activations: dict[str, torch.Tensor] = dict()
+
+        self.bottleneck_dims = 512
+        self.bottleneck_module: nn.Module = self.model.encoder.layer4 # (B, 512, 65, 65) bottleneck output
+
+    def preprocess_images(
+            self,
+            images: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.preprocess_fn(images)
+    
+    def set_trainable_params(
+            self,
+            train_decoder_only: bool
+    ) -> None:
+        """Configure which parameters of the model should be trainable.
+        
+        This method controls gradient computation for different parts of the model:
+        the backbone (encoder), the classifier (decoder), and the bottleneck adapter
+        (if present).
+        
+        Args:
+            train_decoder_only: If True, freezes the backbone and only trains the classifier
+                              and adapter. If False, trains both backbone and classifier
+                              (and adapter if present).
+        """
+        if train_decoder_only:
+            self.model.encoder.requires_grad_(False)
+        else:
+            self.model.encoder.requires_grad_(True)
+        self.model.decoder.requires_grad_(True)
+        self.model.segmentation_head.requires_grad_(True)
+        
+        if hasattr(self.model, 'bottleneck_adapter'):
+            self.model.bottleneck_adapter.requires_grad_(True)
+
+
+@SEGMODELS_REGISTRY.register("fpn_resnet34")
+class FPN_ResNet34Wrapper(SegModelWrapper):
+    """
+    TODO
+    """
+
+    def __init__(
+            self,
+            pretrained_weights_path: Path,
+            device: torch.device,
+            adaptation: Optional[str] = None
+    ) -> None:
+        super().__init__()
+
+        self.device = device
+        self.adaptation = adaptation
+        model = smp.FPN(
+            encoder_name="resnet34", # the paper uses ResNet-101 as the backbone network.
+            encoder_weights='imagenet', # the encoder is pre-trained on ImageNet.
+            classes=21, # VOC2012 classes
+        ).to(self.device)
+        
+        state_dict: OrderedDict = torch.load(pretrained_weights_path, map_location='cpu')
+        model_state_dict = state_dict.get('model_state_dict', state_dict)
+        model.load_state_dict(model_state_dict)
+        model.eval()
+        self.model = model
+        
+        self.image_size = 512
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=self.image_size)()
+
+        self.handles: list[RemovableHandle] = list()
+        self.activations: dict[str, torch.Tensor] = dict()
+
+        self.bottleneck_dims = 512
+        self.bottleneck_module: nn.Module = self.model.encoder.layer4 # (B, 512, 65, 65) bottleneck output
+
+    def preprocess_images(
+            self,
+            images: torch.Tensor,
+    ) -> torch.Tensor:
+        return self.preprocess_fn(images)
+    
+    def set_trainable_params(
+            self,
+            train_decoder_only: bool
+    ) -> None:
+        """Configure which parameters of the model should be trainable.
+        
+        This method controls gradient computation for different parts of the model:
+        the backbone (encoder), the classifier (decoder), and the bottleneck adapter
+        (if present).
+        
+        Args:
+            train_decoder_only: If True, freezes the backbone and only trains the classifier
+                              and adapter. If False, trains both backbone and classifier
+                              (and adapter if present).
+        """
+        if train_decoder_only:
+            self.model.encoder.requires_grad_(False)
+        else:
+            self.model.encoder.requires_grad_(True)
+        self.model.decoder.requires_grad_(True)
+        self.model.segmentation_head.requires_grad_(True)
         
         if hasattr(self.model, 'bottleneck_adapter'):
             self.model.bottleneck_adapter.requires_grad_(True)
@@ -636,7 +779,8 @@ class SegFormer_mit_b0(SegModelWrapper):
         model.eval()
         self.model = model
 
-        self.preprocess_fn = partial(SemanticSegmentation, resize_size=512)()
+        self.image_size = 512
+        self.preprocess_fn = partial(SemanticSegmentation, resize_size=self.image_size)()
 
         self.handles: list[RemovableHandle] = list()
         self.activations: dict[str, torch.Tensor] = dict()
