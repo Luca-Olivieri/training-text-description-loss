@@ -58,7 +58,6 @@ async def train_loop(
         train_dl: DataLoader,
         val_dl: DataLoader,
         fast_prompt_builder: FastPromptBuilder,
-        seg_preprocess_fn: nn.Module,
         criterion: _Loss,
         metrics_dict: dict[str, tm.Metric],
         mask_text_cache: MaskTextCache,
@@ -134,7 +133,7 @@ async def train_loop(
 
             # --- Seg --- #
 
-            scs: torch.Tensor = seg_preprocess_fn(scs_img)
+            scs: torch.Tensor = segmodel.preprocess_images(scs_img)
 
             scs: torch.Tensor = scs.to(ckp_config['device'])
             gts: torch.Tensor = gts.to(ckp_config['device']) # shape [B, H, W]
@@ -216,24 +215,7 @@ async def train_loop(
     log_manager.log_title("Training Finished")
 
 async def main() -> None:
-    train_ds = VOC2012SegDataset(
-        root_path=ckp_config['datasets']['VOC2012_root_path'],
-        split='train',
-        device=ckp_config['device'],
-        resize_size=ckp_seg_config['image_size'],
-        center_crop=False,
-        with_unlabelled=True,
-        output_uids=True,
-    )
     
-    val_ds = VOC2012SegDataset(
-        root_path=ckp_config['datasets']['VOC2012_root_path'],
-        split='val',
-        device=ckp_config['device'],
-        resize_size=ckp_seg_config['image_size'],
-        center_crop=False,
-        with_unlabelled=True,
-    )
 
     # Segmentation Model
     segmodel = SEGMODELS_REGISTRY.get(
@@ -268,6 +250,25 @@ async def main() -> None:
             segmodel.model.load_state_dict(checkpoint_dict['model_state_dict'])
         else:
             raise AttributeError(f"ERROR: Resume path '{seg_weights_path}' not found. ")
+    
+    train_ds = VOC2012SegDataset(
+        root_path=ckp_config['datasets']['VOC2012_root_path'],
+        split='train',
+        device=ckp_config['device'],
+        resize_size=segmodel.image_size,
+        center_crop=False,
+        with_unlabelled=True,
+        output_uids=True,
+    )
+    
+    val_ds = VOC2012SegDataset(
+        root_path=ckp_config['datasets']['VOC2012_root_path'],
+        split='val',
+        device=ckp_config['device'],
+        resize_size=segmodel.image_size,
+        center_crop=False,
+        with_unlabelled=True,
+    )
 
     prompt_blueprint={
         "context": "default",
@@ -285,7 +286,7 @@ async def main() -> None:
         root_path=ckp_config['datasets']['VOC2012_root_path'],
         split='train',
         device=ckp_config['device'],
-        resize_size=ckp_seg_config['image_size'],
+        resize_size=segmodel.image_size,
         center_crop=True,
         with_unlabelled=False,
     )
@@ -294,7 +295,7 @@ async def main() -> None:
         root_path=ckp_config['datasets']['VOC2012_root_path'],
         split='prompts_split',
         device=ckp_config['device'],
-        resize_size=ckp_seg_config['image_size'],
+        resize_size=segmodel.image_size,
         center_crop=True,
         with_unlabelled=False,
         mask_prs_path=ckp_config['mask_prs_path']
@@ -316,13 +317,11 @@ async def main() -> None:
         seed=ckp_config["seed"],
     )
 
-    seg_preprocess_fn = partial(SemanticSegmentation, resize_size=ckp_seg_config['image_size'])() # same as original one, but with custom resizing
-
     # training cropping functions
     if 'random_crop' in ckp_seg_train_config['regularizers']:
-        crop_fn = T.RandomCrop(ckp_seg_config['image_size'])
+        crop_fn = T.RandomCrop(segmodel.image_size)
     else:
-        crop_fn = T.CenterCrop(ckp_seg_config['image_size'])
+        crop_fn = T.CenterCrop(segmodel.image_size)
 
     # augmentations
     augment_fn = T.Compose([
@@ -340,9 +339,9 @@ async def main() -> None:
 
     val_collate_fn = partial(
         crop_augment_preprocess_batch,
-        crop_fn=T.CenterCrop(ckp_seg_config['image_size']),
+        crop_fn=T.CenterCrop(segmodel.image_size),
         augment_fn=None,
-        preprocess_fn=seg_preprocess_fn
+        preprocess_fn=segmodel.preprocess_images
     )
 
     criterion = nn.CrossEntropyLoss(ignore_index=21)
@@ -393,7 +392,6 @@ async def main() -> None:
             train_dl,
             val_dl,
             fast_prompt_builder,
-            seg_preprocess_fn,
             criterion,
             metrics_dict,
             mask_text_cache,
