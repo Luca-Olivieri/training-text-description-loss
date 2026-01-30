@@ -245,7 +245,7 @@ async def train_loop(
                     if seg_train_with_text_config['num_synth_negs']:
                         num_synth_negs = seg_train_with_text_config['num_synth_negs']
                     else:
-                        num_synth_negs = int(0.4/seg_train_with_text_config['cache_update_policy_percentile'])*P - 1 # will be set to P-1 for each batch
+                        num_synth_negs = int(0.4/seg_train_with_text_config['cache_update_policy_percentile']*P) - 1 # will be set to P-1 for each batch
 
                     cs_texts = [list(cs_a.values()) for cs_a in cs_answer_dict_to_update.values()]
                     cs_neg_texts = [[neg_text_gen.generate(
@@ -280,6 +280,10 @@ async def train_loop(
 
                         b_global_image_token = torch.cat([b_global_image_token_dict[uid].unsqueeze(0).expand(len(pos_classes), -1, -1, -1) for uid, pos_classes in cs_dict_to_update.items()]) # (P, D_bn, H, W)
                         b_global_image_token: torch.Tensor = segmodel.model.bottleneck_adapter(b_global_image_token, pos_cs_global_text_token) # (P, D)
+
+                    if seg_config['adaptation'] == 'contrastive_global':
+                        pos_cs_global_text_token: torch.Tensor = segmodel.model.bottleneck_adapter.mlp(pos_cs_global_text_token)
+                        neg_cs_global_text_token: torch.Tensor = segmodel.model.bottleneck_adapter.mlp(neg_cs_global_text_token)
 
                     lhs: torch.Tensor = b_global_image_token # (P, D)
                     rhs: torch.Tensor = pos_cs_global_text_token # (P, D)
