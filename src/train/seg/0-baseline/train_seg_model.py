@@ -98,7 +98,7 @@ async def train_loop(
 
     # --- 5. Initial Validation ---
     log_manager.log_title("Initial Validation")
-    val_loss, val_metrics_score = segmodel.evaluate(val_dl, criterion, metrics_dict)
+    val_loss, val_metrics_score = segmodel.evaluate(val_dl, criterion, metrics_dict, autocast)
     log_manager.log_scores(
         title=f"Before any weight update, VALIDATION",
         loss=val_loss,
@@ -187,7 +187,7 @@ async def train_loop(
             train_metrics.reset() # only the batch metrics are logged
 
         # --- End of Epoch Validation and Checkpointing ---
-        val_loss, val_metrics_score = segmodel.evaluate(val_dl, criterion, metrics_dict)
+        val_loss, val_metrics_score = segmodel.evaluate(val_dl, criterion, metrics_dict, autocast)
         log_manager.log_scores(
             title=f"epoch: {epoch+1}/{seg_train_config['num_epochs']}, VALIDATION",
             loss=val_loss,
