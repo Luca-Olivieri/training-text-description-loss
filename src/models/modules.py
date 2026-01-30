@@ -1,6 +1,5 @@
 from core.config import *
 from core.registry import Registry
-from core.viz import get_layer_numel_str
 
 import torch
 from torch import nn
@@ -378,68 +377,69 @@ BOTTLENECK_ADAPTERS_REGISTRY.add('conv2_BN_GAP', partial(Conv2BNPooler, pooler=n
 BOTTLENECK_ADAPTERS_REGISTRY.add('conv_attn_pool', partial(ConvAttnPool))
 BOTTLENECK_ADAPTERS_REGISTRY.add('conv_attn_pool_by_text', partial(ConvAttnPoolByText))
 
-def print_gap_linear_params_count() -> None:
-    gap_linear = BOTTLENECK_ADAPTERS_REGISTRY.get('GAP_linear', in_features=960, out_features=512, device=torch.device('cpu'))
-    print("GAP_linear")
-    print(get_layer_numel_str(gap_linear, False, False))
-    x = torch.rand(2, 960, 33, 33)
-    y = gap_linear(x)
-    assert y.shape == (2, 512), f"'GAP_linear(x)' should have shape (2, 512), got {y.shape}"
-    print(y.shape)
-    print("---")
-
-def print_gap_linear2_bn_params_count() -> None:
-    gap_linear2_bn = BOTTLENECK_ADAPTERS_REGISTRY.get('GAP_linear2_BN', in_features=960, out_features=512, device=torch.device('cpu'))
-    print("GAP_linear2_BN")
-    print(get_layer_numel_str(gap_linear2_bn, False, False))
-    x = torch.rand(2, 960, 33, 33)
-    y = gap_linear2_bn(x)
-    assert y.shape == (2, 512), f"'GAP_linear2_BN(x)' should have shape (2, 512), got {y.shape}"
-    print(y.shape)
-    print("---")
-
-def print_gap_linear2_nobn_params_count() -> None:
-    gap_linear2_nobn = BOTTLENECK_ADAPTERS_REGISTRY.get('GAP_linear2_noBN', in_features=960, out_features=512, device=torch.device('cpu'))
-    print("GAP_linear2_noBN")
-    print(get_layer_numel_str(gap_linear2_nobn, False, False))
-    x = torch.rand(2, 960, 33, 33)
-    y = gap_linear2_nobn(x)
-    assert y.shape == (2, 512), f"'GAP_linear2_noBN(x)' should have shape (2, 512), got {y.shape}"
-    print(y.shape)
-    print("---")
-
-def print_conv2_bn_gap_params_count() -> None:
-    conv2_bn_gap = BOTTLENECK_ADAPTERS_REGISTRY.get('conv2_BN_GAP', in_features=960, out_features=512, device=torch.device('cpu'))
-    print("conv2_BN_GAP")
-    print(get_layer_numel_str(conv2_bn_gap, False, False))
-    x = torch.rand(2, 960, 33, 33)
-    y = conv2_bn_gap(x)
-    assert y.shape == (2, 512), f"'conv2_BN_GAP(x)' should have shape (2, 512), got {y.shape}"
-    print(y.shape)
-    print("---")
-
-def print_conv_attn_pool_params_count() -> None:
-    conv_attn_pool = BOTTLENECK_ADAPTERS_REGISTRY.get('conv_attn_pool', in_features=960, out_features=512, device=torch.device('cpu'))
-    print("conv_attn_pool")
-    print(get_layer_numel_str(conv_attn_pool, False, False))
-    x = torch.rand(2, 960, 33, 33)
-    y = conv_attn_pool(x)
-    assert y.shape == (2, 512), f"'conv_attn_pool(x)' should have shape (2, 512), got {y.shape}"
-    print(y.shape)
-    print("---")
-
-def print_conv_attn_pool_by_text_params_count() -> None:
-    conv_attn_pool_by_text = BOTTLENECK_ADAPTERS_REGISTRY.get('conv_attn_pool_by_text', in_features=960, out_features=512, device=torch.device('cpu'))
-    print("conv_attn_pool_by_text")
-    print(get_layer_numel_str(conv_attn_pool_by_text, False, False))
-    x = torch.rand(2, 960, 33, 33)
-    q = torch.rand(2, 512)
-    y = conv_attn_pool_by_text(x, q)
-    assert y.shape == (2, 512), f"'conv_attn_pool_by_text(x)' should have shape (2, 512), got {y.shape}"
-    print(y.shape)
-    print("---")
-
 if __name__ == '__main__':
+    from core.viz import get_layer_numel_str
+
+    def print_gap_linear_params_count() -> None:
+        gap_linear = BOTTLENECK_ADAPTERS_REGISTRY.get('GAP_linear', in_features=960, out_features=512, device=torch.device('cpu'))
+        print("GAP_linear")
+        print(get_layer_numel_str(gap_linear, False, False))
+        x = torch.rand(2, 960, 33, 33)
+        y = gap_linear(x)
+        assert y.shape == (2, 512), f"'GAP_linear(x)' should have shape (2, 512), got {y.shape}"
+        print(y.shape)
+        print("---")
+
+    def print_gap_linear2_bn_params_count() -> None:
+        gap_linear2_bn = BOTTLENECK_ADAPTERS_REGISTRY.get('GAP_linear2_BN', in_features=960, out_features=512, device=torch.device('cpu'))
+        print("GAP_linear2_BN")
+        print(get_layer_numel_str(gap_linear2_bn, False, False))
+        x = torch.rand(2, 960, 33, 33)
+        y = gap_linear2_bn(x)
+        assert y.shape == (2, 512), f"'GAP_linear2_BN(x)' should have shape (2, 512), got {y.shape}"
+        print(y.shape)
+        print("---")
+
+    def print_gap_linear2_nobn_params_count() -> None:
+        gap_linear2_nobn = BOTTLENECK_ADAPTERS_REGISTRY.get('GAP_linear2_noBN', in_features=960, out_features=512, device=torch.device('cpu'))
+        print("GAP_linear2_noBN")
+        print(get_layer_numel_str(gap_linear2_nobn, False, False))
+        x = torch.rand(2, 960, 33, 33)
+        y = gap_linear2_nobn(x)
+        assert y.shape == (2, 512), f"'GAP_linear2_noBN(x)' should have shape (2, 512), got {y.shape}"
+        print(y.shape)
+        print("---")
+
+    def print_conv2_bn_gap_params_count() -> None:
+        conv2_bn_gap = BOTTLENECK_ADAPTERS_REGISTRY.get('conv2_BN_GAP', in_features=960, out_features=512, device=torch.device('cpu'))
+        print("conv2_BN_GAP")
+        print(get_layer_numel_str(conv2_bn_gap, False, False))
+        x = torch.rand(2, 960, 33, 33)
+        y = conv2_bn_gap(x)
+        assert y.shape == (2, 512), f"'conv2_BN_GAP(x)' should have shape (2, 512), got {y.shape}"
+        print(y.shape)
+        print("---")
+
+    def print_conv_attn_pool_params_count() -> None:
+        conv_attn_pool = BOTTLENECK_ADAPTERS_REGISTRY.get('conv_attn_pool', in_features=960, out_features=512, device=torch.device('cpu'))
+        print("conv_attn_pool")
+        print(get_layer_numel_str(conv_attn_pool, False, False))
+        x = torch.rand(2, 960, 33, 33)
+        y = conv_attn_pool(x)
+        assert y.shape == (2, 512), f"'conv_attn_pool(x)' should have shape (2, 512), got {y.shape}"
+        print(y.shape)
+        print("---")
+
+    def print_conv_attn_pool_by_text_params_count() -> None:
+        conv_attn_pool_by_text = BOTTLENECK_ADAPTERS_REGISTRY.get('conv_attn_pool_by_text', in_features=960, out_features=512, device=torch.device('cpu'))
+        print("conv_attn_pool_by_text")
+        print(get_layer_numel_str(conv_attn_pool_by_text, False, False))
+        x = torch.rand(2, 960, 33, 33)
+        q = torch.rand(2, 512)
+        y = conv_attn_pool_by_text(x, q)
+        assert y.shape == (2, 512), f"'conv_attn_pool_by_text(x)' should have shape (2, 512), got {y.shape}"
+        print(y.shape)
+        print("---")
     # print_gap_linear_params_count()
     # print_gap_linear2_bn_params_count()
     # print_gap_linear2_nobn_params_count()
