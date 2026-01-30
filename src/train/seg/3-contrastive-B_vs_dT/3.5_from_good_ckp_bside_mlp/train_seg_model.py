@@ -313,9 +313,9 @@ async def train_loop(
                 filtered_perc = filtered_cs_counter/cs_counter
                 aux_xen_ratio: torch.Tensor = aux_batch_loss/seg_batch_loss
                 if seg_train_with_text_config['loss_convex_comb']:
-                    aux_xen_ratio_after_lambda: torch.Tensor = aux_batch_loss*seg_train_with_text_config['loss_lambda']/seg_batch_loss*(1. - seg_train_with_text_config['loss_lambda'])
+                    aux_xen_ratio_after_lambda: torch.Tensor = (aux_batch_loss*seg_train_with_text_config['loss_lambda'])/(seg_batch_loss*(1. - seg_train_with_text_config['loss_lambda']))
                 else:
-                    aux_xen_ratio_after_lambda: torch.Tensor = aux_batch_loss*seg_train_with_text_config['loss_lambda']/seg_batch_loss
+                    aux_xen_ratio_after_lambda: torch.Tensor = (aux_batch_loss*seg_train_with_text_config['loss_lambda'])/seg_batch_loss
             else:
                 aux_batch_loss = torch.tensor(-1.0, device=config['device'])
                 batch_loss = seg_batch_loss
