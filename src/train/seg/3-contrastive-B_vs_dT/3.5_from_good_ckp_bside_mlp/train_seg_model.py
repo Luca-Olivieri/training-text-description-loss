@@ -12,7 +12,7 @@ from core.torch_utils import compile_torch_model, nanstd, map_tensors, clear_mem
 from core.utils import subsample_sign_classes
 from cache.cache import Cache, PercentilePolicy, MaskTextCache, Identity
 from core.data_utils import flatten_cs_dicts, unflatten_cs_dicts, flatten_list_of_lists
-from core.pipeline import extract_content_from_mllm_responses
+from core.pipeline import extract_content_from_mllm_responses, evaluate_with_contr_loss
 
 from functools import partial
 from collections import OrderedDict
@@ -79,7 +79,6 @@ async def train_loop(
         train_dl: DataLoader,
         val_dl: DataLoader,
         fast_prompt_builder: FastPromptBuilder,
-        seg_preprocess_fn: nn.Module,
         gen_params: MLLMGenParams,
         criterion: _Loss,
         aux_criterion: GroupedSigLipLoss,
@@ -128,10 +127,33 @@ async def train_loop(
 
     # --- 5. Initial Validation ---
     log_manager.log_title("Initial Validation")
-    val_loss, val_metrics_score = segmodel.evaluate(val_dl, criterion, metrics_dict)
+    if seg_train_with_text_config['val_contr']:
+        val_seg_loss, val_aux_loss, val_metrics_score = await evaluate_with_contr_loss(
+            segmodel,
+            val_dl,
+            criterion,
+            aux_criterion,
+            metrics_dict,
+            fast_prompt_builder,
+            sign_classes_filter,
+            vlm,
+            gen_params,
+            autocast,
+            vle
+        )
+        val_metrics_score: dict[str, torch.Tensor] = {'aux_loss': val_aux_loss} | val_metrics_score
+        val_aux_xen_ratio: torch.Tensor = val_aux_loss/val_seg_loss
+        if seg_train_with_text_config['loss_convex_comb']:
+            val_aux_xen_ratio_after_lambda: torch.Tensor = (val_aux_loss*seg_train_with_text_config['loss_lambda'])/(val_seg_loss*(1. - seg_train_with_text_config['loss_lambda']))
+        else:
+            val_aux_xen_ratio_after_lambda: torch.Tensor = (val_aux_loss*seg_train_with_text_config['loss_lambda'])/val_seg_loss
+        val_metrics_score['aux_xen_ratio'] = val_aux_xen_ratio
+        val_metrics_score['aux_xen_ratio_after_lambda'] = val_aux_xen_ratio_after_lambda
+    else:
+        val_seg_loss, val_metrics_score = segmodel.evaluate(val_dl, criterion, metrics_dict, autocast)
     log_manager.log_scores(
         title=f"Before any weight update, VALIDATION",
-        loss=val_loss,
+        loss=val_seg_loss,
         metrics_score=val_metrics_score,
         tb_log_counter=start_epoch,
         tb_phase="val",
@@ -162,7 +184,7 @@ async def train_loop(
 
             # --- Seg --- #
 
-            scs: torch.Tensor = seg_preprocess_fn(scs_img)
+            scs: torch.Tensor = segmodel.preprocess_images(scs_img)
 
             scs: torch.Tensor = scs.to(config['device'])
             gts: torch.Tensor = gts.to(config['device']) # shape [B, H, W]
@@ -289,11 +311,11 @@ async def train_loop(
                 
                 cs_mult = filtered_cs_counter/(train_dl.batch_size)
                 filtered_perc = filtered_cs_counter/cs_counter
-                aux_xen_ratio = aux_batch_loss/seg_batch_loss
+                aux_xen_ratio: torch.Tensor = aux_batch_loss/seg_batch_loss
                 if seg_train_with_text_config['loss_convex_comb']:
-                    aux_xen_ratio_after_lambda = aux_batch_loss*seg_train_with_text_config['loss_lambda']/seg_batch_loss*(1. - seg_train_with_text_config['loss_lambda'])
+                    aux_xen_ratio_after_lambda: torch.Tensor = aux_batch_loss*seg_train_with_text_config['loss_lambda']/seg_batch_loss*(1. - seg_train_with_text_config['loss_lambda'])
                 else:
-                    aux_xen_ratio_after_lambda = aux_batch_loss*seg_train_with_text_config['loss_lambda']/seg_batch_loss
+                    aux_xen_ratio_after_lambda: torch.Tensor = aux_batch_loss*seg_train_with_text_config['loss_lambda']/seg_batch_loss
             else:
                 aux_batch_loss = torch.tensor(-1.0, device=config['device'])
                 batch_loss = seg_batch_loss
@@ -362,10 +384,33 @@ async def train_loop(
             train_metrics.reset() # only the batch metrics are logged
 
         # --- End of Epoch Validation and Checkpointing ---
-        val_loss, val_metrics_score = segmodel.evaluate(val_dl, criterion, metrics_dict)
+        if seg_train_with_text_config['val_contr']:
+            val_seg_loss, val_aux_loss, val_metrics_score = await evaluate_with_contr_loss(
+                segmodel,
+                val_dl,
+                criterion,
+                aux_criterion,
+                metrics_dict,
+                fast_prompt_builder,
+                sign_classes_filter,
+                vlm,
+                gen_params,
+                autocast,
+                vle
+            )
+            val_metrics_score: dict[str, torch.Tensor] = {'aux_loss': val_aux_loss} | val_metrics_score
+            val_aux_xen_ratio: torch.Tensor = val_aux_loss/val_seg_loss
+            if seg_train_with_text_config['loss_convex_comb']:
+                val_aux_xen_ratio_after_lambda: torch.Tensor = (val_aux_loss*seg_train_with_text_config['loss_lambda'])/(val_seg_loss*(1. - seg_train_with_text_config['loss_lambda']))
+            else:
+                val_aux_xen_ratio_after_lambda: torch.Tensor = (val_aux_loss*seg_train_with_text_config['loss_lambda'])/val_seg_loss
+            val_metrics_score['aux_xen_ratio'] = val_aux_xen_ratio
+            val_metrics_score['aux_xen_ratio_after_lambda'] = val_aux_xen_ratio_after_lambda
+        else:
+            val_seg_loss, val_metrics_score = segmodel.evaluate(val_dl, criterion, metrics_dict, autocast)
         log_manager.log_scores(
             title=f"epoch: {epoch+1}/{seg_train_config['num_epochs']}, VALIDATION",
-            loss=val_loss,
+            loss=val_seg_loss,
             metrics_score=val_metrics_score,
             tb_log_counter=epoch+1,
             tb_phase="val",
@@ -397,27 +442,6 @@ async def train_loop(
 
 async def main() -> None:
     img_idxs = None
-
-    train_ds = VOC2012SegDataset(
-        root_path=config['datasets']['VOC2012_root_path'],
-        split='train',
-        device=config['device'],
-        resize_size=seg_config['image_size'],
-        center_crop=False,
-        with_unlabelled=True,
-        output_uids=True,
-        img_idxs=img_idxs
-    )
-    
-    val_ds = VOC2012SegDataset(
-        root_path=config['datasets']['VOC2012_root_path'],
-        split='val',
-        device=config['device'],
-        resize_size=seg_config['image_size'],
-        center_crop=False,
-        with_unlabelled=True,
-        img_idxs=img_idxs
-    )
 
     # Segmentation Model
     segmodel = SEGMODELS_REGISTRY.get(
@@ -463,6 +487,39 @@ async def main() -> None:
         else:
             raise AttributeError(f"ERROR: Resume path '{seg_weights_path}' not found. ")
 
+    train_ds = VOC2012SegDataset(
+        root_path=config['datasets']['VOC2012_root_path'],
+        split='train',
+        device=config['device'],
+        resize_size=segmodel.image_size,
+        center_crop=False,
+        with_unlabelled=True,
+        output_uids=True,
+        img_idxs=img_idxs
+    )
+    
+    if seg_train_with_text_config['val_contr']:
+        val_ds = VOC2012SegDataset(
+            root_path=config['datasets']['VOC2012_root_path'],
+            split='val',
+            device=config['device'],
+            resize_size=segmodel.image_size,
+            center_crop=False,
+            with_unlabelled=True,
+            output_uids=True,
+            img_idxs=img_idxs
+        )
+    else:
+        val_ds = VOC2012SegDataset(
+            root_path=config['datasets']['VOC2012_root_path'],
+            split='val',
+            device=config['device'],
+            resize_size=segmodel.image_size,
+            center_crop=False,
+            with_unlabelled=True,
+            img_idxs=img_idxs
+        )
+
     # Vision-Language Model
     vlm = MLLM_REGISTRY.get(vlm_config['model_name'], http_endpoint=config['ollama_http_endpoint'])
 
@@ -484,7 +541,7 @@ async def main() -> None:
         root_path=config['datasets']['VOC2012_root_path'],
         split='train',
         device=config['device'],
-        resize_size=seg_config['image_size'],
+        resize_size=segmodel.image_size,
         center_crop=True,
         with_unlabelled=False,
     )
@@ -493,7 +550,7 @@ async def main() -> None:
         root_path=config['datasets']['VOC2012_root_path'],
         split='prompts_split',
         device=config['device'],
-        resize_size=seg_config['image_size'],
+        resize_size=segmodel.image_size,
         center_crop=True,
         with_unlabelled=False,
         mask_prs_path=config['mask_prs_path']
@@ -544,13 +601,11 @@ async def main() -> None:
     clear_memory()
     vle.model = compile_torch_model(vle.model)
 
-    seg_preprocess_fn = partial(SemanticSegmentation, resize_size=seg_config['image_size'])() # same as original one, but with custom resizing
-
     # training cropping functions
     if 'random_crop' in seg_train_config['regularizers']:
-        crop_fn = T.RandomCrop(seg_config['image_size'])
+        crop_fn = T.RandomCrop(segmodel.image_size)
     else:
-        crop_fn = T.CenterCrop(seg_config['image_size'])
+        crop_fn = T.CenterCrop(segmodel.image_size)
 
     # augmentations
     augment_fn = T.Compose([
@@ -566,12 +621,20 @@ async def main() -> None:
         preprocess_fn=None
     )
 
-    val_collate_fn = partial(
-        crop_augment_preprocess_batch,
-        crop_fn=T.CenterCrop(seg_config['image_size']),
-        augment_fn=None,
-        preprocess_fn=seg_preprocess_fn
-    )
+    if seg_train_with_text_config['val_contr']:
+        val_collate_fn = partial(
+            partial(crop_augment_preprocess_batch, output_uids=True),
+            crop_fn=T.CenterCrop(segmodel.image_size),
+            augment_fn=None,
+            preprocess_fn=None
+        )
+    else:
+        val_collate_fn = partial(
+            crop_augment_preprocess_batch,
+            crop_fn=T.CenterCrop(segmodel.image_size),
+            augment_fn=None,
+            preprocess_fn=segmodel.preprocess_images
+        )
 
     criterion = nn.CrossEntropyLoss(ignore_index=21)
     aux_criterion = GroupedSigLipLoss(negative_loss_agg='sum', ignore_no_positive_samples=True)
@@ -632,7 +695,6 @@ async def main() -> None:
             train_dl,
             val_dl,
             fast_prompt_builder,
-            seg_preprocess_fn,
             gen_params,
             criterion,
             aux_criterion,
