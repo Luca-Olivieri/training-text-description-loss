@@ -26,7 +26,7 @@ import segmentation_models_pytorch as smp
 from collections import OrderedDict
 from functools import partial
 
-from core._types import Optional, deprecated
+from core._types import Optional, deprecated, Callable
 from abc import ABC, abstractmethod
 
 
@@ -59,6 +59,7 @@ class SegModelWrapper(ABC):
             dl: DataLoader,
             criterion: nn.modules.loss._Loss,
             metrics_dict: dict[str, Metric],
+            autocast: Callable = None
     ) -> tuple[torch.Tensor, dict[str, Any]]:
         """Evaluate the model on a given dataset.
         
@@ -89,10 +90,17 @@ class SegModelWrapper(ABC):
             for step, (scs, gts) in enumerate(dl):
                 scs = scs.to(self.device)
                 gts = gts.to(self.device) # [B, H, W]
-                logits = self.model(scs)
-                logits = logits["out"] if isinstance(logits, OrderedDict) else logits # [B, C, H, W]
 
-                batch_loss = criterion(logits, gts)
+                if autocast:
+                    with autocast():
+                        logits = self.model(scs)
+                        logits = logits["out"] if isinstance(logits, OrderedDict) else logits # [B, C, H, W]
+                        batch_loss = criterion(logits, gts)
+                else:
+                    logits = self.model(scs)
+                    logits = logits["out"] if isinstance(logits, OrderedDict) else logits # [B, C, H, W]
+                    batch_loss = criterion(logits, gts)
+                
                 running_loss += batch_loss.item() * gts.size(0)
                 running_supcount += gts.size(0)
 
@@ -562,18 +570,35 @@ class DeepLabV3_ResNet50Wrapper(SegModelWrapper):
 
         self.device = device
         self.adaptation = adaptation
-        model = segmodels.deeplabv3_resnet50(weights=None, weights_backbone=None, aux_loss=True).to(self.device)
+        model = smp.DeepLabV3(
+            encoder_name="resnet50", # the paper uses ResNet-101 as the backbone network.
+            encoder_weights=None, # the encoder is pre-trained on ImageNet (encoder_weights='imagenet'), but by default we leave it uninit.
+            encoder_output_stride=8, # the paper advocates for an output stride of 8 for denser feature maps and better performance.
+            decoder_channels=256, # the ASPP module uses 256 filters for its convolutions.
+            decoder_atrous_rates=(12, 24, 36), # for an output stride of 8, the atrous rates are doubled to (12, 24, 36).
+            classes=21, # VOC2012 classes
+            # The upsampling factor should match the output stride. Setting it to None allows the
+            # model to infer this automatically, which is consistent with the paper's method of
+            # upsampling the final logits by a factor of 8.
+            upsampling=None
+        ).to(self.device)
         state_dict: OrderedDict = torch.load(pretrained_weights_path, map_location='cpu')
         model_state_dict = state_dict.get('model_state_dict', state_dict)
         model.load_state_dict(model_state_dict)
         model.eval()
         self.model = model
 
-        self.image_size = 520
+        # self.image_size = 520
+        # self.image_size = 448
+        self.image_size = 384
+        # self.image_size = 320
         self.preprocess_fn = partial(SemanticSegmentation, resize_size=self.image_size)()
 
         self.handles: list[RemovableHandle] = list()
         self.activations: dict[str, torch.Tensor] = dict()
+
+        self.bottleneck_dims = 2048
+        self.bottleneck_module: nn.Module = self.model.encoder.layer4 # (B, 512, 65, 65) bottleneck output
 
     def preprocess_images(
             self,
@@ -597,11 +622,11 @@ class DeepLabV3_ResNet50Wrapper(SegModelWrapper):
                               (and adapter if present).
         """
         if train_decoder_only:
-            self.model.backbone.requires_grad_(False)
+            self.model.encoder.requires_grad_(False)
         else:
-            self.model.backbone.requires_grad_(True)
-        self.model.classifier.requires_grad_(True)
-        self.model.aux_classifier.requires_grad_(False) # TODO perhaps this is better to be deleted (to free up space)
+            self.model.encoder.requires_grad_(True)
+        self.model.decoder.requires_grad_(True)
+        self.model.segmentation_head.requires_grad_(True)
         
         if hasattr(self.model, 'bottleneck_adapter'):
             self.model.bottleneck_adapter.requires_grad_(True)
