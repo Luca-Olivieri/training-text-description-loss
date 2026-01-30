@@ -525,6 +525,13 @@ class COCO2017SegDataset(SegDataset):
     ) -> list[str]:
         # 81 classes
         classes = ['BACKGROUND'] + [d['name'].upper() for d in self.cats]
+        # standardisation of the class to VOC2012
+        classes[5] = 'AEROPLANE'
+        classes[19] = 'DININGTABLE'
+        classes[4] = 'MOTORBIKE'
+        classes[18] = 'POTTEDPLANT'
+        classes[17] = 'SOFA'
+        classes[20] = 'TVMONITOR'
 
         return classes
     
