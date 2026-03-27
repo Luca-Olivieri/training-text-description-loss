@@ -1,0 +1,8 @@
+SET GITHUB CREDENTIALS
+git config user.email luca.olivieri@mail.polimi.it
+git config user.name “Luca Olivieri”
+
+# DOCKER COMPOSE UP/DOWN
+
+cd ./storage_megaverse/training-text-description-loss/docker
+GPU_DEVICE=... CPU_SET=... TTDL_IMAGE_NAME=ttdl TTDL_TAG=v2 OLLAMA_TAG=0.8.0 docker.sh [up, down]
